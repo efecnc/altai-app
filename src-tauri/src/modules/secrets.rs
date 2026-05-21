@@ -1,17 +1,17 @@
 //! Secret storage with platform-appropriate backends.
 //!
-//! - macOS (release): macOS Keychain (via `keyring` crate)
-//! - macOS (debug builds): mode-0600 file. Each `tauri dev` rebuild
-//!   produces a new unsigned binary, so Keychain treats every rebuild as
-//!   a different app and prompts the user's login password to authorize
-//!   access to existing items. The file backend avoids that prompt in
-//!   the dev loop without affecting release builds.
-//! - Windows: Credential Manager (via `keyring` crate)
-//! - Linux: a file in the app's local data dir, mode 0600. The default
-//!   `keyring` backend on Linux is the Secret Service over D-Bus, which
-//!   silently fails on systems without gnome-keyring/kwallet (and on the
-//!   "login" collection not being created). For an open-source desktop
-//!   app shipped via AppImage/deb/rpm, we cannot assume a keyring daemon
+//! - macOS: mode-0600 file in the app's local data dir. The login
+//!   Keychain prompts for the user's password every time an unsigned (or
+//!   ad-hoc-signed) binary opens an existing item, and each rebuild
+//!   changes the app's signature, so the prompt comes back even after
+//!   "Always Allow". Until we ship a properly-signed binary the file
+//!   backend is the only option that doesn't make every launch a modal.
+//! - Windows: Credential Manager (via `keyring` crate). Credential
+//!   Manager grants the running user silently, so there is no prompt.
+//! - Linux: same mode-0600 file. The default `keyring` backend on Linux
+//!   is the Secret Service over D-Bus, which silently fails on systems
+//!   without gnome-keyring/kwallet. For an open-source desktop app
+//!   shipped via AppImage/deb/rpm, we cannot assume a keyring daemon
 //!   exists. The file backend is the same approach Brave/Chromium fall
 //!   back to in that scenario; user-only file permissions provide the
 //!   isolation the secret-service collection would have otherwise.
@@ -26,36 +26,36 @@ use std::sync::Mutex;
 
 use tauri::AppHandle;
 
-#[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::collections::HashMap;
-#[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs;
-#[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
-#[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tauri::Manager;
 
 #[derive(Default)]
 pub struct SecretsState {
-    #[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     cache: Mutex<Option<HashMap<String, String>>>,
-    #[cfg(not(any(target_os = "linux", all(unix, debug_assertions))))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     _phantom: Mutex<()>,
 }
 
-#[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn key(service: &str, account: &str) -> String {
     format!("{}::{}", service, account)
 }
 
-#[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("secrets.json"))
 }
 
-#[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_store(app: &AppHandle) -> Result<HashMap<String, String>, String> {
     let path = store_path(app)?;
     if !path.exists() {
@@ -65,7 +65,7 @@ fn read_store(app: &AppHandle) -> Result<HashMap<String, String>, String> {
     serde_json::from_slice::<HashMap<String, String>>(&bytes).map_err(|e| e.to_string())
 }
 
-#[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn write_store(app: &AppHandle, map: &HashMap<String, String>) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -88,7 +88,7 @@ fn write_store(app: &AppHandle, map: &HashMap<String, String>) -> Result<(), Str
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn with_store<F, R>(app: &AppHandle, state: &SecretsState, f: F) -> Result<R, String>
 where
     F: FnOnce(&mut HashMap<String, String>) -> R,
@@ -101,7 +101,7 @@ where
     Ok(f(map))
 }
 
-#[cfg(not(any(target_os = "linux", all(unix, debug_assertions))))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(service, account).map_err(|e| e.to_string())
 }
@@ -113,13 +113,13 @@ pub async fn secrets_get(
     service: String,
     account: String,
 ) -> Result<Option<String>, String> {
-    #[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let _ = state; // capture
         let key = key(&service, &account);
         with_store(&app, &state, |m| m.get(&key).cloned())
     }
-    #[cfg(not(any(target_os = "linux", all(unix, debug_assertions))))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (app, state);
         let e = entry(&service, &account)?;
@@ -139,7 +139,7 @@ pub async fn secrets_set(
     account: String,
     password: String,
 ) -> Result<(), String> {
-    #[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let key = key(&service, &account);
         with_store(&app, &state, |m| {
@@ -151,7 +151,7 @@ pub async fn secrets_set(
         };
         write_store(&app, &snapshot)
     }
-    #[cfg(not(any(target_os = "linux", all(unix, debug_assertions))))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (app, state);
         let e = entry(&service, &account)?;
@@ -166,7 +166,7 @@ pub async fn secrets_delete(
     service: String,
     account: String,
 ) -> Result<(), String> {
-    #[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let key = key(&service, &account);
         with_store(&app, &state, |m| {
@@ -178,7 +178,7 @@ pub async fn secrets_delete(
         };
         write_store(&app, &snapshot)
     }
-    #[cfg(not(any(target_os = "linux", all(unix, debug_assertions))))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (app, state);
         let e = entry(&service, &account)?;
@@ -197,7 +197,7 @@ pub async fn secrets_get_all(
     service: String,
     accounts: Vec<String>,
 ) -> Result<Vec<Option<String>>, String> {
-    #[cfg(any(target_os = "linux", all(unix, debug_assertions)))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         with_store(&app, &state, |m| {
             accounts
@@ -206,7 +206,7 @@ pub async fn secrets_get_all(
                 .collect()
         })
     }
-    #[cfg(not(any(target_os = "linux", all(unix, debug_assertions))))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (app, state);
         Ok(accounts

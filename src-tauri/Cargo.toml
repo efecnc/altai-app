@@ -1,6 +1,6 @@
 [package]
 name = "altai"
-version = "0.1.0"
+version = "0.1.1"
 description = "ALTAI — open agentic development environment powered by ALTAI"
 authors = ["ALTAI Dev Team"]
 edition = "2021"
@@ -51,9 +51,6 @@ isanagent = { git = "https://github.com/altaidevorg/isanagent.git", branch = "ma
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
