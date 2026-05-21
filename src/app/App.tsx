@@ -119,7 +119,7 @@ const SIDEBAR_WIDTH_STORAGE_KEY = "altai.sidebar.width";
 const SIDEBAR_VIEW_STORAGE_KEY = "altai.sidebar.view";
 
 const AGENT_SIDEBAR_DEFAULT_WIDTH = 380;
-const AGENT_SIDEBAR_MIN_WIDTH = 300;
+const AGENT_SIDEBAR_MIN_WIDTH = 380;
 const AGENT_SIDEBAR_MAX_WIDTH = 640;
 const AGENT_SIDEBAR_WIDTH_STORAGE_KEY = "altai.agentSidebar.width";
 
@@ -283,7 +283,8 @@ export default function App() {
     }, 200);
   }, []);
   const persistAgentSidebarWidth = useCallback((next: number) => {
-    agentSidebarWidthRef.current = next;
+    const clamped = clampAgentSidebarWidth(next);
+    agentSidebarWidthRef.current = clamped;
     if (agentSidebarWidthWriteTimerRef.current) {
       window.clearTimeout(agentSidebarWidthWriteTimerRef.current);
     }
@@ -292,7 +293,7 @@ export default function App() {
       try {
         window.localStorage.setItem(
           AGENT_SIDEBAR_WIDTH_STORAGE_KEY,
-          String(next),
+          String(clamped),
         );
       } catch {
         // ignore
@@ -687,11 +688,26 @@ export default function App() {
     if (!panel) return;
     const collapsed = panel.getSize().asPercentage <= 0;
     if (miniOpen && collapsed) {
-      panel.resize(`${agentSidebarWidthRef.current}px`);
+      const target = clampAgentSidebarWidth(agentSidebarWidthRef.current);
+      agentSidebarWidthRef.current = target;
+      panel.resize(`${target}px`);
     } else if (!miniOpen && !collapsed) {
       panel.collapse();
     }
   }, [miniOpen]);
+
+  // One-time guard for stale dev-server state: if the persisted/ref width is
+  // below the current min (e.g. after AGENT_SIDEBAR_MIN_WIDTH was bumped while
+  // the app was hot-reloaded), bump the live panel back up to min on mount.
+  useEffect(() => {
+    const panel = agentSidebarRef.current;
+    if (!panel) return;
+    const currentPx = panel.getSize().inPixels;
+    if (currentPx > 0 && currentPx < AGENT_SIDEBAR_MIN_WIDTH) {
+      agentSidebarWidthRef.current = AGENT_SIDEBAR_MIN_WIDTH;
+      panel.resize(`${AGENT_SIDEBAR_MIN_WIDTH}px`);
+    }
+  }, []);
 
   const askFromSelection = useCallback(() => {
     if (!hasComposer) {
@@ -1469,15 +1485,34 @@ export default function App() {
                 id="agent-sidebar"
                 panelRef={agentSidebarRef}
                 defaultSize={
-                  miniOpen ? `${agentSidebarWidthRef.current}px` : "0px"
+                  miniOpen
+                    ? `${clampAgentSidebarWidth(agentSidebarWidthRef.current)}px`
+                    : "0px"
                 }
                 minSize={`${AGENT_SIDEBAR_MIN_WIDTH}px`}
                 maxSize={`${AGENT_SIDEBAR_MAX_WIDTH}px`}
                 collapsible
                 collapsedSize={0}
                 onResize={(size, _id, prev) => {
-                  if (size.inPixels > 0) {
-                    persistAgentSidebarWidth(size.inPixels);
+                  const px = size.inPixels;
+                  // Hard floor: never let drag pull the panel below min.
+                  // Only the imperative close path (closeMini → panel.collapse())
+                  // is allowed to put it at 0, and that runs while miniOpen=false.
+                  if (px > 0 && px < AGENT_SIDEBAR_MIN_WIDTH) {
+                    agentSidebarRef.current?.resize(
+                      `${AGENT_SIDEBAR_MIN_WIDTH}px`,
+                    );
+                    return;
+                  }
+                  if (px === 0 && miniOpen) {
+                    // Drag-collapse while the chat is meant to be open — revert.
+                    agentSidebarRef.current?.resize(
+                      `${AGENT_SIDEBAR_MIN_WIDTH}px`,
+                    );
+                    return;
+                  }
+                  if (px > 0) {
+                    persistAgentSidebarWidth(px);
                     if (!miniOpen && prev && prev.asPercentage <= 0) {
                       openMini();
                     }

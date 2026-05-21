@@ -105,6 +105,18 @@ export function AiInputBar() {
     autoresize(c.textareaRef.current);
   }, [c.value, c.textareaRef]);
 
+  // Re-run autoresize when the textarea's container width changes (e.g. the
+  // user drags the agent sidebar). Without this, wrapped lines change but the
+  // forced inline `style.height` stays at the old value and the box looks
+  // stuck-tall after a resize.
+  useEffect(() => {
+    const el = c.textareaRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => autoresize(el));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [c.textareaRef]);
+
   const updateTrigger = () => {
     const el = c.textareaRef.current;
     if (!el) {
@@ -256,7 +268,7 @@ export function AiInputBar() {
         )}
       >
         {hasChips && (
-          <div className="px-2.5 pt-2">
+          <div className="px-2 pt-1.5">
             <ChipsRow
               files={c.files}
               onRemoveFile={c.removeFile}
@@ -356,6 +368,9 @@ export function AiInputBar() {
           )}
         </Popover>
 
+        {/* Single embedded toolbar row inside the card — Cursor pattern.
+            Left: attach + permission + agent + model.
+            Right: voice + send. */}
         <div className="flex items-center gap-0.5 px-1.5 pb-1 pt-0.5">
           <ToolbarIcon
             title="Attach file or image"
@@ -365,9 +380,9 @@ export function AiInputBar() {
             <HugeiconsIcon icon={Attachment01Icon} size={14} strokeWidth={1.75} />
           </ToolbarIcon>
 
+          <PermissionModeSwitcher variant="toolbar-icon" />
           {agentPickerEnabled && <AgentSwitcher variant="toolbar" />}
           <ModelDropdown />
-          <PermissionModeSwitcher variant="toolbar-icon" />
 
           <div className="flex-1" />
 
@@ -627,7 +642,10 @@ function extOf(name: string): string {
 
 function autoresize(el: HTMLTextAreaElement | null) {
   if (!el) return;
-  el.style.height = "auto";
+  // Always clear first so a stale inline height from prior content can't keep
+  // the box tall after the value shrinks back to empty.
+  el.style.height = "";
+  if (el.value.length === 0) return;
   el.style.height = `${Math.min(el.scrollHeight, 176)}px`;
 }
 

@@ -16,11 +16,11 @@ import {
   type PermissionMode,
 } from "@/modules/settings/store";
 import {
-  Alert02Icon,
   ArrowDown01Icon,
   CheckmarkCircle02Icon,
   Edit02Icon,
   Settings01Icon,
+  ShieldEnergyIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -28,7 +28,28 @@ import { HugeiconsIcon } from "@hugeicons/react";
 const ICONS: Record<PermissionMode, typeof CheckmarkCircle02Icon> = {
   ask: CheckmarkCircle02Icon,
   "auto-edit": Edit02Icon,
-  bypass: Alert02Icon,
+  bypass: ShieldEnergyIcon,
+};
+
+const MODE_COLORS: Record<
+  PermissionMode,
+  { trigger: string; icon: string; label: string }
+> = {
+  ask: {
+    trigger: "text-emerald-600 hover:text-emerald-600 dark:text-emerald-400 dark:hover:text-emerald-400",
+    icon: "text-emerald-600 dark:text-emerald-400",
+    label: "text-emerald-700 dark:text-emerald-300",
+  },
+  "auto-edit": {
+    trigger: "text-sky-600 hover:text-sky-600 dark:text-sky-400 dark:hover:text-sky-400",
+    icon: "text-sky-600 dark:text-sky-400",
+    label: "text-sky-700 dark:text-sky-300",
+  },
+  bypass: {
+    trigger: "text-destructive hover:text-destructive",
+    icon: "text-destructive",
+    label: "text-destructive",
+  },
 };
 
 const VISIBLE_MODES: readonly PermissionMode[] = ["ask", "auto-edit"];
@@ -49,7 +70,7 @@ export function PermissionModeSwitcher({
   const effectiveMode: PermissionMode =
     mode === "bypass" && !bypassEnabled ? "ask" : mode;
   const ActiveIcon = ICONS[effectiveMode];
-  const isBypass = effectiveMode === "bypass";
+  const activeColors = MODE_COLORS[effectiveMode];
   const isIconOnly = variant === "toolbar-icon";
 
   const modes: readonly PermissionMode[] = bypassEnabled
@@ -64,9 +85,7 @@ export function PermissionModeSwitcher({
           variant="ghost"
           className={cn(
             "group flex h-7 min-w-0 max-w-[10rem] items-center gap-1.5 rounded-md px-2 text-[11.5px] transition-colors hover:bg-accent",
-            isBypass
-              ? "text-destructive hover:text-destructive"
-              : "text-foreground/80 hover:text-foreground",
+            activeColors.trigger,
           )}
           title={`Permission mode: ${PERMISSION_MODE_LABELS[effectiveMode]}`}
         >
@@ -74,10 +93,7 @@ export function PermissionModeSwitcher({
             icon={ActiveIcon}
             size={13}
             strokeWidth={1.75}
-            className={cn(
-              "shrink-0",
-              isBypass ? "opacity-100" : "opacity-80",
-            )}
+            className="shrink-0"
           />
           {!isIconOnly && (
             <>
@@ -108,6 +124,7 @@ export function PermissionModeSwitcher({
           const Icon = ICONS[m];
           const isActive = m === effectiveMode;
           const danger = m === "bypass";
+          const colors = MODE_COLORS[m];
           return (
             <DropdownMenuItem
               key={m}
@@ -122,17 +139,10 @@ export function PermissionModeSwitcher({
                 icon={Icon}
                 size={13}
                 strokeWidth={1.75}
-                className={cn(
-                  "mt-0.5 shrink-0",
-                  danger
-                    ? "text-destructive"
-                    : isActive
-                      ? "text-foreground"
-                      : "text-muted-foreground",
-                )}
+                className={cn("mt-0.5 shrink-0", colors.icon)}
               />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className={cn(danger && "text-destructive")}>
+                <span className={colors.label}>
                   {PERMISSION_MODE_LABELS[m]}
                 </span>
                 <span className="line-clamp-2 text-[10.5px] text-muted-foreground">
@@ -144,10 +154,7 @@ export function PermissionModeSwitcher({
                   icon={Tick02Icon}
                   size={12}
                   strokeWidth={2}
-                  className={cn(
-                    "mt-0.5 shrink-0",
-                    danger ? "text-destructive" : "text-foreground",
-                  )}
+                  className={cn("mt-0.5 shrink-0", colors.icon)}
                 />
               ) : null}
             </DropdownMenuItem>
