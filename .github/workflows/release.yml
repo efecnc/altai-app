@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0). Created if missing."
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macOS (Apple Silicon)
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - os: macos-14
+            label: macOS (Intel)
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+          - os: ubuntu-22.04
+            label: Linux (x86_64)
+            target: x86_64-unknown-linux-gnu
+            args: ""
+          - os: windows-latest
+            label: Windows (x86_64)
+            target: x86_64-pc-windows-msvc
+            args: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF##refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # Tauri 2 needs webkit2gtk-4.1 + the ayatana appindicator. The old
+          # libappindicator3-dev conflicts with libayatana-appindicator3-dev
+          # on 22.04 (mutual `Conflicts:` declaration), so keep only ayatana.
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build & bundle (Tauri)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No Apple signing identity, no Windows EV cert, no Tauri updater
+          # signing — we intentionally do NOT set the related env vars at all.
+          # tauri-action treats unset as "skip", but setting them to "" makes
+          # newer versions try to base64-decode an empty string and fail.
+          # macOS bundles get ad-hoc signed via `signingIdentity: "-"` in
+          # tauri.conf.json; Windows installers ship unsigned. Users follow
+          # the bypass steps in INSTALL.md on first launch.
+        with:
+          tagName: ${{ steps.tag.outputs.name }}
+          releaseName: "ALTAI ${{ steps.tag.outputs.name }}"
+          releaseBody: |
+            ## ALTAI ${{ steps.tag.outputs.name }}
+
+            See [INSTALL.md](https://github.com/efecnc/altai-app/blob/main/INSTALL.md) for one-time install instructions per platform — the binaries are unsigned, so macOS Gatekeeper and Windows SmartScreen will warn the first time.
+
+            **macOS:** `xattr -dr com.apple.quarantine /Applications/ALTAI.app`
+            **Windows:** Click "More info" → "Run anyway" on the SmartScreen prompt.
+            **Linux:** Install the `.deb` or run the `.AppImage` directly.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
+          args: ${{ matrix.args }}

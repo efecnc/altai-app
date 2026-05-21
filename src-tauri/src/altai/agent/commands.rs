@@ -1,0 +1,188 @@
+use super::runtime::{self, AgentRuntime};
+use tauri::State;
+
+/// Start (or ensure running) the IsanAgent runtime.
+///
+/// The caller should pass provider/model info so the runtime can
+/// bootstrap an LLM provider. Falls back to workspace config if empty.
+#[tauri::command]
+pub async fn agent_start(
+    state: State<'_, AgentRuntime>,
+    provider_name: Option<String>,
+    api_key: Option<String>,
+    model_name: Option<String>,
+) -> Result<(), String> {
+    let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
+    let key = api_key.unwrap_or_default();
+    let model = model_name.unwrap_or_else(|| "gemini-2.5-flash".to_string());
+
+    runtime::start_agent(&state, &pname, &key, &model).await
+}
+
+/// Send a user message into the IsanAgent bus.
+#[tauri::command]
+pub async fn agent_send(
+    state: State<'_, AgentRuntime>,
+    message: String,
+) -> Result<(), String> {
+    state.channel.inject_user_message(message).await
+}
+
+/// Approve or deny an agent action (placeholder for future approval flow).
+#[tauri::command]
+pub async fn agent_approve(
+    _state: State<'_, AgentRuntime>,
+    _approval_id: String,
+    _approved: bool,
+) -> Result<(), String> {
+    // IsanAgent uses ClarificationHub for approvals, not a simple ID-based
+    // system. This will be wired when the approval UI is built.
+    Ok(())
+}
+
+/// Cancel the current agent reasoning loop.
+#[tauri::command]
+pub async fn agent_cancel(state: State<'_, AgentRuntime>) -> Result<(), String> {
+    state.channel.cancel().await
+}
+
+/// Fetch paper metadata directly from the arXiv Atom API.
+/// Returns `{ title, authors, abstract, url }` for the confirmation card.
+/// Does NOT require the IsanAgent runtime to be running.
+#[tauri::command]
+pub async fn agent_fetch_paper(url: String) -> Result<serde_json::Value, String> {
+    let arxiv_id = extract_arxiv_id(&url).ok_or_else(|| {
+        "Invalid arXiv URL. Expected format: arxiv.org/abs/XXXX.XXXXX".to_string()
+    })?;
+
+    let api_url = format!("https://export.arxiv.org/api/query?id_list={}", arxiv_id);
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&api_url)
+        .send()
+        .await
+        .map_err(|e| format!("arXiv request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("arXiv returned status {}", response.status()));
+    }
+
+    let xml = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read arXiv response: {}", e))?;
+
+    parse_arxiv_atom(&xml, &arxiv_id)
+}
+
+fn extract_arxiv_id(url: &str) -> Option<String> {
+    let url = url.trim();
+    for prefix in &["arxiv.org/abs/", "arxiv.org/pdf/"] {
+        if let Some(pos) = url.find(prefix) {
+            let after = &url[pos + prefix.len()..];
+            let id: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            if !id.is_empty() {
+                return Some(id);
+            }
+        }
+    }
+    let bare = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    if bare
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
+        let id: String = bare
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if id.contains('.') {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn parse_arxiv_atom(xml: &str, arxiv_id: &str) -> Result<serde_json::Value, String> {
+    let title = extract_tag(xml, "title")
+        .and_then(|titles| titles.into_iter().nth(1))
+        .unwrap_or_else(|| "Unknown title".to_string())
+        .trim()
+        .replace('\n', " ");
+
+    let summary = extract_tag(xml, "summary")
+        .and_then(|v| v.into_iter().next())
+        .unwrap_or_default()
+        .trim()
+        .replace('\n', " ");
+
+    let authors: Vec<String> = extract_nested_tag(xml, "author", "name");
+
+    if authors.is_empty() && title == "Unknown title" {
+        return Err(format!("Paper {} not found on arXiv", arxiv_id));
+    }
+
+    Ok(serde_json::json!({
+        "title": title,
+        "authors": authors,
+        "abstract": summary,
+        "url": format!("https://arxiv.org/abs/{}", arxiv_id),
+    }))
+}
+
+fn extract_tag(xml: &str, tag: &str) -> Option<Vec<String>> {
+    let open = format!("<{}", tag);
+    let close = format!("</{}>", tag);
+    let mut results = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start_pos) = xml[search_from..].find(&open) {
+        let abs_start = search_from + start_pos;
+        let content_start = match xml[abs_start..].find('>') {
+            Some(p) => abs_start + p + 1,
+            None => break,
+        };
+        let content_end = match xml[content_start..].find(&close) {
+            Some(p) => content_start + p,
+            None => break,
+        };
+        results.push(xml[content_start..content_end].to_string());
+        search_from = content_end + close.len();
+    }
+
+    if results.is_empty() {
+        None
+    } else {
+        Some(results)
+    }
+}
+
+fn extract_nested_tag(xml: &str, outer: &str, inner: &str) -> Vec<String> {
+    let open_outer = format!("<{}", outer);
+    let close_outer = format!("</{}>", outer);
+    let mut results = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start_pos) = xml[search_from..].find(&open_outer) {
+        let abs_start = search_from + start_pos;
+        let block_end = match xml[abs_start..].find(&close_outer) {
+            Some(p) => abs_start + p + close_outer.len(),
+            None => break,
+        };
+        let block = &xml[abs_start..block_end];
+        if let Some(names) = extract_tag(block, inner) {
+            for name in names {
+                results.push(name.trim().to_string());
+            }
+        }
+        search_from = block_end;
+    }
+
+    results
+}

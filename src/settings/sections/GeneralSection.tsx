@@ -1,0 +1,418 @@
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import { usePreferencesStore } from "@/modules/settings/preferences";
+import type { ThemePref } from "@/modules/settings/store";
+import {
+  EDITOR_THEME_LABELS,
+  EDITOR_THEMES,
+  TERMINAL_FONT_SIZES,
+  TERMINAL_SCROLLBACK_PRESETS,
+  setAgentPickerEnabled,
+  setAutostart,
+  setBypassPermissionsEnabled,
+  setEditorTheme,
+  setRestoreWindowState,
+  setShowHidden,
+  setTerminalFontFamily,
+  setTerminalLetterSpacing,
+  setTerminalFontSize,
+  setTerminalScrollback,
+  setTerminalWebglEnabled,
+  setVimMode,
+  type EditorThemeId,
+} from "@/modules/settings/store";
+import { useTheme } from "@/modules/theme";
+import {
+  ArrowDown01Icon,
+  ComputerIcon,
+  Moon02Icon,
+  Sun03Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { useEffect } from "react";
+import { SectionHeader } from "../components/SectionHeader";
+import { SettingRow } from "../components/SettingRow";
+
+const APPEARANCE: {
+  id: ThemePref;
+  label: string;
+  icon: typeof ComputerIcon;
+}[] = [
+  { id: "system", label: "System", icon: ComputerIcon },
+  { id: "light", label: "Light", icon: Sun03Icon },
+  { id: "dark", label: "Dark", icon: Moon02Icon },
+];
+
+export function GeneralSection() {
+  const { theme, setTheme } = useTheme();
+  const editorTheme = usePreferencesStore((s) => s.editorTheme);
+  const autostart = usePreferencesStore((s) => s.autostart);
+  const restoreWindowState = usePreferencesStore((s) => s.restoreWindowState);
+  const vimMode = usePreferencesStore((s) => s.vimMode);
+  const showHidden = usePreferencesStore((s) => s.showHidden);
+  const terminalWebglEnabled = usePreferencesStore(
+    (s) => s.terminalWebglEnabled,
+  );
+  const terminalFontFamily = usePreferencesStore((s) => s.terminalFontFamily);
+  const terminalLetterSpacing = usePreferencesStore((s) => s.terminalLetterSpacing);
+  const terminalFontSize = usePreferencesStore((s) => s.terminalFontSize);
+  const terminalScrollback = usePreferencesStore((s) => s.terminalScrollback);
+  const bypassPermissionsEnabled = usePreferencesStore(
+    (s) => s.bypassPermissionsEnabled,
+  );
+  const agentPickerEnabled = usePreferencesStore((s) => s.agentPickerEnabled);
+
+  // Reconcile autostart pref with the actual OS state on mount — the user may
+  // have toggled it from System Settings.
+  useEffect(() => {
+    let alive = true;
+    void isEnabled()
+      .then((on) => {
+        if (!alive) return;
+        if (on !== usePreferencesStore.getState().autostart) {
+          void setAutostart(on);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const onToggleAutostart = async (next: boolean) => {
+    try {
+      if (next) await enable();
+      else await disable();
+      await setAutostart(next);
+    } catch (e) {
+      console.error("autostart toggle failed", e);
+    }
+  };
+
+  const onPickEditor = (id: EditorThemeId) => void setEditorTheme(id);
+
+  const onToggleTerminalWebgl = (next: boolean) => {
+    void setTerminalWebglEnabled(next).catch((e) =>
+      console.error("terminal WebGL preference update failed", e),
+    );
+  };
+
+  const onPickTerminalFontSize = (size: number) => void setTerminalFontSize(size);
+
+  const onPickScrollback = (lines: number) => void setTerminalScrollback(lines);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <SectionHeader
+        title="General"
+        description="Appearance, editor, and startup."
+      />
+
+      <div className="flex flex-col gap-2">
+        <Label>Appearance</Label>
+        <div className="grid grid-cols-3 gap-2">
+          {APPEARANCE.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => setTheme(o.id)}
+              className={cn(
+                "group flex h-20 flex-col items-center justify-center gap-1.5 rounded-lg border bg-card transition-all",
+                theme === o.id
+                  ? "border-foreground/60 ring-1 ring-foreground/20"
+                  : "border-border/60 hover:border-border",
+              )}
+            >
+              <HugeiconsIcon icon={o.icon} size={18} strokeWidth={1.5} />
+              <span className="text-[11.5px]">{o.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>Editor theme</Label>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              className="h-9 justify-between gap-2 px-2.5 text-[12px]"
+            >
+              <span>{EDITOR_THEME_LABELS[editorTheme]}</span>
+              <HugeiconsIcon
+                icon={ArrowDown01Icon}
+                size={12}
+                strokeWidth={2}
+                className="opacity-70"
+              />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-[220px]">
+            {EDITOR_THEMES.map((t) => (
+              <DropdownMenuItem
+                key={t}
+                onSelect={() => onPickEditor(t)}
+                className={cn(
+                  "text-[12px]",
+                  t === editorTheme && "bg-accent/50",
+                )}
+              >
+                {EDITOR_THEME_LABELS[t]}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <SettingRow
+          title="Vim mode"
+          description="Enable Vim keybindings in the code editor."
+        >
+          <Switch
+            checked={vimMode}
+            onCheckedChange={(v) => void setVimMode(v)}
+          />
+        </SettingRow>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>Explorer</Label>
+        <SettingRow
+          title="Show hidden files"
+          description="Include dot-prefixed files and folders (.env, .gitignore, .config) in the file explorer and search."
+        >
+          <Switch
+            checked={showHidden}
+            onCheckedChange={(v) => void setShowHidden(v)}
+          />
+        </SettingRow>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>Terminal</Label>
+        <SettingRow
+          title={
+            <span className="inline-flex items-center gap-1.5">
+              Use WebGL renderer
+              <TooltipProvider delayDuration={200}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      className="cursor-help text-[11px] text-muted-foreground/70 leading-none"
+                      aria-label="More info about WebGL renderer"
+                    >
+                      ⓘ
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[260px] text-[11px]">
+                    xterm's WebGL renderer caches glyphs in a GPU texture atlas. On some macOS setups (especially with Nerd Fonts), the atlas corrupts and terminal text becomes unreadable. Turn this off as a fallback — performance dips slightly, but text renders correctly via the DOM renderer.
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </span>
+          }
+          description="Hardware-accelerated rendering. Turn off if text shows corruption or blank tiles."
+        >
+          <Switch
+            checked={terminalWebglEnabled}
+            onCheckedChange={onToggleTerminalWebgl}
+          />
+        </SettingRow>
+        <SettingRow
+          title="Font family"
+          description='Nerd Font name for icons (e.g. "CaskaydiaCove Nerd Font Mono"). Leave blank to auto-detect.'
+        >
+          <input
+            type="text"
+            value={terminalFontFamily}
+            placeholder="Auto-detect"
+            onChange={(e) => void setTerminalFontFamily(e.target.value)}
+            className="h-8 w-48 rounded-none border border-border bg-background px-2.5 text-[12px] outline-none focus:border-foreground/40"
+          />
+        </SettingRow>
+        <SettingRow
+          title="Letter spacing"
+          description="Extra horizontal space between characters (px). Use negative values to tighten Nerd Fonts."
+        >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                className="h-8 justify-between gap-2 rounded-none px-2.5 text-[12px]"
+              >
+                <span>{terminalLetterSpacing > 0 ? `+${terminalLetterSpacing}` : terminalLetterSpacing} px</span>
+                <HugeiconsIcon icon={ArrowDown01Icon} size={12} strokeWidth={2} className="opacity-70" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[100px] rounded-none border border-border bg-popover p-0 shadow-none ring-0">
+              {[-4, -3, -2, -1, 0, 1, 2, 3, 4].map((v) => (
+                <DropdownMenuItem
+                  key={v}
+                  onSelect={() => void setTerminalLetterSpacing(v)}
+                  className={cn("rounded-none px-3 py-1.5 text-[12px]", v === terminalLetterSpacing && "bg-accent/50")}
+                >
+                  {v > 0 ? `+${v}` : v} px
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </SettingRow>
+        <SettingRow
+          title="Font size"
+          description="Terminal text size."
+        >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                className="h-8 justify-between gap-2 rounded-none px-2.5 text-[12px]"
+              >
+                <span>{terminalFontSize} px</span>
+                <HugeiconsIcon
+                  icon={ArrowDown01Icon}
+                  size={12}
+                  strokeWidth={2}
+                  className="opacity-70"
+                />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="min-w-[80px] rounded-none border border-border bg-popover p-0 shadow-none ring-0"
+            >
+              {TERMINAL_FONT_SIZES.map((size) => (
+                <DropdownMenuItem
+                  key={size}
+                  onSelect={() => onPickTerminalFontSize(size)}
+                  className={cn(
+                    "rounded-none px-3 py-1.5 text-[12px]",
+                    size === terminalFontSize && "bg-accent/50",
+                  )}
+                >
+                  {size} px
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </SettingRow>
+        <SettingRow
+          title="Scrollback"
+          description="Lines of history kept per terminal. Higher uses more RAM (~3 KB / line)."
+        >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                className="h-8 justify-between gap-2 rounded-none px-2.5 text-[12px]"
+              >
+                <span>{terminalScrollback.toLocaleString()} lines</span>
+                <HugeiconsIcon
+                  icon={ArrowDown01Icon}
+                  size={12}
+                  strokeWidth={2}
+                  className="opacity-70"
+                />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="min-w-[140px] rounded-none border border-border bg-popover p-0 shadow-none ring-0"
+            >
+              {TERMINAL_SCROLLBACK_PRESETS.map((lines) => (
+                <DropdownMenuItem
+                  key={lines}
+                  onSelect={() => onPickScrollback(lines)}
+                  className={cn(
+                    "rounded-none px-3 py-1.5 text-[12px]",
+                    lines === terminalScrollback && "bg-accent/50",
+                  )}
+                >
+                  {lines.toLocaleString()} lines
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </SettingRow>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>Startup</Label>
+        <div className="flex flex-col gap-2">
+          <SettingRow
+            title="Launch at login"
+            description="Open ALTAI automatically when you sign in."
+          >
+            <Switch
+              checked={autostart}
+              onCheckedChange={(v) => void onToggleAutostart(v)}
+            />
+          </SettingRow>
+          <SettingRow
+            title="Restore window position & size"
+            description="Reopen the main window where you left it. Applies on next launch."
+          >
+            <Switch
+              checked={restoreWindowState}
+              onCheckedChange={(v) => void setRestoreWindowState(v)}
+            />
+          </SettingRow>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label>AI</Label>
+        <div className="flex flex-col gap-2">
+          <SettingRow
+            title="Show agent picker"
+            description="Display the agent dropdown in the chat input bar. Disable to hide it from the toolbar; the active agent still runs in the background."
+          >
+            <Switch
+              checked={agentPickerEnabled}
+              onCheckedChange={(v) => void setAgentPickerEnabled(v)}
+            />
+          </SettingRow>
+          <SettingRow
+            title="Enable bypass permissions mode"
+            description="Adds a 'Bypass permissions' option to the agent permission dropdown. When active, the agent auto-approves every file edit and shell command. Only enable inside sandboxed environments."
+          >
+            <Switch
+              checked={bypassPermissionsEnabled}
+              onCheckedChange={(v) => void setBypassPermissionsEnabled(v)}
+              className={cn(
+                bypassPermissionsEnabled &&
+                  "data-[state=checked]:bg-destructive",
+              )}
+            />
+          </SettingRow>
+          {bypassPermissionsEnabled ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+              Bypass mode skips every approval prompt. The agent can edit any
+              file or run any shell command without asking. Disable this when
+              you finish.
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Label({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-[11px] font-medium tracking-tight text-muted-foreground">
+      {children}
+    </span>
+  );
+}

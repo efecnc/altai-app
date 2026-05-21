@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "bash_run",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'altai-sample: about to run a shell command' >&2"
+          }
+        ]
+      }
+    ]
+  }
+}

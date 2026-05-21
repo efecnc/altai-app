@@ -1,0 +1,31 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Dependencies & build artifacts
+node_modules
+.pnp
+.pnp.js
+dist
+dist-ssr
+*.local
+
+# Rust build output. NOTE: Cargo.lock IS committed for binary apps
+# so users get reproducible builds — do NOT add it here.
+src-tauri/target
+target
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Claude Code local config (per-machine permissions, not portable)
+.claude/settings.local.json

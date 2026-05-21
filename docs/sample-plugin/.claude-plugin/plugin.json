@@ -1,0 +1,15 @@
+{
+  "name": "altai-sample",
+  "version": "0.1.0",
+  "description": "Sample plugin for verifying ALTAI's Claude Code plugin loader. Ships one skill, one agent, one command, one hook, one MCP server.",
+  "author": "ALTAI Dev Team",
+  "homepage": "https://github.com/efecnc/altai-app",
+  "license": "Apache-2.0",
+  "keywords": ["sample", "demo"],
+  "mcpServers": {
+    "echo": {
+      "command": "node",
+      "args": ["-e", "process.stdin.on('data', d => process.stdout.write(d))"]
+    }
+  }
+}
