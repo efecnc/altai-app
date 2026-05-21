@@ -16,6 +16,7 @@ A single-binary desktop app that turns your terminal into a hands-on AI engineer
   <a href="#install">Install</a> ·
   <a href="#why-altai">Why</a> ·
   <a href="#agents">Agents</a> ·
+  <a href="#-adaptive-ml-agent">Adaptive ML</a> ·
   <a href="#the-altai-stack">The stack</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="https://altai.dev">altai.dev</a>
@@ -41,6 +42,8 @@ ALTAI is what happens when you stop trying to bolt AI onto an editor and instead
 
 Most "AI IDEs" are chat boxes that suggest code. ALTAI is a workspace where the agent **does the work**: reproduces an arXiv paper end-to-end on a free Colab GPU, generates a 10k-row DPO dataset, audits a diff for race conditions, ships a fix to a failing test — without ever asking you to copy-paste a thing.
 
+At the center of ALTAI's ML side is the **[Adaptive ML agent](#-adaptive-ml-agent)** — a discovery-first agent that turns open-ended ML requests ("fine-tune Llama on our legal docs", "fix my agent's tool calls", "serve this 70B cheaply") into research → pilot → evaluate → scale loops. No hard-coded recipes; the agent surveys the 2026 literature, runs the smallest verifiable pilots in parallel, presents numeric tradeoffs, then scales the winner.
+
 It's a desktop app, not a service. Your code never leaves your machine; only the model call does. API keys live in your OS keychain. There is no account, no telemetry, no cloud round-trip.
 
 ## Why ALTAI
@@ -58,7 +61,8 @@ It's a desktop app, not a service. Your code never leaves your machine; only the
 ## Features
 
 - 🛡️ **Three permission modes per session** — *Ask before edit* (default), *Edit automatically*, or *Bypass permissions* (gated behind an explicit Settings toggle). The agent never silently mutates your repo.
-- 🤖 **9 built-in agents, fully editable** — Coder, Architect, Code Reviewer, Security, Designer, plus ML-focused agents (Paper Reproducer, Notebook Assistant, Dataset Generator). Override instructions, disable what you don't need, reset to defaults at any time.
+- ✨ **[Adaptive ML agent](#-adaptive-ml-agent)** — open-ended ML requests (fine-tune, RAG, quantize, serve, evaluate, debug a training run) become an 8-step *discover → research → enumerate → pilot → evaluate → scale → verify → persist* loop. The agent surveys current literature, runs the smallest verifiable pilots in parallel, presents numeric tradeoffs, and only commits after evidence. No hard-coded recipes.
+- 🤖 **10 built-in agents, fully editable** — Coder, Architect, Code Reviewer, Security, Designer, plus four ML-focused agents (**Adaptive ML**, Paper Reproducer, Notebook Assistant, Dataset Generator). Override instructions, disable what you don't need, reset to defaults at any time.
 - 🧠 **Dual agent runtime** — general agents stream through the Vercel AI SDK to your chosen provider; ML agents route through the embedded [**IsanAgent**](#-isanagent) Rust runtime with 44 tools, sub-agent DAGs, SQLite FTS5 memory, and a workspace-scoped execution harness (local · Jupyter · SSH · free Colab GPU).
 - 🔑 **Bring your own keys** — Anthropic, OpenAI, Google, Groq, xAI, Cerebras, plus any OpenAI-compatible endpoint (LM Studio, MLX, Ollama). Keys live in a mode-0600 file under the app's local data dir on macOS and Linux, and in Credential Manager on Windows — never round-tripped through a cloud service, never bundled with the app.
 - 🖥️ **First-class terminal** — xterm.js + portable-pty with shell integration for zsh, bash, fish, PowerShell. Emits OSC 7 (cwd) and OSC 133 (prompt boundaries) so the agent tracks every command boundary the way iTerm and Warp do.
@@ -92,10 +96,13 @@ Or build from source — see [Development](#development).
 
 ## Agents
 
-ALTAI ships nine first-class agents. Each one is editable from the in-app **Agent Switcher** — change the system prompt, rename, disable, or reset to default. The runtime is auto-selected based on the agent.
+ALTAI ships ten first-class agents. Each one is editable from the in-app **Agent Switcher** — change the system prompt, rename, disable, or reset to default. The runtime is auto-selected based on the agent.
+
+The picker groups the four `isanagent`-routed agents (**Adaptive ML**, Paper Reproducer, Notebook Assistant, Dataset Generator) under an **ML Agents ▸** submenu so the general-purpose agents stay one click away. The active agent — wherever it lives — is always reflected on the toolbar trigger.
 
 | Agent                  | Domain                                       | Runtime         | Highlights                                                                            |
 | ---------------------- | -------------------------------------------- | --------------- | ------------------------------------------------------------------------------------- |
+| **Adaptive ML** ✨     | Open-ended ML requests                        | `isanagent`     | Discovers its own solution. Research → enumerate → pilot → evaluate → scale → verify → persist. See [section below](#-adaptive-ml-agent). |
 | **Coder**              | General-purpose engineering                  | `vercel`        | Pair-programs in your terminal, matches existing patterns, runs project checks.       |
 | **Architect**          | System design & tradeoffs                    | `vercel`        | Restates the problem, surfaces 2–3 options with real tradeoffs before any code.        |
 | **Code Reviewer**      | Diff review                                  | `vercel`        | Flags logic bugs, races, perf cliffs, security — skips formatting nits.                |
@@ -114,6 +121,86 @@ ALTAI ships nine first-class agents. Each one is editable from the in-app **Agen
 <p align="center">
   <img src="docs/media/agent-switcher.png" alt="Agent switcher" width="720" />
 </p>
+
+## ✨ Adaptive ML Agent
+
+The flagship of ALTAI's ML side. Where the other agents do one specialized job (read this paper, write this notebook, generate this dataset), **Adaptive ML accepts open-ended ML requests and finds its own way through them**.
+
+> "Fine-tune Llama-3 on our legal docs."
+> "My agent fails BFCL — get it above 75."
+> "Serve this 70B for $500/month."
+> "Beat MathArena AIME 2026 at 50%+."
+
+Same agent. Four wildly different paths. No hard-coded recipes — every step is *discovered* via research and pilots.
+
+### The 8-step meta-pattern
+
+Every Adaptive ML run follows the same loop. Which modules, libraries, and hyperparameters get chosen is the *output* of the loop, not the input.
+
+```
+1. UNDERSTAND  → parse the request, ask if data / GPU budget / target metric missing
+                 write a verifiable goal: "X metric >= Y on dataset Z"
+2. RESEARCH    → arxiv_search + web_search + hf_hub_file_fetch + search_memory
+                 last 12 months only; no method picked yet
+3. ENUMERATE   → propose 2-4 candidate paths with cost + cited failure modes
+4. PILOT       → smallest verifiable version of each path, in parallel
+                 (50-100 steps, 1% of data, 100 docs, …)
+                 pass criteria written BEFORE running
+5. EVALUATE    → compare against goal proxy; reject failures
+                 close calls → present numeric tradeoff to ask_user
+6. SCALE       → run the winner at full budget; monitor sub-agent tails logs
+7. VERIFY      → final eval against the real goal; on miss, loop back to 3
+                 with the failure class identified
+8. PERSIST     → write a memory delta; emit a SKILL.md if a path won 3x
+```
+
+### What's fixed vs what's discovered
+
+| Fixed (hard-coded)                                                    | Discovered (per request)                            |
+| --------------------------------------------------------------------- | ---------------------------------------------------- |
+| IsanAgent runtime + 44 tools + execution harness + cron + doom-loop   | Which tool to call, in what order                    |
+| Afterimage modules (Magpie SFT, multi-judge DPO, APIGen-MT, RAGAS-QA) | Whether data needs generating; if so, which modules  |
+| The 8-step loop itself                                                | What happens inside each step                        |
+| The *existence* of a capability catalog                               | Which library / format / algorithm gets picked       |
+| Doom-loop defense (3× same call → strategy change; 150% budget → ask) | When defense triggers                                |
+| Memory + SKILL.md emission discipline                                 | Which patterns rise to skill status                  |
+
+### The capability catalog the agent picks from
+
+The agent has explicit knowledge of the 2026 landscape across every ML stage. It does not commit to any of these until research and pilots justify it.
+
+- **Data generation** — [Afterimage](#-afterimage) (Magpie SFT, multi-judge DPO/KTO/ORPO with Krippendorff α, APIGen-MT tool-calling traces, RAGAS-style document-grounded QA, structured-output, MCQ). Croissant + HF Dataset Card emit by default.
+- **Filtering & dedup** — datatrove MinHash, SemDeDup, FineWeb-Edu classifier, n-gram contamination check, Presidio PII.
+- **Training** — Unsloth, TRL, Axolotl, LLaMA-Factory, torchtune, verl, OpenRLHF, NeMo-Aligner.
+- **PEFT** — LoRA, QLoRA (NF4 + double-quant), DoRA, rsLoRA, LoftQ.
+- **Preference / RL** — DPO, KTO, ORPO, SimPO, IPO, GRPO, DAPO, RLOO, OnlineDPO.
+- **Quantization** — AWQ (GPTQModel + Marlin), GPTQ, W8A8 INT (llm-compressor + SmoothQuant), FP8 E4M3, GGUF Q4_K_M / IQ4_XS, EXL3, HQQ, AQLM.
+- **Serving** — vLLM (V1), SGLang, LMDeploy, llama.cpp, Ollama, MLX-LM, ExLlamaV3 + TabbyAPI, TensorRT-LLM, ExecuTorch.
+- **Speculative decoding** — EAGLE-3, DeepSeek MTP, Medusa, Lookahead.
+- **RAG** — bge-m3 / Qwen3-Embedding / voyage-3, pgvector / Qdrant / LanceDB, bge-reranker-v2-m3 / mxbai-rerank, Contextual Retrieval / RAPTOR / GraphRAG / CRAG / Self-RAG, ColBERT late-interaction.
+- **Eval** — lm-evaluation-harness, lighteval, Inspect AI, OpenCompass, HELM, DeepEval, RAGAS. Benchmarks: MMLU-Pro, GPQA, HLE, MathArena (live), BFCL v3, τ³-bench, OSWorld-Verified, BigCodeBench, LiveCodeBench (live), Aider Polyglot, IFEval, Arena-Hard v2, RULER, AILuminate.
+
+Contaminated / saturated benchmarks (MMLU, HumanEval, HellaSwag, GSM8K, SWE-bench Verified) are treated as smoke tests only. Benchmark currency is re-verified every run via `arxiv_search("benchmark contamination 2026")`.
+
+### Worked example: same request, different paths
+
+Two trajectories from real Adaptive ML runs — same meta-pattern, completely different conclusions.
+
+> **"Cheap serve our 70B model — $500/month, p99 < 3s."**
+> Research surfaces three paths: W4A16 quantize + spot H100, distill to 8B, or hybrid routing (easy queries → 8B, hard → 70B). All three get piloted in parallel.
+> Results: quantize $720/mo (over budget), distill $90/mo with –3% quality, routing $140/mo with same quality but +400 ms p99. Agent presents the numeric tradeoff. User picks routing.
+> Scale + verify lands at $138/mo, p99 2.7s. Memory delta written: *"cheap-serve-70B: routing won when quality floor was hard."*
+
+> **"My agent fails BFCL — get it above 75 (currently 58)."**
+> Research surfaces APIGen-MT, xLAM, ToolACE. Three candidates: prompt engineering, APIGen-MT data + SFT, or APIGen-MT + GRPO with execution reward. Pilots run.
+> Results: prompt-only ceilings at 62; SFT alone hits 78 on mini-BFCL. GRPO not needed — rejected for cost. Scale runs the full 60k APIGen-MT trace SFT.
+> Final BFCL v3: 79.2. Skill emitted after this is the 3rd successful tool-calling improvement: `agent-tool-calling-improvement.md`.
+
+### Why this works
+
+The agent has the tools to research (`arxiv_search`, `web_search`, `hf_hub_file_fetch`), the harness to pilot at scale (`execution_run_background` on local / Jupyter / SSH / free Colab GPU), the discipline to evaluate (gated pilot criteria, numeric tradeoffs), the memory to learn (`search_memory` + auto-emitted skills), and the defenses to stop runaway loops (doom-loop detection, 150 % budget cap). The instruction binds them into one loop.
+
+Every part of this is editable from the in-app Agent Switcher. Disable steps, change the catalog, lower the budget cap, swap the eval gate — all via the Adaptive ML agent's system prompt.
 
 ## The Altai stack
 
@@ -173,7 +260,7 @@ The lab behind ALTAI, IsanAgent, and Afterimage. We build **open agentic infrast
 Two runtimes, one chat surface:
 
 - **`vercel`** — most agents. Streams via the Vercel AI SDK directly to your chosen provider. Tools (`edit`, `bash_run`, …) execute in the renderer and are gated by the current permission mode.
-- **`isanagent`** — Paper Reproducer / Notebook Assistant / Dataset Generator. Routes through the embedded Rust runtime with the execution harness, persistent memory, and ML-domain tools.
+- **`isanagent`** — Adaptive ML / Paper Reproducer / Notebook Assistant / Dataset Generator. Routes through the embedded Rust runtime with the execution harness, persistent memory, and ML-domain tools. The Adaptive ML agent in particular leans on the full surface: sub-agent DAGs for parallel pilots, cron for canary surveillance, memory for cross-run learning, and doom-loop defense to bound exploration.
 
 The split is automatic — switch agents from the toolbar and the runtime swaps under the hood.
 
