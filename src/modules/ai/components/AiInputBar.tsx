@@ -241,7 +241,7 @@ export function AiInputBar() {
     c.pickedCommands.length > 0;
 
   return (
-    <div className="shrink-0 border-t border-border/40 bg-transparent px-3 pt-1.5 pb-1.5">
+    <div className="shrink-0 bg-transparent px-3 pt-1.5 pb-1.5">
       <input
         ref={fileInputRef}
         type="file"
