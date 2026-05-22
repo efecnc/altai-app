@@ -59,6 +59,10 @@ pub struct ExitPayload {
 /// Spawn an external process with all three pipes wired up. Returns a
 /// stable id the frontend uses for subsequent writes/kills. The id is
 /// never reused.
+// The frontend invokes this command by argument name; bundling the inputs
+// into a single struct would force a renderer-side wrapper. Eight args is
+// the right shape here.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn proc_spawn(
     state: tauri::State<'_, ProcState>,

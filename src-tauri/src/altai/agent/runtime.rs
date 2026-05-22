@@ -276,9 +276,7 @@ pub async fn start_agent(runtime: &AgentRuntime, provider_name: &str, api_key: &
     }
 
     // Provider
-    let base_url = format!(
-        "https://generativelanguage.googleapis.com/v1beta"
-    );
+    let base_url = "https://generativelanguage.googleapis.com/v1beta".to_string();
     let resolved_base_url = if let Some(ref cfg) = workspace.config.provider {
         cfg.resolved_base_url().unwrap_or(base_url)
     } else {
