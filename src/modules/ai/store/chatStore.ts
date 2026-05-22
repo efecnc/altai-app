@@ -32,6 +32,7 @@ import {
   type SessionMeta,
 } from "../lib/sessions";
 import { pushRecentModel } from "../lib/modelPrefs";
+import { setDefaultModel } from "@/modules/settings/store";
 import { createContextAwareTransport } from "../lib/transport";
 import type { ToolContext } from "../tools/tools";
 
@@ -335,8 +336,15 @@ export const useChatStore = create<StoreState>((set, get) => ({
 
   selectedModelId: DEFAULT_MODEL_ID,
   setSelectedModelId: (id) => {
+    const prev = get().selectedModelId;
+    if (prev === id) return;
     set({ selectedModelId: id });
     void pushRecentModel(id);
+    // Persist the picked model so it survives an app restart. The dedup
+    // guard above keeps the App.tsx hydrate path (which mirrors
+    // preferences → chatStore on boot and on cross-window events) from
+    // writing the same value back through `setDefaultModel`.
+    void setDefaultModel(id);
   },
 
   mini: { open: false },
