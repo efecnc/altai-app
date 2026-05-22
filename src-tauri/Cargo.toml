@@ -1,6 +1,6 @@
 [package]
 name = "altai"
-version = "0.1.5"
+version = "0.5.1"
 description = "ALTAI — open agentic development environment powered by ALTAI"
 authors = ["ALTAI Dev Team"]
 edition = "2021"
