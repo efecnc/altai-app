@@ -8,7 +8,10 @@ import {
 import { cn } from "@/lib/utils";
 import {
   ArrowRight01Icon,
+  Book01Icon,
+  Book02Icon,
   CheckListIcon,
+  CloudDownloadIcon,
   Edit02Icon,
   EyeIcon,
   File01Icon,
@@ -18,7 +21,9 @@ import {
   FolderAddIcon,
   FolderOpenIcon,
   GlobalSearchIcon,
+  Link02Icon,
   RobotIcon,
+  Search01Icon,
   SparklesIcon,
   TerminalIcon,
   ToolsIcon,
@@ -44,12 +49,20 @@ const TOOL_META: Record<string, { label: string; icon: typeof File01Icon }> = {
   bash_logs: { label: "Logs", icon: TerminalIcon },
   bash_list: { label: "Jobs", icon: TerminalIcon },
   bash_kill: { label: "Kill", icon: TerminalIcon },
-  grep: { label: "Search", icon: GlobalSearchIcon },
+  // `grep` is local-tree search; the globe-with-magnifier glyph reads as
+  // web search to anyone scanning the chat. Keep the plain magnifier here
+  // and let `web_search` claim `GlobalSearchIcon`.
+  grep: { label: "Search", icon: Search01Icon },
   glob: { label: "Glob", icon: Folder01Icon },
   suggest_command: { label: "Suggest", icon: SparklesIcon },
   open_preview: { label: "Preview", icon: EyeIcon },
   run_subagent: { label: "Subagent", icon: RobotIcon },
   todo_write: { label: "Todos", icon: CheckListIcon },
+  web_search: { label: "Web search", icon: GlobalSearchIcon },
+  web_fetch: { label: "Fetch", icon: Link02Icon },
+  arxiv_search: { label: "arXiv search", icon: Book02Icon },
+  arxiv_fetch: { label: "arXiv paper", icon: Book01Icon },
+  hf_hub_file_fetch: { label: "HF Hub", icon: CloudDownloadIcon },
 };
 
 const STATUS_DOT: Record<ToolPart["state"], string> = {
@@ -108,8 +121,37 @@ function deriveSummary(toolName: string, input: unknown): string | null {
         ? `${items.length} item${items.length === 1 ? "" : "s"}`
         : null;
     }
+    case "web_search":
+    case "arxiv_search":
+      return str("query");
+    case "web_fetch": {
+      const url = str("url");
+      return url ? prettyUrl(url) : null;
+    }
+    case "arxiv_fetch":
+      return str("arxiv_id");
+    case "hf_hub_file_fetch": {
+      const repo = str("repo_id") ?? str("repo");
+      const path = str("path") ?? str("filename");
+      if (repo && path) return `${repo} · ${path}`;
+      return repo ?? path;
+    }
     default:
       return null;
+  }
+}
+
+// Strip protocol/trailing slash so the chip reads as `host/path` instead
+// of a noisy `https://…/?utm_source=…` blob. Falls back to the raw input
+// if it isn't parseable as a URL (occasionally the model passes a bare
+// host).
+function prettyUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const path = u.pathname === "/" ? "" : u.pathname.replace(/\/$/, "");
+    return `${u.hostname}${path}`;
+  } catch {
+    return url;
   }
 }
 
@@ -359,6 +401,24 @@ function ToolOutput({
 }
 
 function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
+  // String-output tools — IsanAgent's web/arxiv/hf tools all return a
+  // single text blob (markdown preview or Atom snippets) rather than a
+  // structured JSON object. The default renderer would dump them into a
+  // monospace `CodeBlockMini` which reads as a wall of text; we extract
+  // the meaningful bits instead.
+  if (typeof output === "string") {
+    if (toolName === "web_fetch" || toolName === "arxiv_fetch") {
+      return <FetchedDocOutput text={output} />;
+    }
+    if (toolName === "web_search") {
+      return <WebSearchOutput text={output} />;
+    }
+    if (toolName === "arxiv_search") {
+      return <ArxivSearchOutput text={output} />;
+    }
+    return null;
+  }
+
   if (!output || typeof output !== "object") return null;
   const o = output as Record<string, unknown>;
 
@@ -578,6 +638,229 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
   }
 
   return null;
+}
+
+// Trailing footer the Rust runtime appends to every web_fetch / arxiv_fetch
+// response so the model knows the full doc was saved to disk. Useful to the
+// model, useless visual noise to the user — we strip it for the preview and
+// surface the saved path as a small chip instead.
+const SAVED_PATH_RE =
+  /\n*---\nNote:\s*The full response \((\d+) lines,\s*(\d+)\s*bytes\)\s*was saved to\s*`([^`]+)`\.[\s\S]*$/;
+
+function parseSavedFooter(text: string): {
+  body: string;
+  lines: number | null;
+  bytes: number | null;
+  path: string | null;
+} {
+  const m = text.match(SAVED_PATH_RE);
+  if (!m) return { body: text, lines: null, bytes: null, path: null };
+  return {
+    body: text.slice(0, m.index ?? 0).trimEnd(),
+    lines: Number.parseInt(m[1], 10) || null,
+    bytes: Number.parseInt(m[2], 10) || null,
+    path: m[3] ?? null,
+  };
+}
+
+function extractDocTitle(markdown: string): string | null {
+  // Markdown heading takes precedence (Jina Reader prefixes one) — otherwise
+  // the first non-empty line, capped so a giant paragraph doesn't become the
+  // title.
+  for (const raw of markdown.split("\n").slice(0, 30)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const headed = line.match(/^#{1,6}\s+(.+)$/);
+    if (headed) return headed[1].trim().slice(0, 140);
+    return line.slice(0, 140);
+  }
+  return null;
+}
+
+function FetchedDocOutput({ text }: { text: string }) {
+  const { body, lines, bytes, path } = parseSavedFooter(text);
+  const title = extractDocTitle(body);
+  return (
+    <div className="space-y-1">
+      {title ? (
+        <div className="truncate text-[11.5px] font-medium text-foreground">
+          {title}
+        </div>
+      ) : null}
+      <pre className="max-h-60 overflow-auto rounded bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-foreground whitespace-pre-wrap">
+        {body || " "}
+      </pre>
+      {(lines != null || bytes != null || path) && (
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          {lines != null && bytes != null ? (
+            <span>
+              {lines.toLocaleString()} lines · {formatBytes(bytes)}
+            </span>
+          ) : null}
+          {path ? (
+            <span className="min-w-0 flex-1 truncate font-mono opacity-80">
+              saved · {path}
+            </span>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// IsanAgent's web_search ships the backend output verbatim. Jina Reader
+// returns a markdown list with one block per hit; DuckDuckGo Lite returns
+// `TITLE\nURL\nSNIPPET\n\n` repeated. Both decompose cleanly into the same
+// {title, url, snippet} shape by splitting on blank lines and pulling the
+// first URL-looking token out of each block.
+const URL_RE = /https?:\/\/[^\s)\]"']+/;
+
+type SearchHit = { title: string; url: string | null; snippet: string };
+
+function parseWebSearchResults(text: string): SearchHit[] {
+  const blocks = text
+    .split(/\n{2,}/)
+    .map((b) => b.trim())
+    .filter((b) => b.length > 0 && b !== "---");
+  const hits: SearchHit[] = [];
+  for (const block of blocks) {
+    const urlMatch = block.match(URL_RE);
+    const url = urlMatch ? urlMatch[0] : null;
+    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) continue;
+    // Markdown link `[Title](url)` → title is the [Title] portion.
+    const linked = lines[0].match(/^\[(.+?)\]\((https?:[^\s)]+)\)/);
+    const title = linked
+      ? linked[1]
+      : lines[0].replace(/^\d+\.\s*/, "").replace(URL_RE, "").trim() ||
+        (url ? prettyUrl(url) : lines[0]);
+    const snippet = lines
+      .slice(1)
+      .filter((l) => !URL_RE.test(l) || l.length > 80)
+      .join(" ")
+      .replace(URL_RE, "")
+      .trim();
+    hits.push({ title: title.slice(0, 200), url, snippet: snippet.slice(0, 280) });
+    if (hits.length >= 20) break;
+  }
+  return hits;
+}
+
+function WebSearchOutput({ text }: { text: string }) {
+  const hits = parseWebSearchResults(text);
+  if (hits.length === 0) {
+    return (
+      <div className="text-[11px] italic text-muted-foreground">
+        no parseable results — agent received {text.length.toLocaleString()} chars
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      {hits.map((h, i) => (
+        <div
+          key={i}
+          className="space-y-0.5 rounded border border-border/40 bg-card/40 px-2 py-1.5"
+        >
+          <div className="flex items-baseline gap-2">
+            {h.url ? (
+              <a
+                href={h.url}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="truncate text-[11.5px] font-medium text-foreground hover:underline"
+              >
+                {h.title}
+              </a>
+            ) : (
+              <span className="truncate text-[11.5px] font-medium text-foreground">
+                {h.title}
+              </span>
+            )}
+            {h.url ? (
+              <span className="shrink-0 truncate font-mono text-[10px] text-muted-foreground">
+                {prettyUrl(h.url)}
+              </span>
+            ) : null}
+          </div>
+          {h.snippet ? (
+            <div className="line-clamp-2 text-[11px] text-muted-foreground">
+              {h.snippet}
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// arXiv search format from IsanAgent is deterministic — `ID:`, `Title:`,
+// `Summary:` triplets separated by `\n\n---\n`. Render as cards with a
+// clickable arXiv link.
+type ArxivHit = { id: string; title: string; summary: string };
+
+function parseArxivResults(text: string): ArxivHit[] {
+  const out: ArxivHit[] = [];
+  for (const block of text.split(/\n*---\n*/)) {
+    const id = block.match(/^ID:\s*(.+)$/m)?.[1]?.trim();
+    const title = block.match(/^Title:\s*([\s\S]+?)(?=\nSummary:|$)/m)?.[1]?.trim();
+    const summary = block.match(/^Summary:\s*([\s\S]+)$/m)?.[1]?.trim();
+    if (!id && !title) continue;
+    out.push({
+      id: id ?? "",
+      title: (title ?? "").slice(0, 220),
+      summary: (summary ?? "").slice(0, 360),
+    });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+function ArxivSearchOutput({ text }: { text: string }) {
+  if (text.trim() === "No results found.") {
+    return (
+      <div className="text-[11px] italic text-muted-foreground">no results</div>
+    );
+  }
+  const hits = parseArxivResults(text);
+  if (hits.length === 0) {
+    return (
+      <pre className="max-h-60 overflow-auto rounded bg-muted/40 p-2 font-mono text-[11px] whitespace-pre-wrap">
+        {text}
+      </pre>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      {hits.map((h, i) => (
+        <div
+          key={`${h.id}-${i}`}
+          className="space-y-0.5 rounded border border-border/40 bg-card/40 px-2 py-1.5"
+        >
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[11.5px] font-medium text-foreground">
+              {h.title || h.id}
+            </span>
+            {h.id ? (
+              <a
+                href={`https://arxiv.org/abs/${h.id}`}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="shrink-0 font-mono text-[10px] text-muted-foreground hover:text-foreground hover:underline"
+              >
+                {h.id}
+              </a>
+            ) : null}
+          </div>
+          {h.summary ? (
+            <div className="line-clamp-2 text-[11px] text-muted-foreground">
+              {h.summary}
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function BashRunOutput({ data }: { data: Record<string, unknown> }) {
