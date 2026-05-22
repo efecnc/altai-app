@@ -63,7 +63,7 @@ It's a desktop app, not a service. Your code never leaves your machine; only the
 - 🛡️ **Three permission modes per session** — *Ask before edit* (default), *Edit automatically*, or *Bypass permissions* (gated behind an explicit Settings toggle). The agent never silently mutates your repo.
 - ✨ **[Adaptive ML agent](#-adaptive-ml-agent)** — open-ended ML requests (fine-tune, RAG, quantize, serve, evaluate, debug a training run) become an 8-step *discover → research → enumerate → pilot → evaluate → scale → verify → persist* loop. The agent surveys current literature, runs the smallest verifiable pilots in parallel, presents numeric tradeoffs, and only commits after evidence. No hard-coded recipes.
 - 🤖 **10 built-in agents, fully editable** — Coder, Architect, Code Reviewer, Security, Designer, plus four ML-focused agents (**Adaptive ML**, Paper Reproducer, Notebook Assistant, Dataset Generator). Override instructions, disable what you don't need, reset to defaults at any time.
-- 🧠 **Dual agent runtime** — general agents stream through the Vercel AI SDK to your chosen provider; ML agents route through the embedded [**IsanAgent**](#-isanagent) Rust runtime with 44 tools, sub-agent DAGs, SQLite FTS5 memory, and a workspace-scoped execution harness (local · Jupyter · SSH · free Colab GPU).
+- 🧠 **Single embedded agent runtime** — every chat goes through the in-process [**IsanAgent**](#-isanagent) Rust runtime: 44 tools, sub-agent DAGs, SQLite FTS5 memory, and a workspace-scoped execution harness (local · Jupyter · SSH · free Colab GPU). The model picker in the toolbar selects which provider IsanAgent calls (Anthropic native; OpenAI, xAI, Cerebras, Groq, DeepSeek, Mistral, OpenRouter, and Gemini via OpenAI-compatible endpoints; or self-hosted options like LM Studio, MLX, and generic OpenAI-compatible servers).
 - 🔑 **Bring your own keys** — Anthropic, OpenAI, Google, Groq, xAI, Cerebras, plus any OpenAI-compatible endpoint (LM Studio, MLX, Ollama). Keys live in a mode-0600 file under the app's local data dir on macOS and Linux, and in Credential Manager on Windows — never round-tripped through a cloud service, never bundled with the app.
 - 🖥️ **First-class terminal** — xterm.js + portable-pty with shell integration for zsh, bash, fish, PowerShell. Emits OSC 7 (cwd) and OSC 133 (prompt boundaries) so the agent tracks every command boundary the way iTerm and Warp do.
 - ✏️ **Editor with LSP** — CodeMirror 6, 20+ languages lazy-loaded, vim mode, 9 themes, inline diffs.
@@ -96,22 +96,22 @@ Grab the binary for your platform from the [Releases page](https://github.com/ef
 
 ## Agents
 
-ALTAI ships ten first-class agents. Each one is editable from the in-app **Agent Switcher** — change the system prompt, rename, disable, or reset to default. The runtime is auto-selected based on the agent.
+ALTAI ships ten first-class agents. Each one is editable from the in-app **Agent Switcher** — change the system prompt, rename, disable, or reset to default. Every agent runs on the embedded IsanAgent runtime; the picker chooses the persona, the toolbar's model dropdown chooses the upstream provider.
 
-The picker groups the four `isanagent`-routed agents (**Adaptive ML**, Paper Reproducer, Notebook Assistant, Dataset Generator) under an **ML Agents ▸** submenu so the general-purpose agents stay one click away. The active agent — wherever it lives — is always reflected on the toolbar trigger.
+The picker groups the four ML-domain agents (**Adaptive ML**, Paper Reproducer, Notebook Assistant, Dataset Generator) under an **ML Agents ▸** submenu so the general-purpose agents stay one click away. The active agent is always reflected on the toolbar trigger.
 
-| Agent                  | Domain                                       | Runtime         | Highlights                                                                            |
-| ---------------------- | -------------------------------------------- | --------------- | ------------------------------------------------------------------------------------- |
-| **Adaptive ML** ✨     | Open-ended ML requests                        | `isanagent`     | Discovers its own solution. Research → enumerate → pilot → evaluate → scale → verify → persist. See [section below](#-adaptive-ml-agent). |
-| **Coder**              | General-purpose engineering                  | `vercel`        | Pair-programs in your terminal, matches existing patterns, runs project checks.       |
-| **Architect**          | System design & tradeoffs                    | `vercel`        | Restates the problem, surfaces 2–3 options with real tradeoffs before any code.        |
-| **Code Reviewer**      | Diff review                                  | `vercel`        | Flags logic bugs, races, perf cliffs, security — skips formatting nits.                |
-| **Security**           | Threat modeling                              | `vercel`        | Walks trust boundaries, scores severity, proposes class-of-bug fixes.                  |
-| **Designer**           | UI/UX critique                               | `vercel`        | Specific, opinionated taste; Tailwind/CSS values where useful.                        |
-| **Paper Reproducer**   | arXiv → working code                         | `isanagent`     | Reads the paper, extracts the architecture, emits runnable PyTorch.                    |
-| **Notebook Assistant** | Jupyter / data-science workflows             | `isanagent`     | Cell-scoped edits, visualization-first, runs cells via the execution harness.          |
-| **Dataset Generator**  | Synthetic SFT / DPO / tool-calling datasets  | `isanagent`     | Built on top of [**Afterimage**](#-afterimage). Pilot → verify → scale.                |
-| **Custom**             | Bring your own                               | configurable    | Define your own agent, pick the runtime, tune the prompt.                              |
+| Agent                  | Domain                                       | Highlights                                                                            |
+| ---------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Adaptive ML** ✨     | Open-ended ML requests                        | Discovers its own solution. Research → enumerate → pilot → evaluate → scale → verify → persist. See [section below](#-adaptive-ml-agent). |
+| **Coder**              | General-purpose engineering                  | Pair-programs in your terminal, matches existing patterns, runs project checks.       |
+| **Architect**          | System design & tradeoffs                    | Restates the problem, surfaces 2–3 options with real tradeoffs before any code.        |
+| **Code Reviewer**      | Diff review                                  | Flags logic bugs, races, perf cliffs, security — skips formatting nits.                |
+| **Security**           | Threat modeling                              | Walks trust boundaries, scores severity, proposes class-of-bug fixes.                  |
+| **Designer**           | UI/UX critique                               | Specific, opinionated taste; Tailwind/CSS values where useful.                        |
+| **Paper Reproducer**   | arXiv → working code                         | Reads the paper, extracts the architecture, emits runnable PyTorch.                    |
+| **Notebook Assistant** | Jupyter / data-science workflows             | Cell-scoped edits, visualization-first, runs cells via the execution harness.          |
+| **Dataset Generator**  | Synthetic SFT / DPO / tool-calling datasets  | Built on top of [**Afterimage**](#-afterimage). Pilot → verify → scale.                |
+| **Custom**             | Bring your own                               | Define your own agent, tune the system prompt; runtime is IsanAgent.                   |
 
 <!--
   Drop an agent-switcher screenshot or GIF here.
@@ -257,12 +257,11 @@ The lab behind ALTAI, IsanAgent, and Afterimage. We build **open agentic infrast
 └─────────────────────────────────────────────────┘
 ```
 
-Two runtimes, one chat surface:
+One runtime, one chat surface:
 
-- **`vercel`** — most agents. Streams via the Vercel AI SDK directly to your chosen provider. Tools (`edit`, `bash_run`, …) execute in the renderer and are gated by the current permission mode.
-- **`isanagent`** — Adaptive ML / Paper Reproducer / Notebook Assistant / Dataset Generator. Routes through the embedded Rust runtime with the execution harness, persistent memory, and ML-domain tools. The Adaptive ML agent in particular leans on the full surface: sub-agent DAGs for parallel pilots, cron for canary surveillance, memory for cross-run learning, and doom-loop defense to bound exploration.
-
-The split is automatic — switch agents from the toolbar and the runtime swaps under the hood.
+- Every chat — Coder, Architect, Reviewer, Security, Designer, the four ML agents, and any custom agent you create — runs on the embedded **IsanAgent** Rust runtime in-process. No sidecar, no IPC over the network.
+- The toolbar's **model picker** chooses which upstream provider IsanAgent calls. Anthropic uses the native Messages API; everything else routes through the OpenAI-compatible chat-completions endpoint for that provider (xAI, Cerebras, Groq, DeepSeek, Mistral, OpenRouter, Gemini's OpenAI-compat endpoint, and self-hosted LM Studio / MLX / generic OpenAI-compatible servers).
+- The agent's `instructions` field (editable in **Settings → Agents**) is appended to IsanAgent's compiled system prompt at runtime startup, so personas survive across the full runtime — sub-agent DAGs, persistent memory, the execution harness, and the doom-loop defense.
 
 <!--
   Drop a paper-reproducer GIF here.
