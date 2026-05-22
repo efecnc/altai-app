@@ -5,18 +5,28 @@ use tauri::State;
 ///
 /// The caller should pass provider/model info so the runtime can
 /// bootstrap an LLM provider. Falls back to workspace config if empty.
+///
+/// `instructions` is the persona override from the active altai agent
+/// (the `instructions` field on Agent). When non-empty, it is appended
+/// to the workspace system prompt so custom personas survive routing
+/// through IsanAgent.
 #[tauri::command]
 pub async fn agent_start(
     state: State<'_, AgentRuntime>,
     provider_name: Option<String>,
     api_key: Option<String>,
     model_name: Option<String>,
+    instructions: Option<String>,
 ) -> Result<(), String> {
     let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
     let key = api_key.unwrap_or_default();
     let model = model_name.unwrap_or_else(|| "gemini-2.5-flash".to_string());
+    let persona = instructions
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
-    runtime::start_agent(&state, &pname, &key, &model).await
+    runtime::start_agent(&state, &pname, &key, &model, persona).await
 }
 
 /// Send a user message into the IsanAgent bus.

@@ -636,7 +636,15 @@ async function sendViaIsanAgent(text: string): Promise<boolean> {
       modelName = "deepseek-chat";
     }
 
-    await invoke("agent_start", { providerName, apiKey, modelName });
+    // Pass the active agent's instructions through so IsanAgent honors the
+    // selected persona (Coder, Architect, custom agents, etc.). The runtime
+    // captures this at first-start; switching agents mid-session does not
+    // yet reapply — that needs a runtime restart and lives in a follow-up.
+    const agentsState = useAgentsStore.getState();
+    const activeAgent = agentsState.all().find((a) => a.id === agentsState.activeId);
+    const instructions = activeAgent?.instructions?.trim() || undefined;
+
+    await invoke("agent_start", { providerName, apiKey, modelName, instructions });
   } catch (e) {
     store.patchAgentMeta({
       status: "error",
