@@ -158,7 +158,7 @@ export function compactModelMessagesDetailed(
   let working = messages;
   let approxTokens = approxBytes(working) / 4;
 
-  if (approxTokens >= 0.55 * contextLimit) {
+  if (approxTokens >= 0.4 * contextLimit) {
     const r = dropSupersededReads(working);
     if (r.touched) {
       working = r.out;
@@ -167,7 +167,7 @@ export function compactModelMessagesDetailed(
     }
   }
 
-  if (approxTokens < 0.7 * contextLimit) {
+  if (approxTokens < 0.5 * contextLimit) {
     return {
       messages: working,
       compacted: dropped > 0,
@@ -189,7 +189,7 @@ export function compactModelMessagesDetailed(
     if (local) {
       out[i] = { ...out[i], content: next } as ModelMessage;
       dropped++;
-      if (approxBytes(out) / 4 < 0.6 * contextLimit) break;
+      if (approxBytes(out) / 4 < 0.4 * contextLimit) break;
     }
   }
 

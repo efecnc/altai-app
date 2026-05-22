@@ -76,11 +76,41 @@ pub enum Event {
     },
 }
 
+/// Identifies a particular `(provider, model, key, base_url, persona)`
+/// configuration of the running runtime. When `start_agent` is called
+/// with a different fingerprint we tear down the existing bus and
+/// agent node and re-init — without this guard the runtime locked in
+/// the first model the user picked and silently ignored every later
+/// switch, surfacing as cross-provider 4xx errors that pointed at the
+/// previous endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeFingerprint {
+    provider_name: String,
+    model_name: String,
+    api_key: String,
+    base_url: String,
+    persona: String,
+}
+
 /// Runtime state managed by Tauri — holds the IsanAgent channel and bus.
 pub struct AgentRuntime {
     pub channel: Arc<TauriChannel>,
     pub app: AppHandle,
-    initialized: std::sync::Mutex<bool>,
+    /// `Some` once a runtime is up; the value records which config it
+    /// was started with so subsequent `start_agent` calls can decide
+    /// between no-op (same fp), full restart (different fp), or first
+    /// init (None). Held across an `await` (channel teardown) so it
+    /// must be a `tokio::sync::Mutex`, not `std::sync::Mutex`.
+    current_fingerprint: tokio::sync::Mutex<Option<RuntimeFingerprint>>,
+    /// Lazily-initialized memory backend. Survives model switches so
+    /// chat history (which IsanAgent stores in SQLite keyed by the
+    /// stable channel chat_id) actually transfers to the new model
+    /// instead of getting re-opened on each reconfig. The DB file
+    /// itself was already shared across reinits, but spinning up a
+    /// fresh actor + connection on every model switch was wasted work.
+    memory_node: tokio::sync::Mutex<
+        Option<NodeHandle<isanagent::memory::MemoryMessage>>,
+    >,
 }
 
 pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -90,7 +120,8 @@ pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(AgentRuntime {
         channel,
         app: app.clone(),
-        initialized: std::sync::Mutex::new(false),
+        current_fingerprint: tokio::sync::Mutex::new(None),
+        memory_node: tokio::sync::Mutex::new(None),
     });
 
     Ok(())
@@ -120,12 +151,42 @@ pub async fn start_agent(
     persona_instructions: Option<&str>,
     base_url_override: Option<&str>,
 ) -> Result<(), String> {
-    {
-        let mut guard = runtime.initialized.lock().map_err(|e| e.to_string())?;
-        if *guard {
-            return Ok(()); // Already initialized
-        }
-        *guard = true;
+    let new_fp = RuntimeFingerprint {
+        provider_name: provider_name.to_string(),
+        model_name: model_name.to_string(),
+        api_key: api_key.to_string(),
+        base_url: base_url_override.unwrap_or("").to_string(),
+        persona: persona_instructions.unwrap_or("").to_string(),
+    };
+
+    // Hold the fingerprint guard for the duration of the init so two
+    // concurrent calls can't race two runtimes into existence. The guard
+    // is awaited across teardown + spawn work — `tokio::sync::Mutex` is
+    // required for that.
+    let mut fp_guard = runtime.current_fingerprint.lock().await;
+
+    // Same config — runtime is already up with these exact credentials,
+    // model, base URL, and persona. Skip the bootstrap entirely (the
+    // original behavior, just now keyed on config instead of a boolean).
+    if fp_guard.as_ref() == Some(&new_fp) {
+        return Ok(());
+    }
+
+    // Different config — tear down whatever runtime is in flight so the
+    // bus router task exits and drops the old `agent_node` (and with it
+    // the old LLM provider, session manager, and outbound senders).
+    //
+    // The cascade: `channel.stop()` drops the only retained
+    // `Sender<BusMessage>`, the bus router's `bus_rx.recv()` resolves
+    // to `None`, the task exits, `agent_node` is dropped, its captured
+    // `global_outbound_tx` clones drop, and the outbound router task
+    // exits when `global_outbound_rx` drains.
+    //
+    // Errors are ignored — if the channel is in an inconsistent state
+    // we'd rather proceed to a fresh init than fail the user's send.
+    if fp_guard.is_some() {
+        let _ = runtime.channel.cancel().await;
+        let _ = runtime.channel.stop().await;
     }
 
     let app = runtime.app.clone();
@@ -142,28 +203,42 @@ pub async fn start_agent(
         format!("Failed to load IsanAgent workspace: {}", e)
     })?;
 
-    // Memory (SQLite)
-    let db_path = workspace
-        .dir
-        .join(".system_generated")
-        .join("agent_memory.db");
-    if let Some(parent) = db_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let db_path_str = db_path
-        .to_str()
-        .ok_or("workspace DB path is not valid UTF-8")?;
+    // Memory (SQLite) — lazy-init once and keep alive across model
+    // switches. IsanAgent reads chat history by session_key
+    // (`channel:chat_id:thread`), and both `channel.name()` and
+    // `channel.chat_id` are stable across reinits. So as long as the
+    // memory actor outlives the per-model agent node, the next model
+    // sees the prior conversation transparently.
+    let memory_node = {
+        let mut guard = runtime.memory_node.lock().await;
+        if let Some(existing) = guard.as_ref() {
+            existing.clone()
+        } else {
+            let db_path = workspace
+                .dir
+                .join(".system_generated")
+                .join("agent_memory.db");
+            if let Some(parent) = db_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let db_path_str = db_path
+                .to_str()
+                .ok_or("workspace DB path is not valid UTF-8")?;
 
-    let memory_actor =
-        isanagent::memory::SqliteMemoryActor::new(db_path_str).map_err(|e| {
-            format!("Failed to initialize SqliteMemoryActor: {}", e)
-        })?;
-    let memory_node = NodeHandle::<isanagent::memory::MemoryMessage>::new(
-        memory_actor,
-        100,
-        1,
-        Duration::from_millis(5),
-    );
+            let memory_actor = isanagent::memory::SqliteMemoryActor::new(db_path_str)
+                .map_err(|e| {
+                    format!("Failed to initialize SqliteMemoryActor: {}", e)
+                })?;
+            let node = NodeHandle::<isanagent::memory::MemoryMessage>::new(
+                memory_actor,
+                100,
+                1,
+                Duration::from_millis(5),
+            );
+            *guard = Some(node.clone());
+            node
+        }
+    };
 
     let session_manager = SessionManager::new(memory_node.clone());
     let skills = SkillRegistry::new(workspace.skills_path());
@@ -435,6 +510,11 @@ pub async fn start_agent(
             role: "system".to_string(),
         },
     );
+
+    // Commit the new fingerprint last — if any of the spawn/init steps
+    // above bailed early we'd have left a half-built runtime tagged as
+    // "ready", and the next call would skip re-initializing it.
+    *fp_guard = Some(new_fp);
 
     Ok(())
 }

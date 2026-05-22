@@ -46,13 +46,19 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         break;
 
       case "tool_call_start":
+        // The status pill stays for at-a-glance "what's running now" —
+        // but we also push the tool into the message thread so the
+        // history shows every call inline with input/output instead of
+        // each new tool overwriting the last one on a single status line.
         store.patchAgentMeta({ status: "streaming", step: payload.name });
+        store.startNativeToolCall(payload.id, payload.name, payload.input);
         break;
 
       case "tool_call_end":
         if (payload.error) {
           store.patchAgentMeta({ step: `${payload.id} (error)` });
         }
+        store.endNativeToolCall(payload.id, payload.output, payload.error);
         break;
 
       case "thinking":
@@ -68,10 +74,12 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
 
       case "done":
         store.patchAgentMeta({ status: "idle", step: null });
+        store.closeAssistantTurn();
         break;
 
       case "error":
         store.patchAgentMeta({ status: "error", error: payload.message });
+        store.closeAssistantTurn();
         break;
 
       case "notebook_output":

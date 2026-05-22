@@ -150,6 +150,28 @@ type StoreState = {
   appendNativeMessage: (content: string, role: string) => void;
   clearNativeMessages: () => void;
 
+  /**
+   * Id of the assistant `UIMessage` that is currently accumulating parts
+   * for the in-flight turn. Tool calls + interleaved text from the native
+   * runtime collapse into this message so the UI renders one bubble with
+   * inline tool entries instead of fragmenting per event.
+   *
+   * `null` when no turn is in flight — the next assistant event opens a
+   * fresh message.
+   */
+  currentAssistantTurnId: string | null;
+  startNativeToolCall: (
+    toolCallId: string,
+    toolName: string,
+    input: unknown,
+  ) => void;
+  endNativeToolCall: (
+    toolCallId: string,
+    output: unknown,
+    errorText?: string,
+  ) => void;
+  closeAssistantTurn: () => void;
+
   /** Whether the Paper Import panel is open in the input bar. */
   paperImportOpen: boolean;
   setPaperImportOpen: (open: boolean) => void;
@@ -401,19 +423,125 @@ export const useChatStore = create<StoreState>((set, get) => ({
   setBackendMode: (mode) => set({ backendMode: mode }),
 
   nativeMessages: [],
+  currentAssistantTurnId: null,
   appendNativeMessage: (content, role) => {
     const validRole = (role === "user" || role === "assistant")
       ? role
       : "assistant";
-    const id = `native-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const msg: UIMessage = {
-      id,
-      role: validRole,
-      parts: [{ type: "text", text: content }],
-    };
-    set((s) => ({ nativeMessages: [...s.nativeMessages, msg] }));
+
+    // User turn closes any in-flight assistant turn so the next assistant
+    // event begins a fresh bubble. New user messages are always appended
+    // as their own UIMessage.
+    if (validRole === "user") {
+      const id = `native-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const msg: UIMessage = {
+        id,
+        role: "user",
+        parts: [{ type: "text", text: content }],
+      };
+      set((s) => ({
+        nativeMessages: [...s.nativeMessages, msg],
+        currentAssistantTurnId: null,
+      }));
+      return;
+    }
+
+    // Assistant content folds into the current turn so text emitted
+    // before/after tool calls stays inside the same bubble. If no turn
+    // is open we mint a new assistant UIMessage and remember its id.
+    set((s) => {
+      const turnId = s.currentAssistantTurnId;
+      if (turnId) {
+        const next = s.nativeMessages.map((m) =>
+          m.id === turnId
+            ? {
+                ...m,
+                parts: [
+                  ...m.parts,
+                  { type: "text" as const, text: content },
+                ],
+              }
+            : m,
+        );
+        return { nativeMessages: next };
+      }
+      const id = `native-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const msg: UIMessage = {
+        id,
+        role: "assistant",
+        parts: [{ type: "text", text: content }],
+      };
+      return {
+        nativeMessages: [...s.nativeMessages, msg],
+        currentAssistantTurnId: id,
+      };
+    });
   },
-  clearNativeMessages: () => set({ nativeMessages: [] }),
+  startNativeToolCall: (toolCallId, toolName, input) => {
+    // Cast to the loose UIMessagePart shape — `dynamic-tool` lives in
+    // the ai-sdk type space and isn't worth importing through here just
+    // for one assignment. AiChat.tsx renders any part whose `type`
+    // starts with "tool-" or equals "dynamic-tool", so the shape below
+    // matches what `RenderedTool` expects.
+    const toolPart = {
+      type: "dynamic-tool" as const,
+      toolName,
+      toolCallId,
+      state: "input-available" as const,
+      input,
+    } as unknown as UIMessage["parts"][number];
+
+    set((s) => {
+      const turnId = s.currentAssistantTurnId;
+      if (turnId) {
+        const next = s.nativeMessages.map((m) =>
+          m.id === turnId
+            ? { ...m, parts: [...m.parts, toolPart] }
+            : m,
+        );
+        return { nativeMessages: next };
+      }
+      const id = `native-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const msg: UIMessage = {
+        id,
+        role: "assistant",
+        parts: [toolPart],
+      };
+      return {
+        nativeMessages: [...s.nativeMessages, msg],
+        currentAssistantTurnId: id,
+      };
+    });
+  },
+  endNativeToolCall: (toolCallId, output, errorText) => {
+    set((s) => {
+      // Walk from the end — the part we just completed is almost always
+      // on the most recent assistant message. Bail out untouched if no
+      // match (shouldn't happen, but the bridge is best-effort).
+      let touched = false;
+      const nextMessages = s.nativeMessages.map((m) => {
+        if (touched) return m;
+        const idx = m.parts.findIndex(
+          (p) =>
+            (p as { toolCallId?: string }).toolCallId === toolCallId,
+        );
+        if (idx === -1) return m;
+        touched = true;
+        const updatedPart = {
+          ...(m.parts[idx] as object),
+          state: errorText ? "output-error" : "output-available",
+          ...(errorText ? { errorText } : { output }),
+        } as unknown as UIMessage["parts"][number];
+        const nextParts = [...m.parts];
+        nextParts[idx] = updatedPart;
+        return { ...m, parts: nextParts };
+      });
+      return touched ? { nativeMessages: nextMessages } : {};
+    });
+  },
+  closeAssistantTurn: () => set({ currentAssistantTurnId: null }),
+  clearNativeMessages: () =>
+    set({ nativeMessages: [], currentAssistantTurnId: null }),
 
   paperImportOpen: false,
   setPaperImportOpen: (open) => set({ paperImportOpen: open }),
@@ -475,7 +603,13 @@ export const useChatStore = create<StoreState>((set, get) => ({
             meta,
             ...current.slice(activeIdx + 1),
           ];
-    set({ sessions: next, activeSessionId: id, agentMeta: IDLE_META, nativeMessages: [] });
+    set({
+      sessions: next,
+      activeSessionId: id,
+      agentMeta: IDLE_META,
+      nativeMessages: [],
+      currentAssistantTurnId: null,
+    });
     void saveSessionsList(next);
     void saveActiveId(id);
     return id;
@@ -488,7 +622,12 @@ export const useChatStore = create<StoreState>((set, get) => ({
     // Lazily seed the chat with persisted messages the first time we open
     // this session. Subsequent switches reuse the cached Chat instance.
     const flip = () => {
-      set({ activeSessionId: id, agentMeta: IDLE_META, nativeMessages: [] });
+      set({
+        activeSessionId: id,
+        agentMeta: IDLE_META,
+        nativeMessages: [],
+        currentAssistantTurnId: null,
+      });
       void saveActiveId(id);
     };
     if (chats.has(id) || seedMessages.has(id)) {
