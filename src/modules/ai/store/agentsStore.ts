@@ -110,9 +110,9 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   setActiveId: (id) => {
     set({ activeId: id });
     void saveActiveAgentId(id).then(broadcast);
-    // Every chat now routes through the embedded IsanAgent runtime. The
-    // `ISANAGENT_AGENT_IDS` set is retained for UI grouping only (the
-    // picker's "ML Agents" submenu); it no longer controls transport.
+    // Every chat now routes through the embedded IsanAgent runtime, so this
+    // is no longer a conditional. The "ML Agents" submenu in the picker
+    // (defined in lib/agents.ts) is UI-only grouping; nothing here.
     useChatStore.getState().setBackendMode("isanagent");
   },
   upsert: (agent) => {

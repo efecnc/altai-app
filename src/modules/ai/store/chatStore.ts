@@ -3,7 +3,7 @@ import {
   type ChatTransport,
   lastAssistantMessageIsCompleteWithApprovalResponses,
 } from "ai";
-import { invoke } from "@tauri-apps/api/core";
+import { native } from "../lib/native";
 import { create } from "zustand";
 import {
   DEFAULT_MODEL_ID,
@@ -320,7 +320,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
   setApprovalResponder: (fn) => set({ approvalResponder: fn }),
   respondToApproval: (approvalId, approved) => {
     if (get().backendMode === "isanagent") {
-      void invoke("agent_approve", { approvalId, approved });
+      void native.agentApprove(approvalId, approved);
       return;
     }
     const fn = get().approvalResponder;
@@ -626,6 +626,7 @@ async function sendViaIsanAgent(text: string): Promise<boolean> {
     mlxBaseURL: prefs.mlxBaseURL,
     mlxModelId: prefs.mlxModelId,
     openaiCompatibleBaseURL: prefs.openaiCompatibleBaseURL,
+    openaiCompatibleModelId: prefs.openaiCompatibleModelId,
   });
   if (!resolution.ok) {
     store.patchAgentMeta({ status: "error", error: resolution.error });
@@ -642,7 +643,7 @@ async function sendViaIsanAgent(text: string): Promise<boolean> {
   const instructions = activeAgent?.instructions?.trim() || undefined;
 
   try {
-    await invoke("agent_start", {
+    await native.agentStart({
       providerName,
       apiKey,
       modelName,
@@ -663,14 +664,14 @@ async function sendViaIsanAgent(text: string): Promise<boolean> {
   store.appendNativeMessage(text, "user");
 
   // Send just the text — IsanAgent manages its own system prompt and tools
-  await invoke("agent_send", { message: text });
+  await native.agentSend(text);
   return true;
 }
 
 export function stop(): void {
   const state = useChatStore.getState();
   if (state.backendMode === "isanagent") {
-    void invoke("agent_cancel");
+    void native.agentCancel();
     state.patchAgentMeta({ status: "idle", step: null });
     return;
   }

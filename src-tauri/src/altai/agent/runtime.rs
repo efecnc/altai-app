@@ -305,7 +305,11 @@ pub async fn start_agent(
     let resolved_base_url = if let Some(override_url) = base_url_override {
         override_url.to_string()
     } else {
-        let default = "https://generativelanguage.googleapis.com/v1beta".to_string();
+        // Gemini's OpenAI-compatible chat-completions endpoint. The runtime
+        // POSTs to `base_url` as-is (no path appended), so this must be the
+        // *full* endpoint — `…/v1beta` alone would 404.
+        let default = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+            .to_string();
         if let Some(ref cfg) = workspace.config.provider {
             cfg.resolved_base_url().unwrap_or(default)
         } else {

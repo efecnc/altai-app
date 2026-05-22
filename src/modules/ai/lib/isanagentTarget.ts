@@ -24,6 +24,7 @@ export type IsanAgentPrefsView = {
   mlxBaseURL?: string;
   mlxModelId?: string;
   openaiCompatibleBaseURL?: string;
+  openaiCompatibleModelId?: string;
 };
 
 // IsanAgent's OpenAI-compat client treats the base URL as the FULL endpoint
@@ -56,6 +57,16 @@ export function resolveIsanAgentTarget(
         ok: false,
         error:
           "MLX: no model id set. Open Settings → Models and enter the model id served by mlx_lm.server.",
+      };
+    }
+    modelName = id;
+  } else if (model.id === "openai-compatible-custom") {
+    const id = prefs.openaiCompatibleModelId?.trim();
+    if (!id) {
+      return {
+        ok: false,
+        error:
+          "OpenAI-compatible: no model id set. Open Settings → Models and enter the model id served by your endpoint.",
       };
     }
     modelName = id;

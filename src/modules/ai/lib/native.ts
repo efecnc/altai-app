@@ -357,4 +357,16 @@ export const native = {
       name: name ?? null,
       workspace: currentWorkspaceEnv(),
     }),
+  agentStart: (params: {
+    providerName: string;
+    apiKey: string;
+    modelName: string;
+    instructions?: string;
+    baseUrl?: string;
+  }) => invoke<void>("agent_start", params),
+  agentSend: (message: string) =>
+    invoke<void>("agent_send", { message }),
+  agentCancel: () => invoke<void>("agent_cancel"),
+  agentApprove: (approvalId: string, approved: boolean) =>
+    invoke<void>("agent_approve", { approvalId, approved }),
 };
