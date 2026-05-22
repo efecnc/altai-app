@@ -385,7 +385,11 @@ export const useChatStore = create<StoreState>((set, get) => ({
     set((s) => ({ agentMeta: { ...s.agentMeta, ...patch } })),
   resetAgentMeta: () => set({ agentMeta: IDLE_META }),
 
-  backendMode: "vercel",
+  // Every chat routes through the embedded IsanAgent runtime. The
+  // `"vercel"` branches in this store, composer, and the agent event
+  // bridge are kept as dead code until PR 4 removes the Vercel AI SDK
+  // path and its dependencies entirely.
+  backendMode: "isanagent",
   setBackendMode: (mode) => set({ backendMode: mode }),
 
   nativeMessages: [],

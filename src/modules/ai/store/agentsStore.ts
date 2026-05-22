@@ -4,7 +4,6 @@ import {
   applyOverride,
   BUILTIN_AGENTS,
   diffAgainstBuiltin,
-  ISANAGENT_AGENT_IDS,
   loadAgents,
   newAgentId,
   saveActiveAgentId,
@@ -111,9 +110,10 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   setActiveId: (id) => {
     set({ activeId: id });
     void saveActiveAgentId(id).then(broadcast);
-    // Switch transport based on agent type
-    const mode = ISANAGENT_AGENT_IDS.has(id) ? "isanagent" : "vercel";
-    useChatStore.getState().setBackendMode(mode);
+    // Every chat now routes through the embedded IsanAgent runtime. The
+    // `ISANAGENT_AGENT_IDS` set is retained for UI grouping only (the
+    // picker's "ML Agents" submenu); it no longer controls transport.
+    useChatStore.getState().setBackendMode("isanagent");
   },
   upsert: (agent) => {
     if (agent.builtIn) {
