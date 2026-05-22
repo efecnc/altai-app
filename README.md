@@ -92,7 +92,7 @@ Grab the binary for your platform from the [Releases page](https://github.com/ef
 | **Linux (.deb)**          | `altai_<version>_amd64.deb`           | `sudo apt install ./altai_*.deb`                            |
 | **Linux (.AppImage)**     | `altai_<version>_amd64.AppImage`      | `chmod +x` and run                                          |
 
-Or build from source — see [Development](#development).
+> **Building from source skips the security warnings entirely** — no `xattr`, no SmartScreen, no Gatekeeper. The locally-produced binary is implicitly trusted on the machine that produced it. See **[INSTALL.md → Build from source](INSTALL.md#build-from-source)** for the full prerequisites + commands + per-platform troubleshooting.
 
 ## Agents
 
@@ -299,16 +299,20 @@ Requires Rust stable, Node 22+, pnpm 9+, and the platform-specific [Tauri prereq
 git clone https://github.com/efecnc/altai-app.git
 cd altai-app
 pnpm install
-pnpm tauri:dev
+pnpm tauri:dev          # hot-reload dev mode
+pnpm tauri:build        # production bundle (.dmg / .msi / .deb / .AppImage)
 ```
 
-Type-check and lint:
+Pre-PR checks (also gated by CI):
 
 ```bash
-pnpm build                                      # tsc + vite build
+pnpm build                                          # tsc + vite production build
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml -- -W clippy::all
+pnpm test                                           # vitest unit tests
 ```
+
+Full per-platform prerequisites, bundle output paths, and source-build troubleshooting live in **[INSTALL.md → Build from source](INSTALL.md#build-from-source)** — recommended even if you just want to avoid the unsigned-binary warnings on download.
 
 ## Release
 
