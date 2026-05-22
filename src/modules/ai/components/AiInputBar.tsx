@@ -337,6 +337,7 @@ export function AiInputBar() {
                   }
                 }}
                 placeholder="Ask ALTAI anything…  @ files  # snippets"
+                aria-label="Message ALTAI"
                 rows={1}
                 disabled={c.isBusy}
                 className={cn(
@@ -493,6 +494,7 @@ function ToolbarIcon({
       variant="ghost"
       size="icon"
       title={title}
+      aria-label={title}
       onClick={onClick}
       disabled={disabled}
       className={cn(

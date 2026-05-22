@@ -12,7 +12,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ToolUIPart } from "ai";
-import { memo } from "react";
+import { memo, useId } from "react";
 
 type Props = {
   part: Extract<ToolUIPart, { state: "approval-requested" }>;
@@ -35,18 +35,32 @@ function AiToolApprovalImpl({ part, toolName, onRespond }: Props) {
   const label = meta?.label ?? toolName;
   const Icon = meta?.icon ?? ToolsIcon;
   const input = part.input as Record<string, unknown>;
+  const titleId = useId();
 
   return (
-    <div className="rounded-lg border border-border bg-card shadow-sm">
+    <div
+      role="group"
+      aria-labelledby={titleId}
+      className="rounded-lg border border-border bg-card shadow-sm"
+    >
+      {/* Off-screen assertive announcement: screen readers should interrupt
+          streaming output to tell the user the agent is now blocked on them. */}
+      <div role="alert" className="sr-only">
+        {label} requires approval
+      </div>
       <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
-        <span className="size-1.5 shrink-0 rounded-full bg-amber-500 animate-pulse" />
+        <span
+          aria-hidden="true"
+          className="size-1.5 shrink-0 rounded-full bg-amber-500 animate-pulse"
+        />
         <HugeiconsIcon
           icon={Icon}
           size={13}
           strokeWidth={1.75}
           className="shrink-0 text-muted-foreground"
+          aria-hidden="true"
         />
-        <span className="text-[12px] font-medium text-foreground">
+        <span id={titleId} className="text-[12px] font-medium text-foreground">
           {label}
         </span>
         <span className="ml-auto text-[10px] text-muted-foreground">

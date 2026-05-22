@@ -70,6 +70,9 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
     return (
       <div
         ref={containerRef}
+        role="application"
+        aria-roledescription="Terminal"
+        aria-label="Terminal"
         className="zoom-exempt h-full w-full"
         style={{
           visibility: visible ? "visible" : "hidden",

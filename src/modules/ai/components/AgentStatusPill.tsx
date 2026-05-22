@@ -20,25 +20,32 @@ export function AgentStatusPill({ onClick }: Props) {
   const { tone, icon, label } = describe(meta);
 
   return (
-    <AnimatePresence mode="wait">
-      <motion.button
-        key={`${meta.status}:${label}`}
-        type="button"
-        onClick={onClick}
-        initial={{ opacity: 0, y: 2 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -2 }}
-        transition={{ duration: 0.12, ease: "easeOut" }}
-        className={cn(
-          "flex h-6 items-center gap-1.5 rounded-md border px-1.5 text-[11px] transition-colors",
-          tone,
-        )}
-        title="Open AI log"
-      >
-        {icon}
-        <span className="max-w-[180px] truncate">{label}</span>
-      </motion.button>
-    </AnimatePresence>
+    <>
+      {/* Stable live region — sits outside AnimatePresence so the key change
+          on the button below doesn't tear down the announcement. */}
+      <span role="status" aria-live="polite" className="sr-only">
+        Agent status: {label}
+      </span>
+      <AnimatePresence mode="wait">
+        <motion.button
+          key={`${meta.status}:${label}`}
+          type="button"
+          onClick={onClick}
+          initial={{ opacity: 0, y: 2 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -2 }}
+          transition={{ duration: 0.12, ease: "easeOut" }}
+          className={cn(
+            "flex h-6 items-center gap-1.5 rounded-md border px-1.5 text-[11px] transition-colors",
+            tone,
+          )}
+          aria-label={`Open AI log — ${label}`}
+        >
+          {icon}
+          <span className="max-w-[180px] truncate">{label}</span>
+        </motion.button>
+      </AnimatePresence>
+    </>
   );
 }
 

@@ -401,6 +401,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
             className="size-6 text-muted-foreground hover:text-foreground"
             onClick={() => tree.beginCreate(rootPath, "file")}
             title="New file"
+            aria-label="New file"
           >
             <HugeiconsIcon icon={FileAddIcon} size={13} strokeWidth={2} />
           </Button>
@@ -410,6 +411,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
             className="size-6 text-muted-foreground hover:text-foreground"
             onClick={() => tree.beginCreate(rootPath, "dir")}
             title="New folder"
+            aria-label="New folder"
           >
             <HugeiconsIcon icon={FolderAddIcon} size={13} strokeWidth={2} />
           </Button>
@@ -419,6 +421,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
             className="size-6 text-muted-foreground hover:text-foreground"
             onClick={() => tree.refresh(rootPath)}
             title="Refresh"
+            aria-label="Refresh explorer"
           >
             <HugeiconsIcon icon={Refresh01Icon} size={12} strokeWidth={2} />
           </Button>

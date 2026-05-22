@@ -102,6 +102,7 @@ export function AgentSwitcher({
                   ? "flex size-7 items-center justify-center rounded-md p-0 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                   : "flex h-7 min-w-0 max-w-[9rem] items-center gap-1.5 rounded-md px-2 text-[11.5px] text-foreground/80 transition-colors hover:bg-accent hover:text-foreground",
           )}
+          aria-label={`Switch agent — current: ${active.name}`}
           title={`Agent: ${active.name}`}
         >
           <HugeiconsIcon

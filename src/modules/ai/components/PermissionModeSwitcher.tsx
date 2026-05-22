@@ -87,6 +87,7 @@ export function PermissionModeSwitcher({
             "group flex h-7 min-w-0 max-w-[10rem] items-center gap-1.5 rounded-md px-2 text-[11.5px] transition-colors hover:bg-accent",
             activeColors.trigger,
           )}
+          aria-label={`Permission mode: ${PERMISSION_MODE_LABELS[effectiveMode]}`}
           title={`Permission mode: ${PERMISSION_MODE_LABELS[effectiveMode]}`}
         >
           <HugeiconsIcon
@@ -94,6 +95,7 @@ export function PermissionModeSwitcher({
             size={13}
             strokeWidth={1.75}
             className="shrink-0"
+            aria-hidden="true"
           />
           {!isIconOnly && (
             <>

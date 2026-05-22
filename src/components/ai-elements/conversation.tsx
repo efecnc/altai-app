@@ -17,6 +17,10 @@ export const Conversation = ({ className, ...props }: ConversationProps) => (
     initial="smooth"
     resize="smooth"
     role="log"
+    aria-live="polite"
+    aria-atomic="false"
+    aria-relevant="additions text"
+    aria-label="Conversation"
     {...props}
   />
 );

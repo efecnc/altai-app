@@ -565,6 +565,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                   onChange={(event) => scm.setCommitMessage(event.target.value)}
                   onKeyDown={handleCommitShortcut}
                   placeholder="Commit message"
+                  aria-label="Commit message"
                   rows={3}
                   className={cn(
                     "min-h-[72px] border-  resize-none rounded-lg  bg-transparent px-3 pb-7 pt-2.5 text-[12.5px] leading-snug shadow-none placeholder:text-muted-foreground/65 focus-visible:ring-0 focus:border-0",

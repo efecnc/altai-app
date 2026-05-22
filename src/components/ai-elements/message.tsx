@@ -326,14 +326,16 @@ const streamdownComponents = { code: MarkdownCode };
 export const MessageResponse = memo(
   ({ className, streaming = false, ...props }: MessageResponseProps) => (
     <ChatStreamingProvider value={streaming}>
-      <Streamdown
-        className={cn(
-          "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-          className,
-        )}
-        components={streamdownComponents}
-        {...props}
-      />
+      <div aria-busy={streaming || undefined}>
+        <Streamdown
+          className={cn(
+            "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+            className,
+          )}
+          components={streamdownComponents}
+          {...props}
+        />
+      </div>
     </ChatStreamingProvider>
   ),
   (prevProps, nextProps) =>

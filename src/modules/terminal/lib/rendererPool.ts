@@ -92,6 +92,11 @@ function termOptions() {
     cursorInactiveStyle: "outline" as const,
     scrollback: prefs.terminalScrollback,
     allowProposedApi: true,
+    // Opt into xterm.js's off-screen aria-live row so screen readers can read
+    // terminal output. xterm defaults this off because the parallel ARIA buffer
+    // has a small perf cost; for an AI-agent IDE where a blind user must hear
+    // command output, that cost is the right trade.
+    screenReaderMode: true,
   };
 }
 
