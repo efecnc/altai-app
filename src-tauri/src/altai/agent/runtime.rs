@@ -297,15 +297,21 @@ pub async fn start_agent(
     // Provider — `base_url_override` (from the JS side, derived from the
     // active model) wins. Otherwise fall back to workspace config, then
     // to Gemini's `v1beta` as a last resort.
-    let workspace_base_url = workspace
-        .config
-        .provider
-        .as_ref()
-        .and_then(|cfg| cfg.resolved_base_url());
-    let resolved_base_url = base_url_override
-        .map(str::to_string)
-        .or(workspace_base_url)
-        .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string());
+    //
+    // Note: `cfg.resolved_base_url()` has shifted between `Option<String>`
+    // and `Result<String, String>` across isanagent revisions. `.unwrap_or`
+    // is defined on both, so this branch survives that drift without
+    // pinning the crate.
+    let resolved_base_url = if let Some(override_url) = base_url_override {
+        override_url.to_string()
+    } else {
+        let default = "https://generativelanguage.googleapis.com/v1beta".to_string();
+        if let Some(ref cfg) = workspace.config.provider {
+            cfg.resolved_base_url().unwrap_or(default)
+        } else {
+            default
+        }
+    };
     let llm_provider = provider::create_provider(provider_name, &resolved_base_url, api_key, model_name);
 
     // System prompt
