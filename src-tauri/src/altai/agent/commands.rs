@@ -10,6 +10,12 @@ use tauri::State;
 /// (the `instructions` field on Agent). When non-empty, it is appended
 /// to the workspace system prompt so custom personas survive routing
 /// through IsanAgent.
+///
+/// `base_url`, when provided, is the *full* chat-completions (or
+/// `/v1/messages` for Anthropic) endpoint to POST against. It overrides
+/// the workspace-config default. The JS side derives it from the
+/// active model so the model picker actually controls where requests
+/// go (OpenAI vs xAI vs Groq vs LM Studio etc.).
 #[tauri::command]
 pub async fn agent_start(
     state: State<'_, AgentRuntime>,
@@ -17,6 +23,7 @@ pub async fn agent_start(
     api_key: Option<String>,
     model_name: Option<String>,
     instructions: Option<String>,
+    base_url: Option<String>,
 ) -> Result<(), String> {
     let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
     let key = api_key.unwrap_or_default();
@@ -25,8 +32,12 @@ pub async fn agent_start(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let base = base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
-    runtime::start_agent(&state, &pname, &key, &model, persona).await
+    runtime::start_agent(&state, &pname, &key, &model, persona, base).await
 }
 
 /// Send a user message into the IsanAgent bus.

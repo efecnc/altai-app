@@ -105,12 +105,20 @@ pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 /// field. When `Some`, it is appended to the workspace-derived system
 /// prompt under a `## Persona` block so the runtime honors the
 /// user-configured persona (e.g. Coder vs Architect vs custom agent).
+///
+/// `base_url_override`, when `Some`, replaces the workspace-config
+/// base URL. Pass the *full* endpoint (e.g.
+/// `https://api.openai.com/v1/chat/completions`,
+/// `https://api.anthropic.com/v1/messages`,
+/// `http://localhost:1234/v1/chat/completions`). IsanAgent's HTTP
+/// clients POST to this URL as-is.
 pub async fn start_agent(
     runtime: &AgentRuntime,
     provider_name: &str,
     api_key: &str,
     model_name: &str,
     persona_instructions: Option<&str>,
+    base_url_override: Option<&str>,
 ) -> Result<(), String> {
     {
         let mut guard = runtime.initialized.lock().map_err(|e| e.to_string())?;
@@ -286,13 +294,18 @@ pub async fn start_agent(
         }));
     }
 
-    // Provider
-    let base_url = "https://generativelanguage.googleapis.com/v1beta".to_string();
-    let resolved_base_url = if let Some(ref cfg) = workspace.config.provider {
-        cfg.resolved_base_url().unwrap_or(base_url)
-    } else {
-        base_url
-    };
+    // Provider — `base_url_override` (from the JS side, derived from the
+    // active model) wins. Otherwise fall back to workspace config, then
+    // to Gemini's `v1beta` as a last resort.
+    let workspace_base_url = workspace
+        .config
+        .provider
+        .as_ref()
+        .and_then(|cfg| cfg.resolved_base_url());
+    let resolved_base_url = base_url_override
+        .map(str::to_string)
+        .or(workspace_base_url)
+        .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string());
     let llm_provider = provider::create_provider(provider_name, &resolved_base_url, api_key, model_name);
 
     // System prompt

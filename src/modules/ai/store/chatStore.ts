@@ -18,6 +18,7 @@ import { useAgentsStore } from "./agentsStore";
 import { usePlanStore } from "./planStore";
 import { useTodosStore } from "./todoStore";
 import type { AgentUsage } from "../lib/agent";
+import { resolveIsanAgentTarget } from "../lib/isanagentTarget";
 import { EMPTY_PROVIDER_KEYS, type ProviderKeys } from "../lib/keyring";
 import {
   deleteSessionData,
@@ -610,41 +611,40 @@ export async function sendMessage(text: string): Promise<boolean> {
 async function sendViaIsanAgent(text: string): Promise<boolean> {
   const store = useChatStore.getState();
 
-  // Lazy-start the embedded IsanAgent runtime with provider info from stored API keys
+  // Resolve the target (provider + model + base URL + key) from the
+  // model picker. The hardcoded "first key wins" mapping used to ignore
+  // the user's selection — pick a model in the UI and IsanAgent now
+  // actually targets it.
+  const prefs = usePreferencesStore.getState();
+  const resolution = resolveIsanAgentTarget(store.selectedModelId, store.apiKeys, {
+    lmstudioBaseURL: prefs.lmstudioBaseURL,
+    lmstudioModelId: prefs.lmstudioModelId,
+    mlxBaseURL: prefs.mlxBaseURL,
+    mlxModelId: prefs.mlxModelId,
+    openaiCompatibleBaseURL: prefs.openaiCompatibleBaseURL,
+  });
+  if (!resolution.ok) {
+    store.patchAgentMeta({ status: "error", error: resolution.error });
+    return false;
+  }
+  const { providerName, apiKey, modelName, baseUrl } = resolution.target;
+
+  // Pass the active agent's instructions through so IsanAgent honors the
+  // selected persona (Coder, Architect, custom agents, etc.). The runtime
+  // captures this at first-start; switching agents mid-session does not
+  // yet reapply — that needs a runtime restart and lives in a follow-up.
+  const agentsState = useAgentsStore.getState();
+  const activeAgent = agentsState.all().find((a) => a.id === agentsState.activeId);
+  const instructions = activeAgent?.instructions?.trim() || undefined;
+
   try {
-    const keys = store.apiKeys;
-    // Pick the first available provider key for IsanAgent's LLM provider
-    let providerName = "gemini";
-    let apiKey = "";
-    let modelName = "gemini-2.5-flash";
-
-    if (keys.anthropic) {
-      providerName = "anthropic";
-      apiKey = keys.anthropic;
-      modelName = "claude-sonnet-4-20250514";
-    } else if (keys.openai) {
-      providerName = "openai";
-      apiKey = keys.openai;
-      modelName = "gpt-4o";
-    } else if (keys.google) {
-      providerName = "gemini";
-      apiKey = keys.google;
-      modelName = "gemini-2.5-flash";
-    } else if (keys.deepseek) {
-      providerName = "deepseek";
-      apiKey = keys.deepseek;
-      modelName = "deepseek-chat";
-    }
-
-    // Pass the active agent's instructions through so IsanAgent honors the
-    // selected persona (Coder, Architect, custom agents, etc.). The runtime
-    // captures this at first-start; switching agents mid-session does not
-    // yet reapply — that needs a runtime restart and lives in a follow-up.
-    const agentsState = useAgentsStore.getState();
-    const activeAgent = agentsState.all().find((a) => a.id === agentsState.activeId);
-    const instructions = activeAgent?.instructions?.trim() || undefined;
-
-    await invoke("agent_start", { providerName, apiKey, modelName, instructions });
+    await invoke("agent_start", {
+      providerName,
+      apiKey,
+      modelName,
+      instructions,
+      baseUrl,
+    });
   } catch (e) {
     store.patchAgentMeta({
       status: "error",
