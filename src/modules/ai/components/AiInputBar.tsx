@@ -288,7 +288,7 @@ export function AiInputBar() {
 
         <Popover open={pickerOpen}>
           <PopoverAnchor asChild>
-            <div className="px-2.5 pt-2">
+            <div className="relative px-2.5 pt-2">
               <textarea
                 ref={c.textareaRef}
                 value={c.value}
@@ -342,11 +342,55 @@ export function AiInputBar() {
                 disabled={c.isBusy}
                 className={cn(
                   "block w-full max-h-44 min-h-[24px] resize-none bg-transparent",
-                  "text-[13px] leading-5 text-foreground outline-none",
+                  // Right padding reserves space for the absolutely-positioned
+                  // send/stop button so long text never slides under it.
+                  "pr-8 text-[13px] leading-5 text-foreground outline-none",
                   "placeholder:text-muted-foreground/55",
                   "disabled:cursor-not-allowed",
                 )}
               />
+              {/* Send / stop button floats in the textarea's top-right corner.
+                  Lifted out of the bottom toolbar per user direction; the
+                  toolbar keeps the rest (attach / permission / agent / model
+                  / voice). */}
+              <div className="absolute top-2 right-2.5">
+                {c.isBusy ? (
+                  <Button
+                    type="button"
+                    size="icon"
+                    onClick={c.stop}
+                    className={cn(
+                      "size-6 rounded-md p-0 transition-colors",
+                      "bg-foreground/10 text-foreground hover:bg-foreground/15",
+                    )}
+                    aria-label="Stop"
+                    title="Stop"
+                  >
+                    <span className="block size-2 rounded-[2px] bg-foreground" />
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    size="icon"
+                    onClick={c.submit}
+                    disabled={!c.canSend}
+                    className={cn(
+                      "size-6 rounded-md p-0 transition-all",
+                      c.canSend
+                        ? "bg-foreground text-background hover:bg-foreground/90 active:scale-95"
+                        : "bg-foreground/10 text-foreground/35",
+                    )}
+                    aria-label="Send"
+                    title="Send (Enter)"
+                  >
+                    <HugeiconsIcon
+                      icon={ArrowUpIcon}
+                      size={12}
+                      strokeWidth={2.25}
+                    />
+                  </Button>
+                )}
+              </div>
             </div>
           </PopoverAnchor>
           {fileTrigger ? (
@@ -370,8 +414,8 @@ export function AiInputBar() {
         </Popover>
 
         {/* Single embedded toolbar row inside the card — Cursor pattern.
-            Left: attach + permission + agent + model.
-            Right: voice + send. */}
+            Send/stop now floats in the textarea's top-right corner; the
+            toolbar keeps attach / permission / agent / model / voice. */}
         <div className="flex items-center gap-0.5 px-1.5 pb-1 pt-0.5">
           <ToolbarIcon
             title="Attach file or image"
@@ -415,39 +459,6 @@ export function AiInputBar() {
                 <HugeiconsIcon icon={Mic01Icon} size={14} strokeWidth={1.75} />
               )}
             </ToolbarIcon>
-          )}
-
-          {c.isBusy ? (
-            <Button
-              type="button"
-              size="icon"
-              onClick={c.stop}
-              className={cn(
-                "size-6 rounded-md p-0 transition-colors",
-                "bg-foreground/10 text-foreground hover:bg-foreground/15",
-              )}
-              aria-label="Stop"
-              title="Stop"
-            >
-              <span className="block size-2 rounded-[2px] bg-foreground" />
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              size="icon"
-              onClick={c.submit}
-              disabled={!c.canSend}
-              className={cn(
-                "size-6 rounded-md p-0 transition-all",
-                c.canSend
-                  ? "bg-foreground text-background hover:bg-foreground/90 active:scale-95"
-                  : "bg-foreground/10 text-foreground/35",
-              )}
-              aria-label="Send"
-              title="Send (Enter)"
-            >
-              <HugeiconsIcon icon={ArrowUpIcon} size={12} strokeWidth={2.25} />
-            </Button>
           )}
         </div>
       </div>
