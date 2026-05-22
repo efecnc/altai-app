@@ -530,19 +530,29 @@ export async function setShowSkipLinks(value: boolean): Promise<void> {
   await writePref(KEY_A11Y_SKIP_LINKS, value);
 }
 
-/** Reset all accessibility prefs to defaults. */
+/** Reset all accessibility prefs to defaults.
+ *  Writes every key in memory first, then saves once and broadcasts each
+ *  change — avoids the 9× serialized write that calling each setter would
+ *  produce. */
 export async function resetAccessibility(): Promise<void> {
-  await Promise.all([
-    setReduceMotion(DEFAULT_PREFERENCES.reduceMotion),
-    setHighContrast(DEFAULT_PREFERENCES.highContrast),
-    setLargerText(DEFAULT_PREFERENCES.largerText),
-    setUnderlineLinks(DEFAULT_PREFERENCES.underlineLinks),
-    setFocusRing(DEFAULT_PREFERENCES.focusRing),
-    setChatAnnounce(DEFAULT_PREFERENCES.chatAnnounce),
-    setApprovalAnnounceAssertive(DEFAULT_PREFERENCES.approvalAnnounceAssertive),
-    setTerminalScreenReader(DEFAULT_PREFERENCES.terminalScreenReader),
-    setShowSkipLinks(DEFAULT_PREFERENCES.showSkipLinks),
-  ]);
+  const updates: Array<[string, unknown]> = [
+    [KEY_A11Y_REDUCE_MOTION, DEFAULT_PREFERENCES.reduceMotion],
+    [KEY_A11Y_HIGH_CONTRAST, DEFAULT_PREFERENCES.highContrast],
+    [KEY_A11Y_LARGER_TEXT, DEFAULT_PREFERENCES.largerText],
+    [KEY_A11Y_UNDERLINE_LINKS, DEFAULT_PREFERENCES.underlineLinks],
+    [KEY_A11Y_FOCUS_RING, DEFAULT_PREFERENCES.focusRing],
+    [KEY_A11Y_CHAT_ANNOUNCE, DEFAULT_PREFERENCES.chatAnnounce],
+    [KEY_A11Y_APPROVAL_ASSERTIVE, DEFAULT_PREFERENCES.approvalAnnounceAssertive],
+    [KEY_A11Y_TERMINAL_SR, DEFAULT_PREFERENCES.terminalScreenReader],
+    [KEY_A11Y_SKIP_LINKS, DEFAULT_PREFERENCES.showSkipLinks],
+  ];
+  await Promise.all(updates.map(([key, value]) => store.set(key, value)));
+  await store.save();
+  await Promise.all(
+    updates.map(([key, value]) =>
+      emit(PREFS_CHANGED_EVENT, { key, value }),
+    ),
+  );
 }
 
 export type PrefKey = keyof Preferences;

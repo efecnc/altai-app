@@ -186,9 +186,9 @@ export function AccessibilitySection() {
 
 function SubsectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <h2 className="-mb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+    <h3 className="-mb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
       {children}
-    </h2>
+    </h3>
   );
 }
 
