@@ -27,6 +27,7 @@ import {
   ArrowRight01Icon,
   CodeIcon,
   File01Icon,
+  GlobalSearchIcon,
   HashtagIcon,
   TerminalIcon,
 } from "@hugeicons/core-free-icons";
@@ -398,8 +399,15 @@ const RenderedMessage = memo(function RenderedMessage({
                 </PartAppear>
               );
             }
+            if (g.kind === "web") {
+              return (
+                <PartAppear key={`${message.id}-${g.key}`}>
+                  <WebGroup parts={g.parts} onApproval={onApproval} />
+                </PartAppear>
+              );
+            }
             const isReadSingle =
-              partType(g.part) === "tool-read_file" &&
+              toolNameOf(g.part) === "read_file" &&
               ((g.part as { state?: string }).state ?? "") !==
                 "approval-requested";
             if (isReadSingle) {
@@ -425,18 +433,54 @@ const RenderedMessage = memo(function RenderedMessage({
   );
 });
 
+type GroupKind = "reads" | "web";
+
 type Group =
   | { kind: "single"; part: AnyPart; idx: number; key: string }
-  | { kind: "reads"; parts: AnyPart[]; key: string };
+  | { kind: "reads"; parts: AnyPart[]; key: string }
+  | { kind: "web"; parts: AnyPart[]; key: string };
 
 function partType(p: AnyPart): string {
   return (p as { type?: string }).type ?? "";
 }
 
-function isReadFilePart(p: AnyPart): boolean {
-  if (partType(p) !== "tool-read_file") return false;
+// Vercel AI SDK transports statically-known tools as `type: "tool-<name>"`;
+// IsanAgent (the production transport) ships every tool as
+// `type: "dynamic-tool"` with the name on `toolName`. Both need to flow
+// through the same grouping/summary logic, so we normalize the name once.
+function toolNameOf(p: AnyPart): string | null {
+  const type = partType(p);
+  if (!type) return null;
+  if (type === "dynamic-tool") {
+    return (p as { toolName?: string }).toolName ?? null;
+  }
+  if (type.startsWith("tool-")) {
+    return type.slice("tool-".length);
+  }
+  return null;
+}
+
+const READ_GROUP_TOOLS = new Set(["read_file"]);
+const WEB_GROUP_TOOLS = new Set([
+  "web_search",
+  "web_fetch",
+  "arxiv_search",
+  "arxiv_fetch",
+  "hf_hub_file_fetch",
+]);
+
+// What collapsible run, if any, this part participates in. Approval
+// cards always render as their own card so we never sweep them into
+// a group — the approval UI is the one place where the user is
+// expected to read and act.
+function groupKindFor(p: AnyPart): GroupKind | null {
   const state = (p as { state?: string }).state ?? "";
-  return state !== "approval-requested";
+  if (state === "approval-requested") return null;
+  const name = toolNameOf(p);
+  if (!name) return null;
+  if (READ_GROUP_TOOLS.has(name)) return "reads";
+  if (WEB_GROUP_TOOLS.has(name)) return "web";
+  return null;
 }
 
 function partKey(p: AnyPart, idx: number): string {
@@ -449,14 +493,15 @@ function partKey(p: AnyPart, idx: number): string {
 
 function buildPartGroups(parts: AnyPart[]): Group[] {
   const out: Group[] = [];
-  let run: { parts: AnyPart[]; startIdx: number } | null = null;
+  let run: { kind: GroupKind; parts: AnyPart[]; startIdx: number } | null =
+    null;
   const flushRun = () => {
     if (!run) return;
     if (run.parts.length >= 2) {
       out.push({
-        kind: "reads",
+        kind: run.kind,
         parts: run.parts,
-        key: `reads-${partKey(run.parts[0], run.startIdx)}`,
+        key: `${run.kind}-${partKey(run.parts[0], run.startIdx)}`,
       });
     } else {
       run.parts.forEach((p, k) => {
@@ -467,9 +512,14 @@ function buildPartGroups(parts: AnyPart[]): Group[] {
     run = null;
   };
   parts.forEach((p, i) => {
-    if (isReadFilePart(p)) {
-      if (!run) run = { parts: [], startIdx: i };
-      run.parts.push(p);
+    const kind = groupKindFor(p);
+    if (kind) {
+      if (run && run.kind === kind) {
+        run.parts.push(p);
+      } else {
+        flushRun();
+        run = { kind, parts: [p], startIdx: i };
+      }
       return;
     }
     flushRun();
@@ -560,6 +610,112 @@ const ReadGroup = memo(function ReadGroup({ parts }: { parts: AnyPart[] }) {
             </li>
           ))}
         </ul>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+});
+
+function webSummaryForPart(p: AnyPart): string | null {
+  const name = toolNameOf(p);
+  const input = (p as { input?: Record<string, unknown> }).input;
+  if (!input || typeof input !== "object") return null;
+  const str = (k: string) =>
+    typeof input[k] === "string" ? (input[k] as string) : null;
+  if (name === "web_search" || name === "arxiv_search") {
+    const q = str("query");
+    return q ? `"${q}"` : null;
+  }
+  if (name === "web_fetch") {
+    const url = str("url");
+    if (!url) return null;
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return url;
+    }
+  }
+  if (name === "arxiv_fetch") return str("arxiv_id");
+  if (name === "hf_hub_file_fetch") {
+    return str("repo_id") ?? str("repo") ?? str("path") ?? null;
+  }
+  return null;
+}
+
+// Two or more consecutive web/arxiv/hf research calls collapse into one
+// row so a five-call research chain doesn't push the whole transcript
+// off-screen. Expanded view inlines each call as a full `<Tool>` so the
+// per-call output cards (parsed search hits, fetched doc previews) stay
+// reachable.
+const WebGroup = memo(function WebGroup({
+  parts,
+  onApproval,
+}: {
+  parts: AnyPart[];
+  onApproval: (id: string, approved: boolean) => void;
+}) {
+  const summaries = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const p of parts) {
+      const s = webSummaryForPart(p);
+      if (!s) continue;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+    }
+    return out;
+  }, [parts]);
+  const count = parts.length;
+  const preview = summaries.slice(0, 3).join(", ");
+
+  return (
+    <Collapsible className="group/web overflow-hidden rounded-md border border-border/50 bg-card/50">
+      <CollapsibleTrigger
+        className={cn(
+          "flex w-full items-center gap-2 px-2 py-1.5 text-left text-[12px]",
+          "transition-colors hover:bg-muted/50",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        )}
+      >
+        <HugeiconsIcon
+          icon={ArrowRight01Icon}
+          size={11}
+          strokeWidth={2}
+          className={cn(
+            "shrink-0 text-muted-foreground transition-transform",
+            "group-data-[state=open]/web:rotate-90",
+          )}
+        />
+        <HugeiconsIcon
+          icon={GlobalSearchIcon}
+          size={13}
+          strokeWidth={1.75}
+          className="shrink-0 text-muted-foreground"
+        />
+        <span className="shrink-0 font-medium text-foreground">Web</span>
+        <span className="shrink-0 text-[11px] text-muted-foreground">
+          {count} call{count === 1 ? "" : "s"}
+        </span>
+        {preview ? (
+          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/80 group-data-[state=open]/web:invisible">
+            · {preview}
+            {summaries.length > 3
+              ? `, +${summaries.length - 3} more`
+              : ""}
+          </span>
+        ) : null}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="altai-collapsible-content border-t border-border/30">
+        <div className="flex flex-col gap-1 px-2 py-1.5">
+          {parts.map((p, i) => (
+            <RenderedPart
+              key={partKey(p, i)}
+              part={p}
+              onApproval={onApproval}
+              streaming={false}
+            />
+          ))}
+        </div>
       </CollapsibleContent>
     </Collapsible>
   );
