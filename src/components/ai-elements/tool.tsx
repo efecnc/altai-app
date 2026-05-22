@@ -163,12 +163,13 @@ export type ToolProps = ComponentProps<typeof Collapsible> & {
   errorText?: string;
 };
 
-// Tools whose `input` carries large/streaming content (file bodies, sub-
-// agent prompts, todo lists). The AI diff tab is the canonical place to
-// view file changes; for the rest, the header summary + final output is
-// enough. Re-rendering streamed input on every token both stalls the UI
-// and duplicates information.
-const HEAVY_CONTENT_TOOLS = new Set([
+// Tools whose `input` is large and streamed (file bodies, sub-agent
+// prompts, todo lists). We hide the *input* body for these — the AI
+// diff tab is the canonical place to view file changes, and re-rendering
+// streamed input on every token both stalls the UI and duplicates
+// information. Outputs are still shown: a `run_subagent` summary or a
+// `write_file` "✓ wrote · path" card is the meaningful artifact.
+const INPUT_HEAVY_TOOLS = new Set([
   "write_file",
   "edit",
   "multi_edit",
@@ -192,11 +193,12 @@ const ToolImpl = ({
   const summary = deriveSummary(toolName, input);
   const isError = state === "output-error";
   const open = defaultOpen ?? isError;
-  const isHeavy = HEAVY_CONTENT_TOOLS.has(toolName);
-  // For heavy tools, only show details on error — never the streamed input
-  // body, which is huge and re-renders per token.
-  const showInputBody = !isHeavy && Boolean(input);
-  const showOutputBody = !isHeavy && output !== undefined;
+  const isInputHeavy = INPUT_HEAVY_TOOLS.has(toolName);
+  // Hide just the streamed input for heavy tools — outputs are always
+  // shown when present so e.g. a `run_subagent` summary or a
+  // `write_file` confirmation card remains reachable.
+  const showInputBody = !isInputHeavy && Boolean(input);
+  const showOutputBody = output !== undefined;
   const hasDetails =
     showInputBody || showOutputBody || Boolean(errorText);
 
@@ -270,7 +272,7 @@ export const Tool = memo(ToolImpl, (a, b) => {
   if (a.errorText !== b.errorText) return false;
   if (a.output !== b.output) return false;
   if (a.className !== b.className) return false;
-  if (HEAVY_CONTENT_TOOLS.has(a.toolName)) {
+  if (INPUT_HEAVY_TOOLS.has(a.toolName)) {
     return deriveSummary(a.toolName, a.input) ===
       deriveSummary(b.toolName, b.input);
   }
@@ -415,6 +417,9 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
     }
     if (toolName === "arxiv_search") {
       return <ArxivSearchOutput text={output} />;
+    }
+    if (toolName === "hf_hub_file_fetch") {
+      return <HfHubFileOutput text={output} />;
     }
     return null;
   }
@@ -615,6 +620,191 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
         {path ? <span className="text-muted-foreground">· {path}</span> : null}
         {bytes != null ? (
           <span className="text-muted-foreground">({formatBytes(bytes)})</span>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (toolName === "bash_logs") {
+    const bytes = typeof o.bytes === "string" ? o.bytes : "";
+    const dropped = typeof o.dropped === "number" ? o.dropped : 0;
+    const exited = Boolean(o.exited);
+    const exit = typeof o.exit_code === "number" ? o.exit_code : null;
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-1.5 text-[10px]">
+          <span
+            className={cn(
+              "size-1.5 rounded-full",
+              exited
+                ? exit === 0
+                  ? "bg-emerald-500"
+                  : "bg-destructive"
+                : "bg-emerald-500 animate-pulse",
+            )}
+          />
+          <span className="text-foreground">
+            {exited ? `exited${exit != null ? ` · exit ${exit}` : ""}` : "running"}
+          </span>
+          {dropped > 0 ? (
+            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-amber-700 dark:text-amber-400">
+              {formatBytes(dropped)} dropped
+            </span>
+          ) : null}
+          <span className="flex-1" />
+          <span className="font-mono text-muted-foreground">
+            {bytes.length.toLocaleString()} bytes
+          </span>
+        </div>
+        <pre className="max-h-60 overflow-auto rounded bg-muted/40 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+          {bytes || " "}
+        </pre>
+      </div>
+    );
+  }
+
+  if (toolName === "bash_list") {
+    const procs = Array.isArray(o.processes)
+      ? (o.processes as Array<{
+          handle: number;
+          command: string;
+          cwd: string | null;
+          started_at_ms: number;
+          exited: boolean;
+          exit_code: number | null;
+        }>)
+      : [];
+    if (procs.length === 0) {
+      return (
+        <div className="text-[11px] italic text-muted-foreground">
+          no background processes
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-0.5 font-mono text-[11px]">
+        {procs.map((p) => (
+          <div
+            key={p.handle}
+            className="flex items-center gap-2 rounded px-1.5 py-0.5 hover:bg-muted/40"
+          >
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                p.exited
+                  ? p.exit_code === 0
+                    ? "bg-emerald-500/70"
+                    : "bg-destructive/70"
+                  : "bg-emerald-500 animate-pulse",
+              )}
+            />
+            <span className="shrink-0 text-muted-foreground">#{p.handle}</span>
+            <span className="min-w-0 flex-1 truncate text-foreground">
+              {p.command}
+            </span>
+            {p.exited ? (
+              <span className="shrink-0 text-[10px] text-muted-foreground">
+                exit {p.exit_code ?? "?"}
+              </span>
+            ) : (
+              <span className="shrink-0 text-[10px] text-muted-foreground">
+                {formatStartedAgo(p.started_at_ms)}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (toolName === "bash_kill") {
+    const handle = typeof o.handle === "number" ? o.handle : null;
+    return (
+      <div className="flex items-center gap-1.5 font-mono text-[11px]">
+        <span className="text-emerald-600 dark:text-emerald-400">✓</span>
+        <span className="text-foreground">killed</span>
+        {handle != null ? (
+          <span className="text-muted-foreground">· #{handle}</span>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (toolName === "open_preview") {
+    const url = typeof o.url === "string" ? o.url : "";
+    return (
+      <div className="flex items-center gap-1.5 font-mono text-[11px]">
+        <span className="text-emerald-600 dark:text-emerald-400">✓</span>
+        <span className="text-foreground">opened</span>
+        {url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="truncate text-muted-foreground hover:text-foreground hover:underline"
+          >
+            {url}
+          </a>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (toolName === "todo_write") {
+    const count = typeof o.count === "number" ? o.count : null;
+    const inProgress =
+      typeof o.inProgress === "string" ? o.inProgress : null;
+    return (
+      <div className="space-y-0.5 font-mono text-[11px]">
+        <div className="flex items-center gap-1.5">
+          <span className="text-emerald-600 dark:text-emerald-400">✓</span>
+          <span className="text-foreground">
+            {count != null
+              ? `${count} item${count === 1 ? "" : "s"}`
+              : "updated"}
+          </span>
+        </div>
+        {inProgress ? (
+          <div className="flex items-center gap-1.5 pl-3">
+            <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />
+            <span className="truncate text-muted-foreground">
+              in progress · {inProgress}
+            </span>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (toolName === "run_subagent") {
+    const type = typeof o.type === "string" ? o.type : null;
+    const summary = typeof o.summary === "string" ? o.summary : "";
+    const stepCount = typeof o.stepCount === "number" ? o.stepCount : null;
+    const durationMs =
+      typeof o.durationMs === "number" ? o.durationMs : null;
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-1.5 font-mono text-[11px]">
+          <span className="text-emerald-600 dark:text-emerald-400">✓</span>
+          <span className="text-foreground">subagent</span>
+          {type ? (
+            <span className="text-muted-foreground">· {type}</span>
+          ) : null}
+          {stepCount != null ? (
+            <span className="text-muted-foreground">
+              · {stepCount} step{stepCount === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {durationMs != null ? (
+            <span className="text-muted-foreground">
+              · {formatDuration(durationMs)}
+            </span>
+          ) : null}
+        </div>
+        {summary ? (
+          <div className="rounded bg-muted/30 px-2 py-1.5 text-[11.5px] leading-relaxed text-foreground whitespace-pre-wrap">
+            {summary}
+          </div>
         ) : null}
       </div>
     );
@@ -861,6 +1051,61 @@ function ArxivSearchOutput({ text }: { text: string }) {
       ))}
     </div>
   );
+}
+
+// HF Hub returns the raw file body, possibly tail-truncated with the
+// literal `\n... [TRUNCATED]` marker. Split that off so the indicator
+// chip is explicit rather than buried at the bottom of a 20KB blob.
+const HF_TRUNCATED_TAIL = "\n... [TRUNCATED]";
+
+function HfHubFileOutput({ text }: { text: string }) {
+  const truncated = text.endsWith(HF_TRUNCATED_TAIL);
+  const body = truncated
+    ? text.slice(0, -HF_TRUNCATED_TAIL.length)
+    : text;
+  const lines = body ? body.split("\n").length : 0;
+  return (
+    <div className="space-y-1">
+      <pre className="max-h-60 overflow-auto rounded bg-muted/40 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+        {body || " "}
+      </pre>
+      <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+        <span>
+          {lines.toLocaleString()} line{lines === 1 ? "" : "s"} ·{" "}
+          {formatBytes(body.length)}
+        </span>
+        {truncated ? (
+          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">
+            truncated
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// "started_at_ms" is a wall-clock millis epoch; show "5m ago" / "2h ago"
+// so a `bash_list` snapshot reads at a glance without parsing dates.
+function formatStartedAgo(startedAtMs: number): string {
+  const ms = Date.now() - startedAtMs;
+  if (ms < 0) return "just now";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s - m * 60);
+  return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
 }
 
 function BashRunOutput({ data }: { data: Record<string, unknown> }) {
