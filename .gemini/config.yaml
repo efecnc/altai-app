@@ -1,0 +1,34 @@
+# Gemini Code Assist configuration.
+# Docs: https://developers.google.com/gemini-code-assist/docs/customize-gemini-behavior-github
+#
+# `.gemini/styleguide.md` holds the project-specific review rules; this file
+# only configures the App's behavior knobs.
+
+# Cut the "Great catch! 🎉" reflex. We want signal, not cheerleading.
+have_fun: false
+
+code_review:
+  # Don't drown PRs in nits. MEDIUM and above only — the styleguide
+  # marks real bugs explicitly as MUST/SHOULD/NIT so MEDIUM here roughly
+  # maps to MUST/SHOULD findings.
+  comment_severity_threshold: MEDIUM
+
+  # No artificial cap. If a PR has 30 real bugs, surface them.
+  max_review_comments: -1
+
+  # On open: post the summary and run the review. Skip the "help" panel.
+  pull_request_opened:
+    help: false
+    summary: true
+    code_review: true
+
+  # Files Gemini should not waste tokens on.
+  ignore_patterns:
+    - "pnpm-lock.yaml"
+    - "src-tauri/Cargo.lock"
+    - "src-tauri/gen/**"
+    - "dist/**"
+    - "**/*.snap"
+    - "**/*.lockb"
+    - "docs/media/**"
+    - ".gemini/**"

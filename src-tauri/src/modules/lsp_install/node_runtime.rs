@@ -137,6 +137,12 @@ fn node_bin_name() -> &'static str {
 struct NodePlatform(&'static str);
 
 impl NodePlatform {
+    // Each `#[cfg]` block below compiles for exactly one host target, so on
+    // that target the corresponding `return` IS the function body and clippy
+    // flags `needless_return`. Suppress it once at the function level rather
+    // than rewriting every block to a trailing-expression form (which would
+    // make the parallel structure harder to scan).
+    #[allow(clippy::needless_return)]
     fn current() -> Option<Self> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
