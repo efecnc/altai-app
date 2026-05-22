@@ -584,43 +584,45 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
     EXAMPLES_BY_AGENT.coder;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-10">
-      <div className="flex flex-col items-center gap-3.5 text-center">
-        <div className="flex size-10 items-center justify-center rounded-2xl bg-foreground/[0.04] text-foreground/80">
-          <HugeiconsIcon icon={Icon} size={18} strokeWidth={1.5} />
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-6">
+      <div className="flex flex-1 flex-col items-center justify-center">
+        <div className="flex flex-col items-center gap-3.5 text-center">
+          <div className="flex size-10 items-center justify-center rounded-2xl bg-foreground/[0.04] text-foreground/80">
+            <HugeiconsIcon icon={Icon} size={18} strokeWidth={1.5} />
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-[13px] font-medium tracking-tight text-foreground">
+              {active.name}
+            </p>
+            <p className="mx-auto max-w-[20rem] text-[11.5px] leading-relaxed text-muted-foreground">
+              {active.description}
+            </p>
+          </div>
         </div>
-        <div className="space-y-0.5">
-          <p className="text-[13px] font-medium tracking-tight text-foreground">
-            {active.name}
-          </p>
-          <p className="mx-auto max-w-[20rem] text-[11.5px] leading-relaxed text-muted-foreground">
-            {active.description}
-          </p>
+
+        <div className="mt-7 flex w-full max-w-[22rem] flex-col">
+          {examples.map((ex) => (
+            <button
+              key={ex.title}
+              type="button"
+              onClick={() => onPick(ex.description)}
+              className={cn(
+                "group flex w-full flex-col gap-0.5 rounded-md px-3 py-2 text-left",
+                "transition-colors hover:bg-foreground/[0.04]",
+              )}
+            >
+              <span className="text-[12px] font-medium text-foreground">
+                {ex.title}
+              </span>
+              <span className="text-[11px] leading-snug text-muted-foreground">
+                {ex.description}
+              </span>
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="mt-7 flex w-full flex-col">
-        {examples.map((ex) => (
-          <button
-            key={ex.title}
-            type="button"
-            onClick={() => onPick(ex.description)}
-            className={cn(
-              "group flex w-full flex-col gap-0.5 rounded-md px-3 py-2 text-left",
-              "transition-colors hover:bg-foreground/[0.04]",
-            )}
-          >
-            <span className="text-[12px] font-medium text-foreground">
-              {ex.title}
-            </span>
-            <span className="text-[11px] leading-snug text-muted-foreground">
-              {ex.description}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-8 flex items-center justify-center gap-1.5 text-[10px] text-muted-foreground/70">
+      <div className="flex shrink-0 items-center justify-center gap-1.5 pt-4 text-[10px] text-muted-foreground/70">
         <span>Toggle with</span>
         <Kbd className="h-4 gap-px px-1.5 font-mono text-[10px]">
           {fmtShortcut(MOD_KEY, "I")}
