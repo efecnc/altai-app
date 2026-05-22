@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
@@ -69,6 +70,19 @@ export default defineConfig(async ({ mode }) => ({
     },
   },
   clearScreen: false,
+  // `src/modules/terminal/lib/keymap.test.mjs` is a Node-native test file
+  // (it imports `node:test` + emits TAP). Vitest auto-discovers it by the
+  // `.test.` infix and then errors with "No test suite found" because the
+  // file never calls describe/it. Excluding it here keeps `pnpm test`
+  // green; run that file separately with `node --test` if needed.
+  test: {
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/src-tauri/**",
+      "src/modules/terminal/lib/keymap.test.mjs",
+    ],
+  },
   server: {
     port: 1420,
     strictPort: true,
