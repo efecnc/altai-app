@@ -34,6 +34,15 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
     switch (payload.type) {
       case "agent_message":
         store.appendNativeMessage(payload.content, payload.role);
+        // A final assistant turn arrived → drop the stale "Sending to ALTAI…"
+        // (or whatever the last tool step was) so the status pill doesn't
+        // sit on stale text. System bootstrap messages ("IsanAgent runtime
+        // initialized.") keep the existing status. The Rust runtime doesn't
+        // emit a separate `done` event yet — relying on the final assistant
+        // message is the closest signal we have until that lands.
+        if (payload.role === "assistant") {
+          store.patchAgentMeta({ status: "idle", step: null });
+        }
         break;
 
       case "tool_call_start":

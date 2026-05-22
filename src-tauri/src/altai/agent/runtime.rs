@@ -400,16 +400,29 @@ pub async fn start_agent(
         }
     });
 
-    // Outbound router: agent output → channel
+    // Outbound router: forward everything the agent emits on its outbound
+    // channel — final assistant messages AND telemetry (tool calls, thoughts,
+    // progress). Previously this task only handled `Outbound`, so every
+    // `BusMessage::Telemetry(...)` the AgentLogic emitted was silently
+    // dropped — the UI saw no tool calls or thinking between "Sending to
+    // ALTAI…" and the final answer.
     let app_for_outbound = app.clone();
     async_runtime::spawn(async move {
         while let Some(out_msg) = global_outbound_rx.recv().await {
-            if let BusMessage::Outbound(ref outbound) = out_msg {
-                let event = Event::AgentMessage {
-                    content: outbound.content.clone(),
-                    role: "assistant".to_string(),
-                };
-                let _ = app_for_outbound.emit("agent://event", &event);
+            match out_msg {
+                BusMessage::Outbound(outbound) => {
+                    let event = Event::AgentMessage {
+                        content: outbound.content,
+                        role: "assistant".to_string(),
+                    };
+                    let _ = app_for_outbound.emit("agent://event", &event);
+                }
+                BusMessage::Telemetry(ref telemetry) => {
+                    if let Some(event) = map_telemetry_to_event(telemetry) {
+                        let _ = app_for_outbound.emit("agent://event", &event);
+                    }
+                }
+                _ => {}
             }
         }
     });
