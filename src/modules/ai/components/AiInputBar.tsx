@@ -357,10 +357,10 @@ export function AiInputBar() {
                 {c.isBusy ? (
                   <Button
                     type="button"
-                    size="icon"
+                    size="icon-xs"
                     onClick={c.stop}
                     className={cn(
-                      "size-6 rounded-md p-0 transition-colors",
+                      "rounded-md p-0 transition-colors",
                       "bg-foreground/10 text-foreground hover:bg-foreground/15",
                     )}
                     aria-label="Stop"
@@ -371,11 +371,11 @@ export function AiInputBar() {
                 ) : (
                   <Button
                     type="button"
-                    size="icon"
+                    size="icon-xs"
                     onClick={c.submit}
                     disabled={!c.canSend}
                     className={cn(
-                      "size-6 rounded-md p-0 transition-all",
+                      "rounded-md p-0 transition-all",
                       c.canSend
                         ? "bg-foreground text-background hover:bg-foreground/90 active:scale-95"
                         : "bg-foreground/10 text-foreground/35",
