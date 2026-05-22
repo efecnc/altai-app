@@ -100,7 +100,18 @@ pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// This bootstraps the workspace, tools, provider, and agent logic,
 /// then wires the TauriChannel as the output channel.
-pub async fn start_agent(runtime: &AgentRuntime, provider_name: &str, api_key: &str, model_name: &str) -> Result<(), String> {
+///
+/// `persona_instructions` is the active altai agent's `instructions`
+/// field. When `Some`, it is appended to the workspace-derived system
+/// prompt under a `## Persona` block so the runtime honors the
+/// user-configured persona (e.g. Coder vs Architect vs custom agent).
+pub async fn start_agent(
+    runtime: &AgentRuntime,
+    provider_name: &str,
+    api_key: &str,
+    model_name: &str,
+    persona_instructions: Option<&str>,
+) -> Result<(), String> {
     {
         let mut guard = runtime.initialized.lock().map_err(|e| e.to_string())?;
         if *guard {
@@ -289,6 +300,10 @@ pub async fn start_agent(runtime: &AgentRuntime, provider_name: &str, api_key: &
     if workspace.config.ml_engineer_harness_enabled() {
         system_prompt.push_str("\n\n");
         system_prompt.push_str(isanagent::ml_engineer::HARNESS_OVERLAY);
+    }
+    if let Some(persona) = persona_instructions {
+        system_prompt.push_str("\n\n## Persona\n\n");
+        system_prompt.push_str(persona);
     }
 
     let max_iterations = workspace.config.resolved_max_iterations().unwrap_or(50);
