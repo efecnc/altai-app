@@ -30,7 +30,8 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
   ];
 
   return (
-    <div
+    <nav
+      aria-label="Workspace views"
       style={{ height: SIDEBAR_RAIL_HEIGHT }}
       className="flex shrink-0 items-stretch gap-1 border-t border-border/60 bg-card/85 px-1.5 py-1 backdrop-blur"
     >
@@ -67,6 +68,6 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
           </button>
         );
       })}
-    </div>
+    </nav>
   );
 }

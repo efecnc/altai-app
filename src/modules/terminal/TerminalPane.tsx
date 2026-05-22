@@ -72,7 +72,10 @@ export const TerminalPane = forwardRef<TerminalPaneHandle, Props>(
         ref={containerRef}
         role="application"
         aria-roledescription="Terminal"
-        aria-label="Terminal"
+        // Unique label per leaf so SR users can distinguish split panes
+        // (audit C2). The leafId is opaque but stable; it's what every
+        // other layer of the app uses to address a pane.
+        aria-label={`Terminal pane ${leafId}`}
         className="zoom-exempt h-full w-full"
         style={{
           visibility: visible ? "visible" : "hidden",
