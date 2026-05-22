@@ -142,7 +142,9 @@ export function TabBar({
                         }
                       }}
                       onMouseDown={(e) => e.stopPropagation()}
-                      className="inline-flex size-5 shrink-0 items-center justify-center rounded p-0.5 opacity-0 transition-opacity hover:bg-accent hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-60"
+                      // 24x24 hit area (WCAG 2.5.8 / audit M5); the icon
+                      // itself stays at 11px for visual density.
+                      className="inline-flex size-6 shrink-0 items-center justify-center rounded p-0.5 opacity-0 transition-opacity hover:bg-accent hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-60"
                     >
                       <HugeiconsIcon
                         icon={Cancel01Icon}

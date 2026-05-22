@@ -108,26 +108,60 @@ function SessionTabs() {
 
   // ARIA tablist arrow / Home / End / Delete navigation. Auto-activation
   // (moving focus also switches the session) — most common pattern; JAWS
-  // announces "tab N of M selected" on each move.
+  // announces "tab N of M selected" on each move, but only when focus
+  // actually lands on the new tab. After we mutate state, React re-renders
+  // with `tabIndex={0}` on the new active tab — at that point we explicitly
+  // move focus to it. Without this the SR keeps reading the old tab.
   const onTablistKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const idx = sessions.findIndex((s) => s.id === activeId);
     if (idx < 0) return;
     const total = sessions.length;
     let next = idx;
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (idx + 1) % total;
-    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (idx - 1 + total) % total;
-    else if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = total - 1;
-    else if (e.key === "Delete") {
+    let handled = false;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      next = (idx + 1) % total;
+      handled = true;
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      next = (idx - 1 + total) % total;
+      handled = true;
+    } else if (e.key === "Home") {
+      next = 0;
+      handled = true;
+    } else if (e.key === "End") {
+      next = total - 1;
+      handled = true;
+    } else if (e.key === "Delete") {
       if (total > 1) {
         e.preventDefault();
         deleteSession(sessions[idx].id);
+        // The store will pick a new active session; restore focus to
+        // whichever tab is selected after the re-render.
+        moveFocusToActiveTab(e.currentTarget);
       }
       return;
-    } else return;
+    } else {
+      return;
+    }
+    if (!handled) return;
     e.preventDefault();
     switchSession(sessions[next].id);
+    moveFocusToActiveTab(e.currentTarget);
   };
+
+  /**
+   * After React re-renders with the new active session, the tab that owns
+   * `tabIndex=0` changes. Move focus there explicitly so JAWS / NVDA /
+   * VoiceOver announce the new selection. Without this the SR re-reads
+   * the *old* tab because focus never left it.
+   */
+  function moveFocusToActiveTab(tablist: HTMLDivElement) {
+    requestAnimationFrame(() => {
+      const selected = tablist.querySelector<HTMLElement>(
+        '[role="tab"][aria-selected="true"]',
+      );
+      selected?.focus();
+    });
+  }
 
   return (
     <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-border/40 bg-transparent px-1.5">
