@@ -103,7 +103,7 @@ export function ModelsSection() {
 
       <div className="flex flex-col gap-2">
         <div className="flex items-baseline justify-between">
-          <Label>Cloud providers</Label>
+          <h3 className="text-[13px] font-medium">Cloud providers</h3>
           <span className="text-[10.5px] text-muted-foreground">
             {configuredCount} of {cloudProviders.length} configured
           </span>
@@ -159,11 +159,12 @@ function DefaultModelBlock({
 
   return (
     <div className="flex flex-col gap-2">
-      <Label>Default model</Label>
+      <h3 className="text-[13px] font-medium">Default model</h3>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
             variant="outline"
+            aria-label="Default model"
             className="h-9 justify-between gap-2 px-2.5 text-[12px]"
           >
             <span className="flex items-center gap-2">
@@ -333,7 +334,7 @@ function LocalServerBlock({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5">
-        <Label>{title}</Label>
+        <h3 className="text-[13px] font-medium">{title}</h3>
         <span className="text-[10.5px] leading-relaxed text-muted-foreground">
           {description}
         </span>
@@ -454,7 +455,7 @@ function OpenAICompatibleBlock({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5">
-        <Label>OpenAI-compatible endpoint</Label>
+        <h3 className="text-[13px] font-medium">OpenAI-compatible endpoint</h3>
         <span className="text-[10.5px] leading-relaxed text-muted-foreground">
           Any OpenAI-compatible HTTPS endpoint — vLLM, Z.AI, Fireworks, hosted
           Ollama, etc.
@@ -621,7 +622,7 @@ function AutocompleteBlock({ keys }: { keys: KeysMap }) {
     <div className="flex flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-0.5">
-          <Label>Editor autocomplete</Label>
+          <h3 className="text-[13px] font-medium">Editor autocomplete</h3>
           <span className="text-[10.5px] leading-relaxed text-muted-foreground">
             Inline ghost-text suggestions in the code editor. Pick a fast model
             (LPU/wafer-scale, local, or a small cloud tier).
@@ -754,10 +755,3 @@ function StatusLine({
   );
 }
 
-function Label({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="text-[11px] font-medium tracking-tight text-muted-foreground">
-      {children}
-    </span>
-  );
-}

@@ -127,21 +127,29 @@ export function TabBar({
                     ) : null}
                   </span>
                   {tabs.length > 1 && (
-                    <span
-                      role="button"
-                      aria-label="Close tab"
+                    <button
+                      type="button"
+                      aria-label={`Close tab ${labelFor(t)}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         onClose(t.id);
                       }}
-                      className="rounded p-0.5 opacity-0 transition-opacity hover:bg-accent hover:opacity-100 group-hover:opacity-60"
+                      onKeyDown={(e) => {
+                        // Don't let the parent Radix TabsTrigger steal
+                        // Space/Enter and switch tabs instead of closing.
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.stopPropagation();
+                        }
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="inline-flex size-5 shrink-0 items-center justify-center rounded p-0.5 opacity-0 transition-opacity hover:bg-accent hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-60"
                     >
                       <HugeiconsIcon
                         icon={Cancel01Icon}
                         size={11}
                         strokeWidth={2}
                       />
-                    </span>
+                    </button>
                   )}
                 </TabsTrigger>
               );

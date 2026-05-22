@@ -1400,6 +1400,10 @@ export default function App() {
     <ThemeProvider>
       <TooltipProvider>
         <div className="relative flex h-screen flex-col overflow-hidden bg-background text-foreground">
+          {/* Sr-only document title anchors the heading outline so screen
+              reader users can H-navigate: h1 (global) → h2 (each Settings
+              section / AI session) → h3 (sub-blocks). */}
+          <h1 className="sr-only">ALTAI workspace</h1>
           <Header
             tabs={tabs}
             activeId={activeId}

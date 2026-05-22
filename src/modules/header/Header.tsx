@@ -159,8 +159,10 @@ export function Header({
     ) : null;
 
   return (
-    <div
+    <header
       ref={rootRef}
+      role="banner"
+      aria-label="Workspace toolbar"
       data-tauri-drag-region
       className={`flex h-10 shrink-0 items-center gap-2 border-b border-border/60 bg-card select-none ${
         IS_MAC ? "pr-2 pl-20" : "pr-0 pl-2"
@@ -269,6 +271,6 @@ export function Header({
           <WindowControls />
         </>
       )}
-    </div>
+    </header>
   );
 }

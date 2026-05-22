@@ -52,20 +52,33 @@ export function AiSidePanel({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        const target = e.target as HTMLElement | null;
-        const tag = target?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA") return;
-        onClose();
+      if (e.key !== "Escape") return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      // Don't compete with Radix popovers/menus/dialogs — their own
+      // dismiss handlers should run first. Radix sets data-state="open"
+      // on triggers and renders portaled overlays with role="menu" /
+      // role="listbox" / role="dialog".
+      if (target?.closest('[data-state="open"]')) return;
+      if (
+        document.querySelector(
+          '[role="menu"][data-state="open"], [role="listbox"][data-state="open"], [role="dialog"][data-state="open"]',
+        )
+      ) {
+        return;
       }
+      onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   return (
-    <div
+    <aside
       data-ai-side-panel
+      id="altai-ai-panel"
+      aria-label="AI assistant"
       className="flex h-full min-h-0 flex-col bg-card text-[12px]"
     >
       <SessionTabs />
@@ -82,7 +95,7 @@ export function AiSidePanel({
         <AiInputBarConnect onAdd={() => void openSettingsWindow("models")} />
       )}
       <PlanDiffReview />
-    </div>
+    </aside>
   );
 }
 
@@ -93,14 +106,45 @@ function SessionTabs() {
   const newSession = useChatStore((s) => s.newSession);
   const deleteSession = useChatStore((s) => s.deleteSession);
 
+  // ARIA tablist arrow / Home / End / Delete navigation. Auto-activation
+  // (moving focus also switches the session) — most common pattern; JAWS
+  // announces "tab N of M selected" on each move.
+  const onTablistKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const idx = sessions.findIndex((s) => s.id === activeId);
+    if (idx < 0) return;
+    const total = sessions.length;
+    let next = idx;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (idx + 1) % total;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (idx - 1 + total) % total;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = total - 1;
+    else if (e.key === "Delete") {
+      if (total > 1) {
+        e.preventDefault();
+        deleteSession(sessions[idx].id);
+      }
+      return;
+    } else return;
+    e.preventDefault();
+    switchSession(sessions[next].id);
+  };
+
   return (
     <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-border/40 bg-transparent px-1.5">
-      <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {sessions.map((session) => (
+      <div
+        role="tablist"
+        aria-label="Chat sessions"
+        aria-orientation="horizontal"
+        onKeyDown={onTablistKey}
+        className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        {sessions.map((session, i) => (
           <SessionTab
             key={session.id}
             session={session}
             active={session.id === activeId}
+            position={i + 1}
+            total={sessions.length}
             onSelect={() => switchSession(session.id)}
             onDelete={() => deleteSession(session.id)}
             canDelete={sessions.length > 1}
@@ -127,32 +171,45 @@ function SessionTabs() {
 function SessionTab({
   session,
   active,
+  position,
+  total,
   onSelect,
   onDelete,
   canDelete,
 }: {
   session: SessionMeta;
   active: boolean;
+  position: number;
+  total: number;
   onSelect: () => void;
   onDelete: () => void;
   canDelete: boolean;
 }) {
+  const title = session.title || "New chat";
   return (
     <div
       role="tab"
       aria-selected={active}
+      aria-label={`${title}, tab ${position} of ${total}`}
+      tabIndex={active ? 0 : -1}
       onClick={onSelect}
-      title={session.title || "New chat"}
+      onKeyDown={(e) => {
+        // Enter / Space activate the focused tab (auto-activation also fires
+        // on arrow keys via the parent tablist handler).
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      title={title}
       className={cn(
-        "group flex h-6 min-w-0 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors",
+        "group flex h-6 min-w-0 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors outline-none",
         active
           ? "bg-foreground/[0.07] text-foreground"
           : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground/85",
       )}
     >
-      <span className="min-w-0 flex-1 truncate">
-        {session.title || "New chat"}
-      </span>
+      <span className="min-w-0 flex-1 truncate">{title}</span>
       {canDelete ? (
         <button
           type="button"
@@ -160,11 +217,18 @@ function SessionTab({
             e.stopPropagation();
             onDelete();
           }}
+          onKeyDown={(e) => {
+            // Don't let Enter/Space bubble — the parent tab handler would
+            // re-activate and the parent tablist handler would intercept.
+            if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+          }}
           title="Close session"
-          aria-label="Close session"
+          aria-label={`Close session ${title}`}
           className={cn(
-            "inline-flex size-3.5 shrink-0 items-center justify-center rounded transition-opacity",
-            "hover:bg-foreground/10",
+            // 24x24 hit area satisfies WCAG 2.5.8 target size — visual glyph
+            // stays small via the inner icon size.
+            "inline-flex size-6 shrink-0 items-center justify-center rounded transition-opacity",
+            "hover:bg-foreground/10 focus-visible:opacity-100",
             active
               ? "opacity-60 hover:opacity-100"
               : "opacity-0 group-hover:opacity-60",
@@ -195,7 +259,12 @@ function Body({ sessionId }: { sessionId: string }) {
     : helpers.status;
 
   return (
-    <>
+    <div
+      role="tabpanel"
+      aria-label="Active chat session"
+      tabIndex={-1}
+      className="flex min-h-0 flex-1 flex-col"
+    >
       <PlanModeStrip />
 
       <div className="flex min-h-0 flex-1 flex-col">
@@ -216,7 +285,7 @@ function Body({ sessionId }: { sessionId: string }) {
       </div>
 
       <TodoStrip sessionId={sessionId} />
-    </>
+    </div>
   );
 }
 

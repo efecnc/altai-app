@@ -443,6 +443,9 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
             <ContextMenuTrigger asChild>
               <div
                 ref={scrollRef}
+                role="tree"
+                aria-label="File explorer"
+                aria-multiselectable={false}
                 className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
               >
                 {pendingAtRoot ? (

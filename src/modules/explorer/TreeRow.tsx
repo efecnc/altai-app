@@ -95,6 +95,11 @@ function EntryRowImpl(props: EntryRowProps) {
         ) : (
           <button
             type="button"
+            role="treeitem"
+            aria-level={depth + 1}
+            aria-selected={isSelected}
+            aria-expanded={isDir ? isExpanded : undefined}
+            aria-label={`${isDir ? (isExpanded ? "Folder expanded" : "Folder collapsed") : "File"}, ${name}`}
             data-fs-path={path}
             onClick={handleClick}
             onDoubleClick={() => !isDir && tree.beginRename(path)}
