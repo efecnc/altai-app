@@ -105,6 +105,21 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Resolve Tauri build args
+        id: build_args
+        shell: bash
+        run: |
+          # WiX MSI rejects pre-release identifiers that aren't numeric-only
+          # ("-beta.1", "-rc.2" etc. blow up with "must be numeric-only and
+          # cannot be greater than 65535 for msi target"). On prerelease
+          # tags we drop the MSI bundle for Windows and ship the NSIS .exe
+          # only; stable tags still produce both .exe and .msi.
+          if [ "${{ runner.os }}" = "Windows" ] && [ "${{ steps.tag.outputs.prerelease }}" = "true" ]; then
+            echo 'args=--bundles app,nsis' >> "$GITHUB_OUTPUT"
+          else
+            echo 'args=${{ matrix.args }}' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build & bundle (Tauri)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -130,4 +145,4 @@ jobs:
           releaseDraft: false
           prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
           includeUpdaterJson: false
-          args: ${{ matrix.args }}
+          args: ${{ steps.build_args.outputs.args }}
