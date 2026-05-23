@@ -7,6 +7,8 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import {
+  Archive02Icon,
+  ArchiveArrowDownIcon,
   ArrowRight01Icon,
   Book01Icon,
   Book02Icon,
@@ -63,6 +65,12 @@ const TOOL_META: Record<string, { label: string; icon: typeof File01Icon }> = {
   arxiv_search: { label: "arXiv search", icon: Book02Icon },
   arxiv_fetch: { label: "arXiv paper", icon: Book01Icon },
   hf_hub_file_fetch: { label: "HF Hub", icon: CloudDownloadIcon },
+  // Context-management tools from the compaction overhaul in
+  // efecnc/isanagent altai-v0.1.0. `compact_context` schedules a
+  // between-turns prune; `recall_tool_result` re-materializes a tool
+  // result that fell out of the live context.
+  compact_context: { label: "Compact context", icon: Archive02Icon },
+  recall_tool_result: { label: "Recall result", icon: ArchiveArrowDownIcon },
 };
 
 const STATUS_DOT: Record<ToolPart["state"], string> = {
@@ -136,6 +144,10 @@ function deriveSummary(toolName: string, input: unknown): string | null {
       if (repo && path) return `${repo} · ${path}`;
       return repo ?? path;
     }
+    case "compact_context":
+      return str("focus_instructions");
+    case "recall_tool_result":
+      return str("tool_call_id");
     default:
       return null;
   }

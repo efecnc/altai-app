@@ -311,6 +311,20 @@ pub async fn start_agent(
         memory_node: memory_node.clone(),
     }));
 
+    // Compaction overhaul (efecnc/isanagent altai-v0.1.0). The agent can
+    // now schedule a between-turns context compaction via `compact_context`
+    // and re-fetch a tool result that fell out of the live context via
+    // `recall_tool_result`. Both surface in the chat as their own tool
+    // entries (TOOL_META in tool.tsx) so the user can see when compaction
+    // ran and what got recalled.
+    tools.register(Box::new(isanagent::tools::compact::CompactContextTool {
+        outbound_tx: global_outbound_tx.clone(),
+    }));
+    tools.register(Box::new(isanagent::tools::recall::RecallToolResultTool {
+        memory_node: memory_node.clone(),
+        outbound_tx: global_outbound_tx.clone(),
+    }));
+
     // Execution harness (if enabled)
     if workspace.config.execution_harness_enabled() {
         let harness = isanagent::execution::build_execution_harness(

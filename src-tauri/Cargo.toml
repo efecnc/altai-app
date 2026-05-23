@@ -47,7 +47,7 @@ hex = "0.4"
 tar = "0.4"
 
 # İsanAgent — embedded as Rust crate (direct API, no sidecar)
-isanagent = { git = "https://github.com/altaidevorg/isanagent.git", branch = "main" }
+isanagent = { git = "https://github.com/efecnc/isanagent.git", tag = "altai-v0.1.0" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
