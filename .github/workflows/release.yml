@@ -47,9 +47,19 @@ jobs:
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            NAME="${{ inputs.tag }}"
           else
-            echo "name=${GITHUB_REF##refs/tags/}" >> "$GITHUB_OUTPUT"
+            NAME="${GITHUB_REF##refs/tags/}"
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          # Treat any tag with a SemVer pre-release identifier (anything
+          # after a `-`: `-beta.1`, `-rc.2`, `-alpha`, `-canary`) as a
+          # GitHub pre-release so it doesn't claim the "Latest" slot away
+          # from the current stable.
+          if [[ "$NAME" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install Linux build dependencies
@@ -118,6 +128,6 @@ jobs:
             **Windows:** Click "More info" → "Run anyway" on the SmartScreen prompt.
             **Linux:** Install the `.deb` or run the `.AppImage` directly.
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
           includeUpdaterJson: false
           args: ${{ matrix.args }}
