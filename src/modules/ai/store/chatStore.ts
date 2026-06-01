@@ -572,20 +572,30 @@ export const useChatStore = create<StoreState>((set, get) => ({
     }
 
     const wasActive = get().activeSessionId === id;
+    // remaining is non-empty here (the empty case returned above), so
+    // remaining[0] is defined whenever we deleted the active session.
     const nextActive = wasActive ? remaining[0].id : get().activeSessionId;
-    set({ sessions: remaining, activeSessionId: nextActive });
+    if (wasActive) {
+      // Clear the deleted session's thread synchronously so its messages don't
+      // linger on screen while the next session's thread loads asynchronously.
+      set({
+        sessions: remaining,
+        activeSessionId: nextActive,
+        agentMeta: IDLE_META,
+        nativeMessages: [],
+        currentAssistantTurnId: null,
+        pendingChoices: null,
+      });
+    } else {
+      set({ sessions: remaining });
+    }
     void saveSessionsList(remaining);
     if (wasActive && nextActive) {
       void saveActiveId(nextActive);
       void loadMessages(nextActive).then((m) => {
         // Guard against a rapid switch landing elsewhere before this resolves.
         if (get().activeSessionId !== nextActive) return;
-        set({
-          agentMeta: IDLE_META,
-          nativeMessages: m ?? [],
-          currentAssistantTurnId: null,
-          pendingChoices: null,
-        });
+        set({ nativeMessages: m ?? [] });
       });
     }
   },
@@ -705,8 +715,19 @@ async function sendViaIsanAgent(
 
   // IsanAgent manages its own system prompt and tools; we only feed input.
   // Image attachments (data URIs) go as multimodal parts for vision models.
-  await native.agentSend(payload, images);
-  return true;
+  try {
+    await native.agentSend(payload, images);
+    return true;
+  } catch (e) {
+    // Without this the status would stay stuck on "thinking" if the IPC call
+    // rejects (e.g. the runtime died between start and send).
+    store.patchAgentMeta({
+      status: "error",
+      error: e instanceof Error ? e.message : String(e),
+      step: null,
+    });
+    return false;
+  }
 }
 
 function buildEnvBlock(live: Live): string | null {
