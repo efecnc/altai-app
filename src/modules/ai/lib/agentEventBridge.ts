@@ -69,9 +69,14 @@ function plural(n: number, noun: string): string {
  * events to the appropriate Zustand stores. Call once during app setup.
  */
 export async function initAgentEventBridge(): Promise<UnlistenFn> {
-  return listen<AgentEvent>("agent://event", (event) => {
+  return listen<AgentEvent & { chat_id?: string }>("agent://event", (event) => {
     const payload = event.payload;
     const store = useChatStore.getState();
+    // Per-session isolation: every event is tagged with the chat_id (= ALTAI
+    // session id) it belongs to. Drop anything that isn't for the chat tab on
+    // screen, so a still-streaming or autonomous turn from another chat (and
+    // the runtime's bootstrap "initialized" message) never leaks into it.
+    if (payload.chat_id && payload.chat_id !== store.activeSessionId) return;
     switch (payload.type) {
       case "agent_message":
         store.appendNativeMessage(payload.content, payload.role);

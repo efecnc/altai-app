@@ -22,7 +22,7 @@ use isanagent::tools::ToolRegistry;
 use isanagent::workspace::{resolve_workspace_root, IsanagentWorkspace};
 use isanagent::NodeHandle;
 
-use super::tauri_channel::{map_telemetry_to_event, TauriChannel};
+use super::tauri_channel::{map_telemetry_to_event, telemetry_chat_id, TauriChannel};
 
 /// Serializable agent event surface sent to the frontend.
 /// Stabilize this enum — every change is a breaking downstream contract.
@@ -124,6 +124,20 @@ pub enum Event {
         metrics: serde_json::Value,
         artifacts: Vec<String>,
     },
+}
+
+/// Wire envelope for `agent://event`: every event carries the `chat_id` of the
+/// ALTAI chat tab it belongs to, so the frontend can drop events that aren't
+/// for the chat currently on screen (per-session isolation).
+#[derive(Serialize)]
+struct AgentEventEnvelope<'a> {
+    chat_id: &'a str,
+    #[serde(flatten)]
+    event: &'a Event,
+}
+
+fn emit_event(app: &AppHandle, chat_id: &str, event: &Event) {
+    let _ = app.emit("agent://event", &AgentEventEnvelope { chat_id, event });
 }
 
 /// Identifies a particular `(provider, model, key, base_url, persona)`
@@ -235,7 +249,8 @@ pub async fn start_agent(
     // Errors are ignored — if the channel is in an inconsistent state
     // we'd rather proceed to a fresh init than fail the user's send.
     if fp_guard.is_some() {
-        let _ = runtime.channel.cancel().await;
+        // Teardown cancel — empty chat_id targets the channel default.
+        let _ = runtime.channel.cancel(String::new()).await;
         let _ = runtime.channel.stop().await;
     }
 
@@ -599,6 +614,7 @@ pub async fn start_agent(
                     // Clarifications (`ask_user`) ride on outbound metadata —
                     // surface them as a distinct event so the UI can render the
                     // preset choices as buttons. A normal reply resolves them.
+                    let chat_id = outbound.chat_id.clone();
                     let event = if outbound
                         .metadata
                         .contains_key(isanagent::clarification::METADATA_CLARIFICATION)
@@ -623,11 +639,12 @@ pub async fn start_agent(
                             role: "assistant".to_string(),
                         }
                     };
-                    let _ = app_for_outbound.emit("agent://event", &event);
+                    emit_event(&app_for_outbound, &chat_id, &event);
                 }
                 BusMessage::Telemetry(ref telemetry) => {
                     if let Some(event) = map_telemetry_to_event(telemetry) {
-                        let _ = app_for_outbound.emit("agent://event", &event);
+                        let chat_id = telemetry_chat_id(telemetry).unwrap_or("");
+                        emit_event(&app_for_outbound, chat_id, &event);
                     }
                 }
                 _ => {}
@@ -635,9 +652,12 @@ pub async fn start_agent(
         }
     });
 
-    // Emit ready event
-    let _ = app.emit(
-        "agent://event",
+    // Emit ready event under the runtime's bootstrap chat_id. It does not match
+    // any ALTAI chat tab, so the frontend filters it out — it exists only as a
+    // lifecycle signal, not a message to render in a user's chat.
+    emit_event(
+        &app,
+        channel.chat_id(),
         &Event::AgentMessage {
             content: "IsanAgent runtime initialized.".to_string(),
             role: "system".to_string(),

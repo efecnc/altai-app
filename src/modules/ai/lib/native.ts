@@ -364,9 +364,9 @@ export const native = {
     instructions?: string;
     baseUrl?: string;
   }) => invoke<void>("agent_start", params),
-  agentSend: (message: string, images?: string[]) =>
-    invoke<void>("agent_send", { message, images }),
-  agentCancel: () => invoke<void>("agent_cancel"),
+  agentSend: (message: string, images?: string[], chatId?: string) =>
+    invoke<void>("agent_send", { message, images, chatId }),
+  agentCancel: (chatId?: string) => invoke<void>("agent_cancel", { chatId }),
   agentApprove: (approvalId: string, approved: boolean) =>
     invoke<void>("agent_approve", { approvalId, approved }),
 };

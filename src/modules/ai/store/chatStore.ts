@@ -669,11 +669,14 @@ export async function sendMessage(
   // Sending any message resolves an open clarification, so clear its chips.
   if (state.pendingChoices) state.setPendingChoices(null);
 
-  return sendViaIsanAgent(text, images);
+  // The ALTAI session id IS the runtime chat_id — keeps each tab's
+  // conversation isolated and lets the event bridge route by chat.
+  return sendViaIsanAgent(text, sessionId, images);
 }
 
 async function sendViaIsanAgent(
   text: string,
+  chatId: string,
   images?: string[],
 ): Promise<boolean> {
   const store = useChatStore.getState();
@@ -750,7 +753,7 @@ async function sendViaIsanAgent(
   // IsanAgent manages its own system prompt and tools; we only feed input.
   // Image attachments (data URIs) go as multimodal parts for vision models.
   try {
-    await native.agentSend(payload, images);
+    await native.agentSend(payload, images, chatId);
     return true;
   } catch (e) {
     // Without this the status would stay stuck on "thinking" if the IPC call
@@ -781,6 +784,6 @@ function buildEnvBlock(live: Live): string | null {
 
 export function stop(): void {
   const state = useChatStore.getState();
-  void native.agentCancel();
+  void native.agentCancel(state.activeSessionId ?? undefined);
   state.patchAgentMeta({ status: "idle", step: null });
 }

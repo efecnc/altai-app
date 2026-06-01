@@ -42,15 +42,19 @@ pub async fn agent_start(
 
 /// Send a user message into the IsanAgent bus, with optional image
 /// attachments (base64 data URIs or https URLs) for vision-capable models.
+///
+/// `chat_id` scopes the message to one ALTAI chat tab (its session id), so
+/// each tab keeps an isolated conversation. Empty → the channel default.
 #[tauri::command]
 pub async fn agent_send(
     state: State<'_, AgentRuntime>,
     message: String,
     images: Option<Vec<String>>,
+    chat_id: Option<String>,
 ) -> Result<(), String> {
     state
         .channel
-        .inject_user_message(message, images.unwrap_or_default())
+        .inject_user_message(message, images.unwrap_or_default(), chat_id.unwrap_or_default())
         .await
 }
 
@@ -66,10 +70,14 @@ pub async fn agent_approve(
     Ok(())
 }
 
-/// Cancel the current agent reasoning loop.
+/// Cancel the current agent reasoning loop for a chat. `chat_id` empty → the
+/// channel default.
 #[tauri::command]
-pub async fn agent_cancel(state: State<'_, AgentRuntime>) -> Result<(), String> {
-    state.channel.cancel().await
+pub async fn agent_cancel(
+    state: State<'_, AgentRuntime>,
+    chat_id: Option<String>,
+) -> Result<(), String> {
+    state.channel.cancel(chat_id.unwrap_or_default()).await
 }
 
 /// Fetch paper metadata directly from the arXiv Atom API.

@@ -288,7 +288,9 @@ export function AiComposerProvider({ children }: ProviderProps) {
   };
 
   const stop = () => {
-    void native.agentCancel();
+    void native.agentCancel(
+      useChatStore.getState().activeSessionId ?? undefined,
+    );
     useChatStore.getState().patchAgentMeta({ status: "idle", step: null });
   };
 
