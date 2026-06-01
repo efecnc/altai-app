@@ -363,6 +363,7 @@ export const native = {
     modelName: string;
     instructions?: string;
     baseUrl?: string;
+    workspacePath?: string;
   }) => invoke<void>("agent_start", params),
   agentSend: (message: string, images?: string[], chatId?: string) =>
     invoke<void>("agent_send", { message, images, chatId }),

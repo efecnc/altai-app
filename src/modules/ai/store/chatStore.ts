@@ -9,6 +9,7 @@ import {
   type ProviderId,
 } from "../config";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { currentWorkspaceFolder } from "@/modules/workspace/folder";
 import { useAgentsStore } from "./agentsStore";
 import { useTodosStore } from "./todoStore";
 import type { AgentUsage } from "../lib/provider";
@@ -708,15 +709,22 @@ async function sendViaIsanAgent(
   const activeAgent = agentsState.all().find((a) => a.id === agentsState.activeId);
   const instructions = activeAgent?.instructions?.trim() || undefined;
 
+  // IsanAgent roots its workspace (memory/sandbox/config) at
+  // `<workspaceFolder>/.isanagent`. Passing it keeps each project's agent
+  // state with the project instead of under ~/.isanagent.
+  const workspacePath = currentWorkspaceFolder() ?? undefined;
+
   // Only (re)start the runtime when the target config actually changes —
   // avoids a redundant IPC round-trip on every message. Mirrors the fields
-  // the Rust runtime fingerprints (provider, key, model, base URL, persona).
+  // the Rust runtime fingerprints (provider, key, model, base URL, persona,
+  // workspace root).
   const startFingerprint = JSON.stringify([
     providerName,
     apiKey,
     modelName,
     baseUrl ?? "",
     instructions ?? "",
+    workspacePath ?? "",
   ]);
   if (startFingerprint !== lastStartFingerprint) {
     try {
@@ -726,6 +734,7 @@ async function sendViaIsanAgent(
         modelName,
         instructions,
         baseUrl,
+        workspacePath,
       });
       lastStartFingerprint = startFingerprint;
     } catch (e) {

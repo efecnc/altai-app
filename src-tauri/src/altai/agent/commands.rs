@@ -24,6 +24,7 @@ pub async fn agent_start(
     model_name: Option<String>,
     instructions: Option<String>,
     base_url: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<(), String> {
     let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
     let key = api_key.unwrap_or_default();
@@ -36,8 +37,15 @@ pub async fn agent_start(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    // The user-selected workspace folder. IsanAgent roots its workspace at
+    // `<folder>/.isanagent` so memory/sandbox/config live with the project,
+    // not under `~/.isanagent`.
+    let workspace = workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
-    runtime::start_agent(&state, &pname, &key, &model, persona, base).await
+    runtime::start_agent(&state, &pname, &key, &model, persona, base, workspace).await
 }
 
 /// Send a user message into the IsanAgent bus, with optional image

@@ -154,6 +154,10 @@ struct RuntimeFingerprint {
     api_key: String,
     base_url: String,
     persona: String,
+    /// Resolved IsanAgent workspace root (`<selected-folder>/.isanagent`, or
+    /// the `~/.isanagent` default). Switching workspaces reinitializes the
+    /// runtime AND its memory so chats don't bleed across projects.
+    workspace_root: String,
 }
 
 /// Runtime state managed by Tauri — holds the IsanAgent channel and bus.
@@ -214,13 +218,21 @@ pub async fn start_agent(
     model_name: &str,
     persona_instructions: Option<&str>,
     base_url_override: Option<&str>,
+    workspace_path: Option<&str>,
 ) -> Result<(), String> {
+    // Root the IsanAgent workspace at `<selected-folder>/.isanagent` so memory,
+    // sandbox, config, and skills live with the project. `None` keeps the
+    // legacy `~/.isanagent` default (resolved by the crate).
+    let workspace_root: Option<String> = workspace_path
+        .map(|p| format!("{}/.isanagent", p.trim_end_matches('/')));
+
     let new_fp = RuntimeFingerprint {
         provider_name: provider_name.to_string(),
         model_name: model_name.to_string(),
         api_key: api_key.to_string(),
         base_url: base_url_override.unwrap_or("").to_string(),
         persona: persona_instructions.unwrap_or("").to_string(),
+        workspace_root: workspace_root.clone().unwrap_or_default(),
     };
 
     // Hold the fingerprint guard for the duration of the init so two
@@ -248,25 +260,36 @@ pub async fn start_agent(
     //
     // Errors are ignored — if the channel is in an inconsistent state
     // we'd rather proceed to a fresh init than fail the user's send.
+    let workspace_changed = fp_guard
+        .as_ref()
+        .map(|old| old.workspace_root != new_fp.workspace_root)
+        .unwrap_or(false);
     if fp_guard.is_some() {
         // Teardown cancel — empty chat_id targets the channel default.
         let _ = runtime.channel.cancel(String::new()).await;
         let _ = runtime.channel.stop().await;
+        // The memory actor is bound to one workspace's SQLite file. If the
+        // workspace changed, drop it so it's rebuilt against the new project's
+        // DB (otherwise the new project would read the old project's history).
+        if workspace_changed {
+            *runtime.memory_node.lock().await = None;
+        }
     }
 
     let app = runtime.app.clone();
     let channel = runtime.channel.clone();
 
-    // Resolve workspace (default: ~/.isanagent)
-    let workspace_dir = resolve_workspace_root(None);
+    // Resolve workspace — `<selected-folder>/.isanagent`, or `~/.isanagent`.
+    let workspace_dir = resolve_workspace_root(workspace_root.as_deref());
     if !workspace_dir.exists() {
         // Auto-create minimal workspace
         let _ = std::fs::create_dir_all(workspace_dir.join(".system_generated"));
     }
 
-    let workspace = IsanagentWorkspace::new(None, None).map_err(|e| {
-        format!("Failed to load IsanAgent workspace: {}", e)
-    })?;
+    let workspace =
+        IsanagentWorkspace::new(workspace_root.as_deref(), None).map_err(|e| {
+            format!("Failed to load IsanAgent workspace: {}", e)
+        })?;
 
     // Memory (SQLite) — lazy-init once and keep alive across model
     // switches. IsanAgent reads chat history by session_key

@@ -82,6 +82,7 @@ import {
 } from "@/modules/source-control";
 import { StatusBar } from "@/modules/statusbar";
 import { MAX_PANES_PER_TAB, useTabs, useWorkspaceCwd } from "@/modules/tabs";
+import { useWorkspaceFolderStore } from "@/modules/workspace/folder";
 import {
   disposeSession,
   findLeafCwd,
@@ -566,10 +567,11 @@ export default function App() {
     };
   }, []);
 
+  const workspaceFolder = useWorkspaceFolderStore((s) => s.folder);
   const { explorerRoot, inheritedCwdForNewTab } = useWorkspaceCwd(
     activeTab,
     tabs,
-    launchCwd ?? home,
+    workspaceFolder ?? launchCwd ?? home,
   );
 
   useEffect(() => {
