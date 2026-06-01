@@ -155,6 +155,22 @@ pub async fn git_commit(
 }
 
 #[tauri::command]
+pub async fn git_clone(
+    url: String,
+    dest_parent: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<String, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    // clone targets a fresh dir the user explicitly picked — no workspace
+    // registry lookup needed, so the closure ignores it.
+    blocking(app, move |_r| {
+        operations::clone(&workspace, &url, &dest_parent).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn git_fetch(
     repo_root: String,
     workspace: Option<WorkspaceEnv>,

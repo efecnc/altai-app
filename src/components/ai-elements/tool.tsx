@@ -14,8 +14,6 @@ import {
   Book02Icon,
   CheckListIcon,
   CloudDownloadIcon,
-  Edit02Icon,
-  EyeIcon,
   File01Icon,
   FileEditIcon,
   FilePlusIcon,
@@ -39,39 +37,77 @@ import { isValidElement, memo, useState } from "react";
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart;
 
+// Keyed on the tool names IsanAgent (tag altai-v0.1.0) actually emits over
+// `agent://event` — see `fn name()` across `isanagent/src/tools/*`. The
+// previous keys (`bash_run`, `grep`, `glob`, `edit`, `list_directory`, …)
+// were the Vercel AI SDK tool names from the removed chat path; under the
+// native runtime they never matched, so common calls fell through to the
+// raw snake_case name + generic icon.
 const TOOL_META: Record<string, { label: string; icon: typeof File01Icon }> = {
+  // Filesystem
   read_file: { label: "Read", icon: File01Icon },
-  list_directory: { label: "List", icon: FolderOpenIcon },
   write_file: { label: "Write", icon: FilePlusIcon },
-  create_directory: { label: "Create dir", icon: FolderAddIcon },
-  edit: { label: "Edit", icon: FileEditIcon },
-  multi_edit: { label: "Edit", icon: Edit02Icon },
-  bash_run: { label: "Run", icon: TerminalIcon },
-  bash_background: { label: "Spawn", icon: TerminalIcon },
-  bash_logs: { label: "Logs", icon: TerminalIcon },
-  bash_list: { label: "Jobs", icon: TerminalIcon },
-  bash_kill: { label: "Kill", icon: TerminalIcon },
-  // `grep` is local-tree search; the globe-with-magnifier glyph reads as
-  // web search to anyone scanning the chat. Keep the plain magnifier here
-  // and let `web_search` claim `GlobalSearchIcon`.
-  grep: { label: "Search", icon: Search01Icon },
-  glob: { label: "Glob", icon: Folder01Icon },
-  suggest_command: { label: "Suggest", icon: SparklesIcon },
-  open_preview: { label: "Preview", icon: EyeIcon },
-  run_subagent: { label: "Subagent", icon: RobotIcon },
+  edit_file: { label: "Edit", icon: FileEditIcon },
+  list_dir: { label: "List", icon: FolderOpenIcon },
+  glob_files: { label: "Glob", icon: Folder01Icon },
+  // `search_text` is local-tree (ripgrep) search; the globe-with-magnifier
+  // glyph reads as web search to anyone scanning the chat. Keep the plain
+  // magnifier here and let `web_search` claim `GlobalSearchIcon`.
+  search_text: { label: "Search", icon: Search01Icon },
+
+  // Shell / code execution
+  exec: { label: "Run", icon: TerminalIcon },
+  python_run: { label: "Python", icon: TerminalIcon },
+
+  // Sandboxed execution sessions
+  execution_run: { label: "Run", icon: TerminalIcon },
+  execution_run_background: { label: "Spawn", icon: TerminalIcon },
+  execution_read_log: { label: "Logs", icon: TerminalIcon },
+  execution_job_list: { label: "Jobs", icon: TerminalIcon },
+  execution_job_status: { label: "Job status", icon: TerminalIcon },
+  execution_job_result: { label: "Job result", icon: TerminalIcon },
+  execution_job_cancel: { label: "Cancel job", icon: TerminalIcon },
+  execution_cancel: { label: "Cancel", icon: TerminalIcon },
+  execution_session_create: { label: "New session", icon: TerminalIcon },
+  execution_session_close: { label: "Close session", icon: TerminalIcon },
+  execution_env_info: { label: "Env info", icon: TerminalIcon },
+  execution_artifact_list: { label: "Artifacts", icon: Archive02Icon },
+
+  // Planning / interaction
   todo_write: { label: "Todos", icon: CheckListIcon },
+  ask_user: { label: "Ask", icon: SparklesIcon },
+  message: { label: "Message", icon: SparklesIcon },
+
+  // Web & research
   web_search: { label: "Web search", icon: GlobalSearchIcon },
   web_fetch: { label: "Fetch", icon: Link02Icon },
   arxiv_search: { label: "arXiv search", icon: Book02Icon },
   arxiv_fetch: { label: "arXiv paper", icon: Book01Icon },
   hf_hub_file_fetch: { label: "HF Hub", icon: CloudDownloadIcon },
-  // Context-management tools from the compaction overhaul in
-  // efecnc/isanagent altai-v0.1.0. `compact_context` schedules a
-  // between-turns prune; `recall_tool_result` re-materializes a tool
-  // result that fell out of the live context.
+
+  // Memory & context management. `compact_context` schedules a between-turns
+  // prune; `recall_tool_result` re-materializes a tool result that fell out
+  // of the live context.
+  search_memory: { label: "Search memory", icon: Search01Icon },
+  fetch_memory_by_date: { label: "Memory by date", icon: ArchiveArrowDownIcon },
   compact_context: { label: "Compact context", icon: Archive02Icon },
   recall_tool_result: { label: "Recall result", icon: ArchiveArrowDownIcon },
+
+  // Tooling / environment
+  search_tools: { label: "Find tools", icon: ToolsIcon },
+  get_env: { label: "Env", icon: TerminalIcon },
+  cron: { label: "Schedule", icon: TerminalIcon },
+  git_worktree: { label: "Worktree", icon: FolderAddIcon },
+  colab_mcp_tool_call: { label: "Colab", icon: RobotIcon },
 };
+
+// Friendly label for a raw IsanAgent tool name (e.g. "exec" → "Run"). Used
+// by the inline runtime-status pill so it doesn't surface raw snake_case.
+// Unknown names pass through unchanged so non-tool status text (e.g.
+// "Sending to ALTAI…") is left alone.
+export function toolLabel(name: string): string {
+  return TOOL_META[name]?.label ?? name;
+}
 
 const STATUS_DOT: Record<ToolPart["state"], string> = {
   "approval-requested": "bg-amber-500",
@@ -102,35 +138,34 @@ function deriveSummary(toolName: string, input: unknown): string | null {
   switch (toolName) {
     case "read_file":
     case "write_file":
-    case "edit":
-    case "multi_edit":
-    case "create_directory":
-    case "list_directory":
+    case "edit_file":
+    case "list_dir":
       return str("path");
-    case "bash_run":
-    case "bash_background":
-      return str("command");
-    case "bash_logs":
-    case "bash_kill":
-      return str("id");
-    case "grep":
-      return str("pattern") ?? str("query");
-    case "glob":
+    // Prefer the agent's human-facing `description` ("Navigate to project
+    // root") as the headline, Cursor-style; the raw command rides underneath
+    // as a mono subtitle (see deriveSubtitle). Falls back to the command/code
+    // when the model didn't write one.
+    case "exec":
+      return str("description") ?? str("command");
+    case "execution_run":
+    case "execution_run_background":
+      return str("description") ?? str("code");
+    case "execution_read_log":
+    case "execution_job_status":
+    case "execution_job_result":
+    case "execution_job_cancel":
+    case "execution_cancel":
+      return str("job_id") ?? str("run_id");
+    case "execution_session_create":
+    case "execution_session_close":
+      return str("session_id");
+    case "search_text":
+    case "glob_files":
       return str("pattern");
-    case "suggest_command":
-      return str("intent") ?? str("description");
-    case "open_preview":
-      return str("path") ?? str("url");
-    case "run_subagent":
-      return str("agent") ?? str("task");
-    case "todo_write": {
-      const items = Array.isArray(i.todos) ? i.todos : null;
-      return items
-        ? `${items.length} item${items.length === 1 ? "" : "s"}`
-        : null;
-    }
     case "web_search":
     case "arxiv_search":
+    case "search_memory":
+    case "search_tools":
       return str("query");
     case "web_fetch": {
       const url = str("url");
@@ -144,13 +179,47 @@ function deriveSummary(toolName: string, input: unknown): string | null {
       if (repo && path) return `${repo} · ${path}`;
       return repo ?? path;
     }
+    case "ask_user":
+      return str("prompt");
+    case "cron":
+    case "git_worktree":
+      return str("action");
     case "compact_context":
       return str("focus_instructions");
     case "recall_tool_result":
       return str("tool_call_id");
+    case "todo_write": {
+      const items = Array.isArray(i.items) ? i.items : null;
+      return items
+        ? `${items.length} item${items.length === 1 ? "" : "s"}`
+        : null;
+    }
     default:
       return null;
   }
+}
+
+// Secondary mono line under the headline. Only for run-tools, and only when
+// the agent supplied a `description` (which becomes the headline) — then the
+// actual command is shown beneath it so both the "why" and the "what" read at
+// a glance without expanding. No description → the command is already the
+// headline, so there's nothing to add here.
+function deriveSubtitle(toolName: string, input: unknown): string | null {
+  if (!input || typeof input !== "object") return null;
+  const i = input as Record<string, unknown>;
+  const str = (k: string) =>
+    typeof i[k] === "string" ? (i[k] as string) : null;
+  if (!str("description")) return null;
+  let cmd: string | null = null;
+  if (toolName === "exec") cmd = str("command");
+  else if (
+    toolName === "execution_run" ||
+    toolName === "execution_run_background"
+  )
+    cmd = str("code");
+  if (!cmd) return null;
+  const firstLine = cmd.split("\n")[0].trim();
+  return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine;
 }
 
 // Strip protocol/trailing slash so the chip reads as `host/path` instead
@@ -183,10 +252,11 @@ export type ToolProps = ComponentProps<typeof Collapsible> & {
 // `write_file` "✓ wrote · path" card is the meaningful artifact.
 const INPUT_HEAVY_TOOLS = new Set([
   "write_file",
-  "edit",
-  "multi_edit",
-  "run_subagent",
+  "edit_file",
   "todo_write",
+  "python_run",
+  "execution_run",
+  "execution_run_background",
 ]);
 
 const ToolImpl = ({
@@ -203,6 +273,7 @@ const ToolImpl = ({
   const Icon = meta?.icon ?? ToolsIcon;
   const label = meta?.label ?? toolName;
   const summary = deriveSummary(toolName, input);
+  const subtitle = deriveSubtitle(toolName, input);
   const isError = state === "output-error";
   const open = defaultOpen ?? isError;
   const isInputHeavy = INPUT_HEAVY_TOOLS.has(toolName);
@@ -253,6 +324,12 @@ const ToolImpl = ({
           </span>
         )}
       </CollapsibleTrigger>
+
+      {subtitle ? (
+        <div className="-mt-0.5 truncate pb-1 pl-[2.65rem] pr-2 font-mono text-[10.5px] text-muted-foreground/70">
+          {subtitle}
+        </div>
+      ) : null}
 
       {hasDetails && (
         <CollapsibleContent
@@ -326,9 +403,9 @@ function renderInputPreview(
   const str = (k: string) =>
     typeof i[k] === "string" ? (i[k] as string) : null;
 
-  if (toolName === "bash_run" || toolName === "bash_background") {
+  if (toolName === "exec") {
     const cmd = str("command");
-    const cwd = str("cwd");
+    const cwd = str("working_dir");
     if (!cmd) return null;
     return (
       <div className="space-y-1">
@@ -343,21 +420,16 @@ function renderInputPreview(
       </div>
     );
   }
-  if (
-    toolName === "read_file" ||
-    toolName === "list_directory" ||
-    toolName === "create_directory" ||
-    toolName === "open_preview"
-  ) {
-    const path = str("path") ?? str("url");
+  if (toolName === "read_file" || toolName === "list_dir") {
+    const path = str("path");
     if (!path) return null;
     return (
       <div className="font-mono text-[11px] text-muted-foreground">{path}</div>
     );
   }
-  if (toolName === "grep") {
-    const pat = str("pattern") ?? str("query");
-    const path = str("path") ?? str("root");
+  if (toolName === "search_text" || toolName === "glob_files") {
+    const pat = str("pattern");
+    const path = str("path");
     if (!pat) return null;
     return (
       <div className="space-y-0.5 font-mono text-[11px]">

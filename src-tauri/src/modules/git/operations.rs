@@ -940,6 +940,74 @@ pub fn pull_ff_only(
     ensure_success(&output, "git pull --ff-only failed")
 }
 
+// Clones can pull large histories over a slow link — give them far more
+// headroom than the 120s network ceiling used for fetch/pull.
+const CLONE_TIMEOUT_SECS: u64 = 1800;
+
+/// Clone `url` into a fresh subdirectory of `dest_parent` and return the
+/// absolute path of the created repo. Unlike the other operations this runs
+/// *outside* any authorized workspace — the user picks `dest_parent` via the
+/// native folder dialog, so it's already a trusted, explicit choice — and the
+/// resulting folder becomes the new workspace.
+pub fn clone(workspace: &WorkspaceEnv, url: &str, dest_parent: &str) -> Result<String> {
+    ensure_git_available(workspace)?;
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(GitError::command("clone", "empty repository URL"));
+    }
+    let parent = Path::new(dest_parent);
+    if !parent.is_dir() {
+        return Err(GitError::command(
+            "clone",
+            format!("destination is not a directory: {dest_parent}"),
+        ));
+    }
+
+    // Pick a target dir from the URL's last segment; if it's taken, suffix it
+    // so we never clone into / clobber an existing folder.
+    let base = repo_dir_name(url);
+    let mut target = parent.join(&base);
+    let mut n = 2;
+    while target.exists() {
+        target = parent.join(format!("{base}-{n}"));
+        n += 1;
+    }
+    let target_str = target.to_string_lossy().into_owned();
+
+    let output = run_git(
+        workspace,
+        Some(dest_parent),
+        [
+            OsString::from("clone"),
+            OsString::from(url),
+            OsString::from(&target_str),
+        ],
+        CLONE_TIMEOUT_SECS,
+    )?;
+    ensure_success(&output, "git clone failed")?;
+    Ok(target_str)
+}
+
+/// Derive a filesystem-safe directory name from a clone URL, e.g.
+/// `git@github.com:org/my-repo.git` → `my-repo`, `https://h/x/y.git/` → `y`.
+fn repo_dir_name(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    let last = trimmed
+        .rsplit(|c| c == '/' || c == ':')
+        .find(|s| !s.is_empty())
+        .unwrap_or(trimmed);
+    let stem = last.strip_suffix(".git").unwrap_or(last);
+    let cleaned: String = stem
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    if cleaned.is_empty() {
+        "repo".to_string()
+    } else {
+        cleaned
+    }
+}
+
 fn nothing_to_commit(output: &GitOutput) -> bool {
     let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
     let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
