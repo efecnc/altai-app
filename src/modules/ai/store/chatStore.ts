@@ -524,15 +524,20 @@ export const useChatStore = create<StoreState>((set, get) => ({
     // target session's thread, so a debounced write in flight isn't lost.
     if (prevId) flushPersist(prevId);
 
+    // Switch synchronously so the UI reflects the active session immediately.
+    // The message thread loads asynchronously and is applied only if we're
+    // still on this session — rapid A→B→A switches must not cross-populate.
+    set({
+      activeSessionId: id,
+      agentMeta: IDLE_META,
+      nativeMessages: [],
+      currentAssistantTurnId: null,
+      pendingChoices: null,
+    });
+    void saveActiveId(id);
+
     void loadMessages(id).then((m) => {
-      set({
-        activeSessionId: id,
-        agentMeta: IDLE_META,
-        nativeMessages: m ?? [],
-        currentAssistantTurnId: null,
-        pendingChoices: null,
-      });
-      void saveActiveId(id);
+      if (get().activeSessionId === id) set({ nativeMessages: m ?? [] });
     });
   },
 
@@ -572,14 +577,16 @@ export const useChatStore = create<StoreState>((set, get) => ({
     void saveSessionsList(remaining);
     if (wasActive && nextActive) {
       void saveActiveId(nextActive);
-      void loadMessages(nextActive).then((m) =>
+      void loadMessages(nextActive).then((m) => {
+        // Guard against a rapid switch landing elsewhere before this resolves.
+        if (get().activeSessionId !== nextActive) return;
         set({
           agentMeta: IDLE_META,
           nativeMessages: m ?? [],
           currentAssistantTurnId: null,
           pendingChoices: null,
-        }),
-      );
+        });
+      });
     }
   },
 
@@ -596,6 +603,10 @@ export const useChatStore = create<StoreState>((set, get) => ({
 // changes. `nativeMessages` is the single source of truth, so this is the
 // only place conversation history is written to disk.
 useChatStore.subscribe((state, prev) => {
+  // A session switch swaps both activeSessionId and nativeMessages in one
+  // update; persistence/hydration for that path is handled explicitly in the
+  // session actions, so skip it here (also avoids a spurious empty-write).
+  if (state.activeSessionId !== prev.activeSessionId) return;
   if (state.nativeMessages === prev.nativeMessages) return;
   const id = state.activeSessionId;
   if (!id) return;

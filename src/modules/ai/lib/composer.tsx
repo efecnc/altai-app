@@ -9,6 +9,7 @@ import {
 import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
+import { native } from "./native";
 import { sendMessage, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 import { currentWorkspaceEnv } from "@/modules/workspace";
@@ -296,7 +297,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
   };
 
   const stop = () => {
-    void invoke("agent_cancel");
+    void native.agentCancel();
     useChatStore.getState().patchAgentMeta({ status: "idle", step: null });
   };
 
