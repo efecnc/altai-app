@@ -182,6 +182,9 @@ function SessionTabs({ onCloseLast }: { onCloseLast: () => void }) {
 
   return (
     <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/40 bg-transparent px-2">
+      {/* WAI-ARIA tablist with roving tabindex: focus lives on the active tab,
+          not the tablist itself, so the container is intentionally not focusable. */}
+      {/* eslint-disable-next-line jsx-a11y/interactive-supports-focus */}
       <div
         role="tablist"
         aria-label="Chat sessions"
