@@ -370,4 +370,6 @@ export const native = {
   agentCancel: (chatId?: string) => invoke<void>("agent_cancel", { chatId }),
   agentApprove: (approvalId: string, approved: boolean) =>
     invoke<void>("agent_approve", { approvalId, approved }),
+  gitClone: (url: string, destParent: string) =>
+    invoke<string>("git_clone", { url, destParent }),
 };

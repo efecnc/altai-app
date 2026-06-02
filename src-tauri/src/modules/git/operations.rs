@@ -979,6 +979,9 @@ pub fn clone(workspace: &WorkspaceEnv, url: &str, dest_parent: &str) -> Result<S
         Some(dest_parent),
         [
             OsString::from("clone"),
+            // `--` terminates option parsing so a URL beginning with `-`
+            // (e.g. `--upload-pack=…`) can't be smuggled in as a git flag.
+            OsString::from("--"),
             OsString::from(url),
             OsString::from(&target_str),
         ],

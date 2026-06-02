@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
+import { native } from "../ai/lib/native";
 
 /**
  * The user-selected workspace folder — ALTAI's IDE-style project root. It is
@@ -94,10 +94,7 @@ export const useWorkspaceFolderStore = create<State>((set, get) => ({
       title: "Choose where to clone",
     });
     if (typeof parent !== "string") return null; // cancelled
-    const dest = await invoke<string>("git_clone", {
-      url: trimmed,
-      destParent: parent,
-    });
+    const dest = await native.gitClone(trimmed, parent);
     get().setFolder(dest);
     return dest;
   },

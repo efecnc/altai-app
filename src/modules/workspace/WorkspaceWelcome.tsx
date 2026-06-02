@@ -112,6 +112,7 @@ export function WorkspaceWelcome() {
                   if (e.key === "Enter") void onClone();
                 }}
                 placeholder="https://github.com/user/repo.git"
+                aria-label="Repository URL"
                 autoFocus
                 spellCheck={false}
                 disabled={cloning}
