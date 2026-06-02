@@ -306,6 +306,7 @@ mod tests {
             channel: "tauri".into(),
             tool_name: "read_file".into(),
             result: "hello".into(),
+            is_error: false,
             tool_call_id: Some("tc1".into()),
             background_job_id: None,
         }
@@ -606,6 +607,7 @@ mod tests {
             channel: "tauri".into(),
             tool_name: "bash".into(),
             result: "ok".into(),
+            is_error: false,
             tool_call_id: None,
             background_job_id: None,
         };
