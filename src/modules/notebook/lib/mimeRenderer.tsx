@@ -85,7 +85,7 @@ export function renderOutput(output: CellOutput, key: string): JSX.Element {
           <div key={key} className="px-3 py-2">
             <img
               src={`data:image/png;base64,${png.trim()}`}
-              alt="Cell image output"
+              alt="Cell output"
               className="max-w-full"
             />
           </div>
