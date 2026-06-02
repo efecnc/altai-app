@@ -22,7 +22,7 @@ use isanagent::tools::ToolRegistry;
 use isanagent::workspace::{resolve_workspace_root, IsanagentWorkspace};
 use isanagent::NodeHandle;
 
-use super::tauri_channel::{map_telemetry_to_event, TauriChannel};
+use super::tauri_channel::{map_telemetry_to_event, telemetry_chat_id, TauriChannel};
 
 /// Serializable agent event surface sent to the frontend.
 /// Stabilize this enum — every change is a breaking downstream contract.
@@ -58,11 +58,61 @@ pub enum Event {
     Thinking {
         content: String,
     },
+    /// An `ask_user` clarification surfaced by IsanAgent's ClarificationHub.
+    /// `content` is the question; `choices` are optional preset answers the UI
+    /// can render as buttons. Replying with a normal message resolves it (the
+    /// runtime routes the next inbound message to the pending wait).
+    Clarification {
+        content: String,
+        choices: Vec<String>,
+    },
+    /// Per-LLM-call token accounting forwarded from IsanAgent's `AgentUsage`
+    /// telemetry. The frontend accumulates these into the run's token meter.
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cache_read_tokens: u32,
+        cache_creation_tokens: u32,
+    },
     Done {
         reason: String,
     },
     Error {
         message: String,
+    },
+    /// A synchronous `execution_run` completed.
+    ExecutionRunFinished {
+        provider_id: String,
+        session_id: String,
+        exit_code: Option<i32>,
+        duration_ms: u64,
+        stdout_len: usize,
+        stderr_len: usize,
+        artifact_count: usize,
+        git_head: Option<String>,
+        description: Option<String>,
+    },
+    /// A background `execution_run_background` job reached a terminal state.
+    ExecutionJobFinished {
+        job_id: String,
+        session_id: String,
+        provider_id: String,
+        /// `completed`, `failed`, `cancelled`, or `timeout`.
+        status: String,
+        exit_code: Option<i32>,
+        duration_ms: u64,
+        stdout_len: usize,
+        stderr_len: usize,
+        artifact_count: usize,
+        description: Option<String>,
+    },
+    /// A background job changed state (spawned → running → terminal).
+    BackgroundJobUpdated {
+        job_id: String,
+        state: String,
+        kind: String,
+        detail: Option<String>,
     },
     NotebookOutput {
         notebook_id: String,
@@ -74,6 +124,20 @@ pub enum Event {
         metrics: serde_json::Value,
         artifacts: Vec<String>,
     },
+}
+
+/// Wire envelope for `agent://event`: every event carries the `chat_id` of the
+/// ALTAI chat tab it belongs to, so the frontend can drop events that aren't
+/// for the chat currently on screen (per-session isolation).
+#[derive(Serialize)]
+struct AgentEventEnvelope<'a> {
+    chat_id: &'a str,
+    #[serde(flatten)]
+    event: &'a Event,
+}
+
+fn emit_event(app: &AppHandle, chat_id: &str, event: &Event) {
+    let _ = app.emit("agent://event", &AgentEventEnvelope { chat_id, event });
 }
 
 /// Identifies a particular `(provider, model, key, base_url, persona)`
@@ -90,6 +154,10 @@ struct RuntimeFingerprint {
     api_key: String,
     base_url: String,
     persona: String,
+    /// Resolved IsanAgent workspace root (`<selected-folder>/.isanagent`, or
+    /// the `~/.isanagent` default). Switching workspaces reinitializes the
+    /// runtime AND its memory so chats don't bleed across projects.
+    workspace_root: String,
 }
 
 /// Runtime state managed by Tauri — holds the IsanAgent channel and bus.
@@ -150,13 +218,21 @@ pub async fn start_agent(
     model_name: &str,
     persona_instructions: Option<&str>,
     base_url_override: Option<&str>,
+    workspace_path: Option<&str>,
 ) -> Result<(), String> {
+    // Root the IsanAgent workspace at `<selected-folder>/.isanagent` so memory,
+    // sandbox, config, and skills live with the project. `None` keeps the
+    // legacy `~/.isanagent` default (resolved by the crate).
+    let workspace_root: Option<String> = workspace_path
+        .map(|p| format!("{}/.isanagent", p.trim_end_matches('/')));
+
     let new_fp = RuntimeFingerprint {
         provider_name: provider_name.to_string(),
         model_name: model_name.to_string(),
         api_key: api_key.to_string(),
         base_url: base_url_override.unwrap_or("").to_string(),
         persona: persona_instructions.unwrap_or("").to_string(),
+        workspace_root: workspace_root.clone().unwrap_or_default(),
     };
 
     // Hold the fingerprint guard for the duration of the init so two
@@ -184,24 +260,36 @@ pub async fn start_agent(
     //
     // Errors are ignored — if the channel is in an inconsistent state
     // we'd rather proceed to a fresh init than fail the user's send.
+    let workspace_changed = fp_guard
+        .as_ref()
+        .map(|old| old.workspace_root != new_fp.workspace_root)
+        .unwrap_or(false);
     if fp_guard.is_some() {
-        let _ = runtime.channel.cancel().await;
+        // Teardown cancel — empty chat_id targets the channel default.
+        let _ = runtime.channel.cancel(String::new()).await;
         let _ = runtime.channel.stop().await;
+        // The memory actor is bound to one workspace's SQLite file. If the
+        // workspace changed, drop it so it's rebuilt against the new project's
+        // DB (otherwise the new project would read the old project's history).
+        if workspace_changed {
+            *runtime.memory_node.lock().await = None;
+        }
     }
 
     let app = runtime.app.clone();
     let channel = runtime.channel.clone();
 
-    // Resolve workspace (default: ~/.isanagent)
-    let workspace_dir = resolve_workspace_root(None);
+    // Resolve workspace — `<selected-folder>/.isanagent`, or `~/.isanagent`.
+    let workspace_dir = resolve_workspace_root(workspace_root.as_deref());
     if !workspace_dir.exists() {
         // Auto-create minimal workspace
         let _ = std::fs::create_dir_all(workspace_dir.join(".system_generated"));
     }
 
-    let workspace = IsanagentWorkspace::new(None, None).map_err(|e| {
-        format!("Failed to load IsanAgent workspace: {}", e)
-    })?;
+    let workspace =
+        IsanagentWorkspace::new(workspace_root.as_deref(), None).map_err(|e| {
+            format!("Failed to load IsanAgent workspace: {}", e)
+        })?;
 
     // Memory (SQLite) — lazy-init once and keep alive across model
     // switches. IsanAgent reads chat history by session_key
@@ -311,6 +399,20 @@ pub async fn start_agent(
         memory_node: memory_node.clone(),
     }));
 
+    // Compaction overhaul (upstream isanagent — altaidevorg/isanagent#39). The agent can
+    // now schedule a between-turns context compaction via `compact_context`
+    // and re-fetch a tool result that fell out of the live context via
+    // `recall_tool_result`. Both surface in the chat as their own tool
+    // entries (TOOL_META in tool.tsx) so the user can see when compaction
+    // ran and what got recalled.
+    tools.register(Box::new(isanagent::tools::compact::CompactContextTool {
+        outbound_tx: global_outbound_tx.clone(),
+    }));
+    tools.register(Box::new(isanagent::tools::recall::RecallToolResultTool {
+        memory_node: memory_node.clone(),
+        outbound_tx: global_outbound_tx.clone(),
+    }));
+
     // Execution harness (if enabled)
     if workspace.config.execution_harness_enabled() {
         let harness = isanagent::execution::build_execution_harness(
@@ -367,6 +469,50 @@ pub async fn start_agent(
         tools.register(Box::new(isanagent::tools::execution::ExecutionCancelTool {
             harness: harness.clone(),
         }));
+
+        // Read background-job stdout/stderr line-by-line — lets the agent
+        // inspect a long-running job's logs without fetching the full result.
+        tools.register(Box::new(isanagent::tools::execution::ExecutionReadLogTool {
+            jobs: execution_jobs.clone(),
+            harness: harness.clone(),
+        }));
+
+        // Colab MCP tool-call proxy — registered only when colab_mcp is the
+        // default provider, the feature is enabled, and a non-empty allowlist
+        // compiles. Mirrors the gating in the isanagent reference binary.
+        if workspace.config.execution_default_provider() == "colab_mcp"
+            && workspace
+                .config
+                .execution_colab_mcp_extra_mcp_tool_call_enabled()
+        {
+            let patterns = workspace
+                .config
+                .execution_colab_mcp_extra_mcp_tool_allowlist();
+            if patterns.is_empty() {
+                log::warn!(
+                    "colab_mcp extra_mcp_tool_call enabled but allowlist empty; skipping colab_mcp_tool_call registration."
+                );
+            } else {
+                match isanagent::tools::execution::compile_colab_mcp_tool_allowlist(&patterns) {
+                    Ok(gs) => {
+                        let max_chars =
+                            workspace.config.execution_max_output_bytes().min(512 * 1024);
+                        tools.register(Box::new(
+                            isanagent::tools::execution::ColabMcpToolCallTool {
+                                harness: harness.clone(),
+                                allowlist: gs,
+                                max_result_chars: max_chars,
+                                jobs: Some(execution_jobs.clone()),
+                                inflight: Some(inflight_sync.clone()),
+                            },
+                        ));
+                    }
+                    Err(e) => log::warn!(
+                        "invalid colab_mcp extra_mcp_tool_allowlist: {e}; skipping colab_mcp_tool_call"
+                    ),
+                }
+            }
+        }
     }
 
     // Provider — `base_url_override` (from the JS side, derived from the
@@ -448,8 +594,8 @@ pub async fn start_agent(
     // Start the TauriChannel
     channel.start(bus_tx.clone()).await.map_err(|e| format!("TauriChannel start failed: {}", e))?;
 
-    // Bus router: forward inbound → agent, outbound/telemetry → frontend
-    let app_for_bus = app.clone();
+    // Bus router: forward inbound → agent, outbound → channel. (Telemetry is
+    // emitted by the outbound router below, not here — see note in the loop.)
     let channel_for_outbound = channel.clone();
     async_runtime::spawn(async move {
         while let Some(msg) = bus_rx.recv().await {
@@ -460,11 +606,13 @@ pub async fn start_agent(
                 BusMessage::Outbound(outbound) => {
                     let _ = channel_for_outbound.send(outbound).await;
                 }
-                BusMessage::Telemetry(ref telemetry) => {
-                    if let Some(event) = map_telemetry_to_event(telemetry) {
-                        let _ = app_for_bus.emit("agent://event", &event);
-                    }
-                }
+                // NOTE: telemetry is intentionally NOT handled here. Agent and
+                // tool telemetry flows through `global_outbound_tx` (the
+                // outbound router below) and is emitted there exactly once.
+                // `bus_tx` only ever carries Inbound (user + synthetic
+                // execution-job follow-ups) and Cancel, so handling Telemetry
+                // here would be dead code today and a double-emit footgun if
+                // anything later routed telemetry to this channel.
                 BusMessage::Cancel(chat_id) => {
                     let _ = agent_node
                         .send_packet(BusMessage::Cancel(chat_id))
@@ -486,15 +634,40 @@ pub async fn start_agent(
         while let Some(out_msg) = global_outbound_rx.recv().await {
             match out_msg {
                 BusMessage::Outbound(outbound) => {
-                    let event = Event::AgentMessage {
-                        content: outbound.content,
-                        role: "assistant".to_string(),
+                    // Clarifications (`ask_user`) ride on outbound metadata —
+                    // surface them as a distinct event so the UI can render the
+                    // preset choices as buttons. A normal reply resolves them.
+                    let chat_id = outbound.chat_id.clone();
+                    let event = if outbound
+                        .metadata
+                        .contains_key(isanagent::clarification::METADATA_CLARIFICATION)
+                    {
+                        let choices = outbound
+                            .metadata
+                            .get(isanagent::clarification::METADATA_CLARIFICATION_CHOICES)
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|x| x.as_str().map(str::to_string))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        Event::Clarification {
+                            content: outbound.content,
+                            choices,
+                        }
+                    } else {
+                        Event::AgentMessage {
+                            content: outbound.content,
+                            role: "assistant".to_string(),
+                        }
                     };
-                    let _ = app_for_outbound.emit("agent://event", &event);
+                    emit_event(&app_for_outbound, &chat_id, &event);
                 }
                 BusMessage::Telemetry(ref telemetry) => {
                     if let Some(event) = map_telemetry_to_event(telemetry) {
-                        let _ = app_for_outbound.emit("agent://event", &event);
+                        let chat_id = telemetry_chat_id(telemetry).unwrap_or("");
+                        emit_event(&app_for_outbound, chat_id, &event);
                     }
                 }
                 _ => {}
@@ -502,9 +675,12 @@ pub async fn start_agent(
         }
     });
 
-    // Emit ready event
-    let _ = app.emit(
-        "agent://event",
+    // Emit ready event under the runtime's bootstrap chat_id. It does not match
+    // any ALTAI chat tab, so the frontend filters it out — it exists only as a
+    // lifecycle signal, not a message to render in a user's chat.
+    emit_event(
+        &app,
+        channel.chat_id(),
         &Event::AgentMessage {
             content: "IsanAgent runtime initialized.".to_string(),
             role: "system".to_string(),

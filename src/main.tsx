@@ -9,6 +9,7 @@ import ReactDOM from "react-dom/client";
 import App from "./app/App";
 import { initLaunchDir } from "./lib/launchDir";
 import { USE_CUSTOM_WINDOW_CONTROLS } from "./lib/platform";
+import { WorkspaceGate } from "./modules/workspace/WorkspaceGate";
 
 if (USE_CUSTOM_WINDOW_CONTROLS) {
   document.documentElement.dataset.chrome = "borderless";
@@ -18,5 +19,7 @@ if (USE_CUSTOM_WINDOW_CONTROLS) {
 await initLaunchDir();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <App />,
+  <WorkspaceGate>
+    <App />
+  </WorkspaceGate>,
 );

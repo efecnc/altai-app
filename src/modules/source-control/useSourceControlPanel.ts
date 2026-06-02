@@ -851,7 +851,7 @@ export function useSourceControlPanel(
     try {
       const [{ buildConfiguredLanguageModel }, { generateText }, diff] =
         await Promise.all([
-          import("@/modules/ai/lib/agent"),
+          import("@/modules/ai/lib/provider"),
           import("ai"),
           native.gitDiff(repo.repoRoot, null, true),
         ]);

@@ -3,7 +3,7 @@ import {
   LMSTUDIO_DEFAULT_BASE_URL,
   type AutocompleteProviderId,
 } from "@/modules/ai/config";
-import { buildLanguageModel } from "@/modules/ai/lib/agent";
+import { buildLanguageModel } from "@/modules/ai/lib/provider";
 import { EMPTY_PROVIDER_KEYS } from "@/modules/ai/lib/keyring";
 import { generateText } from "ai";
 import {

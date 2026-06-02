@@ -17,7 +17,6 @@ export {
 } from "./lib/keyring";
 export {
   getActiveProviderKey,
-  getOrCreateChat,
   hasKeyForModel,
   sendMessage,
   stop,

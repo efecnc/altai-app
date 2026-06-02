@@ -363,10 +363,13 @@ export const native = {
     modelName: string;
     instructions?: string;
     baseUrl?: string;
+    workspacePath?: string;
   }) => invoke<void>("agent_start", params),
-  agentSend: (message: string) =>
-    invoke<void>("agent_send", { message }),
-  agentCancel: () => invoke<void>("agent_cancel"),
+  agentSend: (message: string, images?: string[], chatId?: string) =>
+    invoke<void>("agent_send", { message, images, chatId }),
+  agentCancel: (chatId?: string) => invoke<void>("agent_cancel", { chatId }),
   agentApprove: (approvalId: string, approved: boolean) =>
     invoke<void>("agent_approve", { approvalId, approved }),
+  gitClone: (url: string, destParent: string) =>
+    invoke<string>("git_clone", { url, destParent }),
 };

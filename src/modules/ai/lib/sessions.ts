@@ -1,4 +1,4 @@
-import type { UIMessage } from "@ai-sdk/react";
+import type { UIMessage } from "ai";
 import { LazyStore } from "@tauri-apps/plugin-store";
 
 export type SessionMeta = {

@@ -82,6 +82,7 @@ import {
 } from "@/modules/source-control";
 import { StatusBar } from "@/modules/statusbar";
 import { MAX_PANES_PER_TAB, useTabs, useWorkspaceCwd } from "@/modules/tabs";
+import { folderName, useWorkspaceFolderStore } from "@/modules/workspace/folder";
 import {
   disposeSession,
   findLeafCwd,
@@ -182,6 +183,11 @@ export default function App() {
   // (Cmd+Tab back, dock click). Without this, the WebView dumps focus on
   // <body> and screen-reader users lose narration on every app switch.
   useRestoreFocusOnReturn();
+  // The first terminal should open in the chosen workspace folder. App only
+  // mounts once the WorkspaceGate has a folder, so a non-reactive read here is
+  // safe and reflects the active workspace (a folder switch remounts App).
+  const initialTabCwd =
+    useWorkspaceFolderStore.getState().folder ?? getLaunchDir() ?? undefined;
   const {
     tabs,
     activeId,
@@ -212,7 +218,7 @@ export default function App() {
     closeActivePane,
     closePaneByLeaf,
     resetWorkspace,
-  } = useTabs(getLaunchDir() ? { cwd: getLaunchDir() } : undefined);
+  } = useTabs(initialTabCwd ? { cwd: initialTabCwd } : undefined);
 
   // Mirror `tabs` into a ref so callbacks scheduled with `setTimeout`
   // (e.g. cdInNewTab) read the latest pane state instead of a stale closure.
@@ -566,11 +572,15 @@ export default function App() {
     };
   }, []);
 
-  const { explorerRoot, inheritedCwdForNewTab } = useWorkspaceCwd(
-    activeTab,
-    tabs,
-    launchCwd ?? home,
-  );
+  const workspaceFolder = useWorkspaceFolderStore((s) => s.folder);
+  const closeFolder = useWorkspaceFolderStore((s) => s.closeFolder);
+  const { explorerRoot: terminalExplorerRoot, inheritedCwdForNewTab } =
+    useWorkspaceCwd(activeTab, tabs, workspaceFolder ?? launchCwd ?? home);
+  // The opened workspace folder IS the explorer root (IDE behavior): the file
+  // tree stays anchored to the project instead of following wherever a terminal
+  // has cd'd (which made it jump to `/`). Falls back to the terminal-derived
+  // root only when no workspace is selected.
+  const explorerRoot = workspaceFolder ?? terminalExplorerRoot;
 
   useEffect(() => {
     setActiveSearchAddon(
@@ -1476,6 +1486,25 @@ export default function App() {
                 }}
               >
                 <div className="flex h-full min-h-0 flex-col border-r border-border/60 bg-card">
+                  {workspaceFolder ? (
+                    <div className="group/ws flex items-center gap-1 border-b border-border/60 px-2 py-1.5">
+                      <span
+                        className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+                        title={workspaceFolder}
+                      >
+                        {folderName(workspaceFolder)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={closeFolder}
+                        title="Close folder — back to welcome"
+                        aria-label="Close folder"
+                        className="flex size-5 shrink-0 items-center justify-center rounded text-[14px] leading-none text-muted-foreground/60 opacity-0 transition-opacity hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/ws:opacity-100"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ) : null}
                   <div className="min-h-0 flex-1">
                     {sidebarView === "explorer" ? (
                       <FileExplorer
@@ -1569,7 +1598,6 @@ export default function App() {
             home={home}
             onCd={sendCd}
             onWorkspaceChange={switchWorkspace}
-            onOpenMini={openMini}
             privateActive={
               activeTab?.kind === "terminal" && activeTab.private === true
             }

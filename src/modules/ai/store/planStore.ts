@@ -29,11 +29,6 @@ type PlanState = {
   applyAll: () => Promise<{ id: string; ok: boolean; error?: string }[]>;
 };
 
-let nextId = 1;
-export function newQueuedEditId(): string {
-  return `q-${Date.now().toString(36)}-${(nextId++).toString(36)}`;
-}
-
 export const usePlanStore = create<PlanState>((set, get) => ({
   active: false,
   queue: [],

@@ -24,6 +24,7 @@ pub async fn agent_start(
     model_name: Option<String>,
     instructions: Option<String>,
     base_url: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<(), String> {
     let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
     let key = api_key.unwrap_or_default();
@@ -36,17 +37,33 @@ pub async fn agent_start(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    // The user-selected workspace folder. IsanAgent roots its workspace at
+    // `<folder>/.isanagent` so memory/sandbox/config live with the project,
+    // not under `~/.isanagent`.
+    let workspace = workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
-    runtime::start_agent(&state, &pname, &key, &model, persona, base).await
+    runtime::start_agent(&state, &pname, &key, &model, persona, base, workspace).await
 }
 
-/// Send a user message into the IsanAgent bus.
+/// Send a user message into the IsanAgent bus, with optional image
+/// attachments (base64 data URIs or https URLs) for vision-capable models.
+///
+/// `chat_id` scopes the message to one ALTAI chat tab (its session id), so
+/// each tab keeps an isolated conversation. Empty → the channel default.
 #[tauri::command]
 pub async fn agent_send(
     state: State<'_, AgentRuntime>,
     message: String,
+    images: Option<Vec<String>>,
+    chat_id: Option<String>,
 ) -> Result<(), String> {
-    state.channel.inject_user_message(message).await
+    state
+        .channel
+        .inject_user_message(message, images.unwrap_or_default(), chat_id.unwrap_or_default())
+        .await
 }
 
 /// Approve or deny an agent action (placeholder for future approval flow).
@@ -61,10 +78,14 @@ pub async fn agent_approve(
     Ok(())
 }
 
-/// Cancel the current agent reasoning loop.
+/// Cancel the current agent reasoning loop for a chat. `chat_id` empty → the
+/// channel default.
 #[tauri::command]
-pub async fn agent_cancel(state: State<'_, AgentRuntime>) -> Result<(), String> {
-    state.channel.cancel().await
+pub async fn agent_cancel(
+    state: State<'_, AgentRuntime>,
+    chat_id: Option<String>,
+) -> Result<(), String> {
+    state.channel.cancel(chat_id.unwrap_or_default()).await
 }
 
 /// Fetch paper metadata directly from the arXiv Atom API.

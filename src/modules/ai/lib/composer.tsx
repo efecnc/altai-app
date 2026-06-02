@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import {
   createContext,
   useContext,
@@ -9,9 +8,9 @@ import {
 import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
-import { getOrCreateChat, sendMessage, useChatStore } from "../store/chatStore";
+import { native } from "./native";
+import { sendMessage, useChatStore } from "../store/chatStore";
 import { useSnippetsStore } from "../store/snippetsStore";
-import { currentWorkspaceEnv } from "@/modules/workspace";
 
 export type FileAttachment = {
   id: string;
@@ -24,10 +23,6 @@ export type FileAttachment = {
   /** For kind === "selection": which surface it came from. */
   source?: "terminal" | "editor";
 };
-
-type MessagePart =
-  | { type: "text"; text: string }
-  | { type: "file"; mediaType: string; url: string; filename?: string };
 
 export const MAX_TEXT_INLINE = 200_000;
 export const ACCEPTED_FILES =
@@ -172,14 +167,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
 
   const attachFileByPath = async (path: string) => {
     try {
-      type ReadResult =
-        | { kind: "text"; content: string; size: number }
-        | { kind: "binary"; size: number }
-        | { kind: "toolarge"; size: number; limit: number };
-      const result = await invoke<ReadResult>("fs_read_file", {
-        path,
-        workspace: currentWorkspaceEnv(),
-      });
+      const result = await native.readFile(path);
       if (result.kind !== "text") {
         // Binary/oversize files: skip (could surface a toast in future).
         console.warn("attachFileByPath: skipped non-text file", path, result);
@@ -240,7 +228,6 @@ export function AiComposerProvider({ children }: ProviderProps) {
       }
     }
 
-    const parts: MessagePart[] = [];
     const fileBlocks = files
       .filter((f) => f.kind === "text")
       .map(
@@ -281,32 +268,18 @@ export function AiComposerProvider({ children }: ProviderProps) {
     ]
       .filter(Boolean)
       .join("\n\n");
-    if (composed) parts.push({ type: "text", text: composed });
-
-    for (const f of files) {
-      if (f.kind === "image" && f.url) {
-        parts.push({
-          type: "file",
-          mediaType: f.mediaType,
-          url: f.url,
-          filename: f.name,
-        });
-      }
-    }
-
     if (!sessionId) return;
     const store = useChatStore.getState();
 
-    if (store.backendMode === "isanagent") {
-      void sendMessage(composed);
-    } else {
-      const chat = getOrCreateChat(sessionId);
-      void chat.sendMessage({ role: "user", parts } as Parameters<
-        typeof chat.sendMessage
-      >[0]);
-    }
+    // Image attachments ride alongside the text as multimodal parts so
+    // vision-capable models receive them; text/selection files are already
+    // inlined into `composed` above.
+    const imageUrls = files
+      .filter((f) => f.kind === "image" && f.url)
+      .map((f) => f.url as string);
 
-    store.patchAgentMeta({ hitStepCap: false, compactionNotice: null });
+    void sendMessage(composed, imageUrls.length ? imageUrls : undefined);
+
     if (!store.mini.open) store.openMini();
     setValue("");
     setFiles([]);
@@ -315,13 +288,10 @@ export function AiComposerProvider({ children }: ProviderProps) {
   };
 
   const stop = () => {
-    if (useChatStore.getState().backendMode === "isanagent") {
-      void invoke("agent_cancel");
-      useChatStore.getState().patchAgentMeta({ status: "idle", step: null });
-      return;
-    }
-    if (!sessionId) return;
-    void getOrCreateChat(sessionId).stop();
+    void native.agentCancel(
+      useChatStore.getState().activeSessionId ?? undefined,
+    );
+    useChatStore.getState().patchAgentMeta({ status: "idle", step: null });
   };
 
   const canSend =

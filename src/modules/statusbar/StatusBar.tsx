@@ -1,4 +1,3 @@
-import { AgentStatusPill } from "@/modules/ai/components/AgentStatusPill";
 import {
   Tooltip,
   TooltipContent,
@@ -16,7 +15,6 @@ type Props = {
   home: string | null;
   onCd: (path: string) => void;
   onWorkspaceChange: (env: WorkspaceEnv) => void;
-  onOpenMini: () => void;
   privateActive: boolean;
 };
 
@@ -26,7 +24,6 @@ export function StatusBar({
   home,
   onCd,
   onWorkspaceChange,
-  onOpenMini,
   privateActive,
 }: Props) {
   return (
@@ -48,9 +45,6 @@ export function StatusBar({
             </TooltipContent>
           </Tooltip>
         ) : null}
-      </div>
-      <div className="flex shrink-0 items-center gap-1.5">
-        <AgentStatusPill onClick={onOpenMini} />
       </div>
     </footer>
   );

@@ -1,7 +1,6 @@
 import { cn } from "@/lib/utils";
 import { MOD_KEY, fmtShortcut } from "@/lib/platform";
 import { Kbd } from "@/components/ui/kbd";
-import { useChat, type UIMessage } from "@ai-sdk/react";
 import {
   AbsoluteIcon,
   Add01Icon,
@@ -16,10 +15,14 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import type { AgentIconId } from "../lib/agents";
 import type { SessionMeta } from "../lib/sessions";
-import { getOrCreateChat, useChatStore } from "../store/chatStore";
+import {
+  sendMessage,
+  stop as stopAgent,
+  useChatStore,
+} from "../store/chatStore";
 import { useAgentsStore } from "../store/agentsStore";
 import { usePlanStore } from "../store/planStore";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
@@ -319,20 +322,17 @@ function SessionTab({
 
 function Body({ sessionId }: { sessionId: string }) {
   const focusInput = useChatStore((s) => s.focusInput);
-  const backendMode = useChatStore((s) => s.backendMode);
   const nativeMessages = useChatStore((s) => s.nativeMessages);
   const agentStatus = useChatStore((s) => s.agentMeta.status);
+  const errorText = useChatStore((s) => s.agentMeta.error);
+  const respondToApproval = useChatStore((s) => s.respondToApproval);
+  const patchAgentMeta = useChatStore((s) => s.patchAgentMeta);
 
-  const chat = useMemo(() => getOrCreateChat(sessionId), [sessionId]);
-  const helpers = useChat<UIMessage>({ chat });
-
-  const isNative = backendMode === "isanagent";
-  const displayMessages = isNative ? nativeMessages : helpers.messages;
-  const displayStatus = isNative
-    ? agentStatus === "streaming" || agentStatus === "thinking"
+  const displayMessages = nativeMessages;
+  const displayStatus =
+    agentStatus === "streaming" || agentStatus === "thinking"
       ? "streaming"
-      : "ready"
-    : helpers.status;
+      : "ready";
 
   return (
     <div
@@ -351,16 +351,38 @@ function Body({ sessionId }: { sessionId: string }) {
             <AiChatView
               messages={displayMessages}
               status={displayStatus}
-              error={helpers.error}
-              clearError={helpers.clearError}
-              addToolApprovalResponse={helpers.addToolApprovalResponse}
-              stop={helpers.stop}
+              error={errorText ? new Error(errorText) : undefined}
+              clearError={() => patchAgentMeta({ error: null })}
+              addToolApprovalResponse={({ id, approved }) =>
+                respondToApproval(id, approved)
+              }
+              stop={stopAgent}
             />
           </div>
         )}
       </div>
 
+      <ClarificationChoices />
       <TodoStrip sessionId={sessionId} />
+    </div>
+  );
+}
+
+function ClarificationChoices() {
+  const choices = useChatStore((s) => s.pendingChoices);
+  if (!choices || choices.length === 0) return null;
+  return (
+    <div className="flex shrink-0 flex-wrap gap-1.5 border-t border-border/40 px-3 py-2">
+      {choices.map((choice, i) => (
+        <button
+          key={`${i}-${choice}`}
+          type="button"
+          onClick={() => void sendMessage(choice)}
+          className="rounded-full border border-border/60 bg-card/60 px-3 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-accent"
+        >
+          {choice}
+        </button>
+      ))}
     </div>
   );
 }

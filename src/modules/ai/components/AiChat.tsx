@@ -32,8 +32,7 @@ import {
   TerminalIcon,
 } from "@hugeicons/core-free-icons";
 import { SLASH_COMMANDS, ALTAI_CMD_RE } from "../lib/slashCommands";
-import { Spinner } from "@/components/ui/spinner";
-import { useChatStore, sendMessage } from "../store/chatStore";
+import { AgentStatusPill } from "./AgentStatusPill";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type {
   ChatStatus,
@@ -204,12 +203,6 @@ export function AiChatView({
     status === "streaming" && lastMessage?.role === "assistant"
       ? lastMessage.id
       : null;
-  const step = useChatStore((s) => s.agentMeta.step);
-  const hitStepCap = useChatStore((s) => s.agentMeta.hitStepCap);
-  const compactionNotice = useChatStore((s) => s.agentMeta.compactionNotice);
-  const patchAgentMeta = useChatStore((s) => s.patchAgentMeta);
-  const showContinue =
-    !isBusy && hitStepCap && lastMessage?.role === "assistant";
 
   const onApproval = useCallback(
     (id: string, approved: boolean) => addToolApprovalResponse({ id, approved }),
@@ -240,28 +233,11 @@ export function AiChatView({
             streaming={m.id === streamingMessageId}
           />
         ))}
-        {compactionNotice && (
-          <CompactionNotice
-            droppedCount={compactionNotice.droppedCount}
-            onDismiss={() => patchAgentMeta({ compactionNotice: null })}
-          />
-        )}
-        {showSpinner && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Spinner />
-            <span className="truncate">{step ?? "Thinking…"}</span>
-          </div>
-        )}
-        {showContinue && (
-          <ContinueRow
-            onContinue={() => {
-              patchAgentMeta({ hitStepCap: false });
-              void sendMessage(
-                "Continue from where you stopped. Don't recap — just keep going.",
-              );
-            }}
-          />
-        )}
+        {/* Live runtime status — moved here from the bottom-right status bar
+            so the agent's current step/approval state reads inline with the
+            conversation. `busy` covers the submitted window before the first
+            agent event; the chat's own error block handles failures. */}
+        <AgentStatusPill busy={showSpinner} hideError />
         {error && (
           // role="alert" => assertive live region. Without this the chat
           // failure was silent to screen readers and the agent appeared
@@ -290,52 +266,6 @@ export function AiChatView({
     </Conversation>
   );
 }
-
-const CompactionNotice = memo(function CompactionNotice({
-  droppedCount,
-  onDismiss,
-}: {
-  droppedCount: number;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-2 rounded-md border border-border/40 bg-muted/30 px-2.5 py-1.5 text-[11px] text-muted-foreground">
-      <span className="size-1.5 shrink-0 rounded-full bg-amber-500/80" />
-      <span className="flex-1 truncate">
-        Context compacted — {droppedCount} older tool result
-        {droppedCount === 1 ? "" : "s"} elided to save tokens.
-      </span>
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="text-[10.5px] underline opacity-70 hover:opacity-100"
-      >
-        Dismiss
-      </button>
-    </div>
-  );
-});
-
-const ContinueRow = memo(function ContinueRow({
-  onContinue,
-}: {
-  onContinue: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-2 rounded-md border border-border/50 bg-card/60 px-2.5 py-1.5 text-[11px]">
-      <span className="flex-1 text-muted-foreground">
-        Hit the step limit. Continue to keep going.
-      </span>
-      <button
-        type="button"
-        onClick={onContinue}
-        className="rounded-md border border-border/60 bg-background px-2 py-0.5 text-[11px] font-medium text-foreground transition-colors hover:bg-accent"
-      >
-        Continue
-      </button>
-    </div>
-  );
-});
 
 const RenderedMessage = memo(function RenderedMessage({
   message,
@@ -406,6 +336,13 @@ const RenderedMessage = memo(function RenderedMessage({
                 </PartAppear>
               );
             }
+            if (g.kind === "cmd") {
+              return (
+                <PartAppear key={`${message.id}-${g.key}`}>
+                  <CommandGroup parts={g.parts} onApproval={onApproval} />
+                </PartAppear>
+              );
+            }
             const isReadSingle =
               toolNameOf(g.part) === "read_file" &&
               ((g.part as { state?: string }).state ?? "") !==
@@ -433,12 +370,13 @@ const RenderedMessage = memo(function RenderedMessage({
   );
 });
 
-type GroupKind = "reads" | "web";
+type GroupKind = "reads" | "web" | "cmd";
 
 type Group =
   | { kind: "single"; part: AnyPart; idx: number; key: string }
   | { kind: "reads"; parts: AnyPart[]; key: string }
-  | { kind: "web"; parts: AnyPart[]; key: string };
+  | { kind: "web"; parts: AnyPart[]; key: string }
+  | { kind: "cmd"; parts: AnyPart[]; key: string };
 
 function partType(p: AnyPart): string {
   return (p as { type?: string }).type ?? "";
@@ -468,6 +406,14 @@ const WEB_GROUP_TOOLS = new Set([
   "arxiv_fetch",
   "hf_hub_file_fetch",
 ]);
+// Shell/command runs. A task that chains `cd`, `ls`, `git status`, … would
+// otherwise stack a dozen identical-looking rows; collapse consecutive ones
+// into a single "Ran N commands" group (expandable to the per-call cards).
+const CMD_GROUP_TOOLS = new Set([
+  "exec",
+  "execution_run",
+  "execution_run_background",
+]);
 
 // What collapsible run, if any, this part participates in. Approval
 // cards always render as their own card so we never sweep them into
@@ -480,6 +426,7 @@ function groupKindFor(p: AnyPart): GroupKind | null {
   if (!name) return null;
   if (READ_GROUP_TOOLS.has(name)) return "reads";
   if (WEB_GROUP_TOOLS.has(name)) return "web";
+  if (CMD_GROUP_TOOLS.has(name)) return "cmd";
   return null;
 }
 
@@ -702,6 +649,98 @@ const WebGroup = memo(function WebGroup({
             {summaries.length > 3
               ? `, +${summaries.length - 3} more`
               : ""}
+          </span>
+        ) : null}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="altai-collapsible-content border-t border-border/30">
+        <div className="flex flex-col gap-1 px-2 py-1.5">
+          {parts.map((p, i) => (
+            <RenderedPart
+              key={partKey(p, i)}
+              part={p}
+              onApproval={onApproval}
+              streaming={false}
+            />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+});
+
+// First line of the command a run-tool executed, for the collapsed preview.
+function cmdSummaryForPart(p: AnyPart): string | null {
+  const name = toolNameOf(p);
+  const input = (p as { input?: Record<string, unknown> }).input;
+  if (!input || typeof input !== "object") return null;
+  const str = (k: string) =>
+    typeof input[k] === "string" ? (input[k] as string) : null;
+  let raw: string | null = null;
+  if (name === "exec") raw = str("description") ?? str("command");
+  else if (name === "execution_run" || name === "execution_run_background")
+    raw = str("description") ?? str("code");
+  if (!raw) return null;
+  const firstLine = raw.split("\n")[0].trim();
+  return firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine;
+}
+
+// Two or more consecutive shell runs collapse into one row so a chain of
+// `cd`/`ls`/`git` calls doesn't push the transcript off-screen. Expanded
+// view inlines each call as a full `<Tool>` so its stdout/exit card stays
+// reachable — same pattern as WebGroup.
+const CommandGroup = memo(function CommandGroup({
+  parts,
+  onApproval,
+}: {
+  parts: AnyPart[];
+  onApproval: (id: string, approved: boolean) => void;
+}) {
+  const summaries = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const p of parts) {
+      const s = cmdSummaryForPart(p);
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+    }
+    return out;
+  }, [parts]);
+  const count = parts.length;
+  const preview = summaries.slice(0, 3).join(" · ");
+
+  return (
+    <Collapsible className="group/cmd overflow-hidden rounded-md border border-border/50 bg-card/50">
+      <CollapsibleTrigger
+        className={cn(
+          "flex w-full items-center gap-2 px-2 py-1.5 text-left text-[12px]",
+          "transition-colors hover:bg-muted/50",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        )}
+      >
+        <HugeiconsIcon
+          icon={ArrowRight01Icon}
+          size={11}
+          strokeWidth={2}
+          className={cn(
+            "shrink-0 text-muted-foreground transition-transform",
+            "group-data-[state=open]/cmd:rotate-90",
+          )}
+        />
+        <HugeiconsIcon
+          icon={TerminalIcon}
+          size={13}
+          strokeWidth={1.75}
+          className="shrink-0 text-muted-foreground"
+        />
+        <span className="shrink-0 font-medium text-foreground">Ran</span>
+        <span className="shrink-0 text-[11px] text-muted-foreground">
+          {count} command{count === 1 ? "" : "s"}
+        </span>
+        {preview ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/80 group-data-[state=open]/cmd:invisible">
+            · {preview}
+            {summaries.length > 3 ? `, +${summaries.length - 3} more` : ""}
           </span>
         ) : null}
       </CollapsibleTrigger>

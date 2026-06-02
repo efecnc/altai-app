@@ -13,7 +13,6 @@ import {
   type Agent,
   type AgentOverride,
 } from "../lib/agents";
-import { useChatStore } from "./chatStore";
 
 const CHANGED_EVENT = "altai://ai-agents-changed";
 /**
@@ -110,10 +109,6 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
   setActiveId: (id) => {
     set({ activeId: id });
     void saveActiveAgentId(id).then(broadcast);
-    // Every chat now routes through the embedded IsanAgent runtime, so this
-    // is no longer a conditional. The "ML Agents" submenu in the picker
-    // (defined in lib/agents.ts) is UI-only grouping; nothing here.
-    useChatStore.getState().setBackendMode("isanagent");
   },
   upsert: (agent) => {
     if (agent.builtIn) {
