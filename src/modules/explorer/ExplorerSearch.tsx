@@ -183,6 +183,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
           />
           <Input
             ref={inputRef}
+            aria-label="Search files"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {

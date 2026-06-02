@@ -264,14 +264,17 @@ function CollapsedSegments({
   segments: { fullPath: string; label: string; isHome: boolean }[];
   onCd: (p: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
   return (
     <span className="contents md:hidden">
       <BreadcrumbItem>
-        <DropdownMenu>
+        <DropdownMenu open={open} onOpenChange={setOpen}>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
               title="Show hidden folders"
+              aria-label="Show hidden folders"
+              aria-pressed={open}
               className="flex items-center rounded-sm px-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <HugeiconsIcon

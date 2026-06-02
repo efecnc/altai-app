@@ -70,6 +70,7 @@ export function PaperImport({ onClose }: PaperImportProps) {
       <div className="flex gap-2">
         <input
           type="text"
+          aria-label="Paper URL"
           value={url}
           onChange={(e) => {
             setUrl(e.target.value);
@@ -77,7 +78,7 @@ export function PaperImport({ onClose }: PaperImportProps) {
             setError(null);
           }}
           placeholder="Paste arXiv URL (e.g. arxiv.org/abs/2301.12345)"
-          className="flex-1 rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          className="flex-1 rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           onKeyDown={(e) => {
             if (e.key === "Enter" && isValid && !fetching) {
               handleFetch();

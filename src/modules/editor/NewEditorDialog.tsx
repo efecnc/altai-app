@@ -92,6 +92,7 @@ export function NewEditorDialog({
         </DialogHeader>
         <Input
           ref={inputRef}
+          aria-label="File name"
           value={name}
           onChange={(e) => {
             setName(e.target.value);

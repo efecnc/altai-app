@@ -130,6 +130,7 @@ export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
           size="icon"
           onClick={onReload}
           title="Reload"
+          aria-label="Reload"
           className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <HugeiconsIcon
@@ -178,6 +179,7 @@ export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
         <div className="flex min-w-0 flex-1 items-center">
           <Input
             ref={inputRef}
+            aria-label="Preview URL"
             value={draft}
             placeholder="http://localhost:3000"
             spellCheck={false}
@@ -205,6 +207,7 @@ export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
             if (next) onOpenAsWebview(next);
           }}
           title="Open as webview tab (for sites that block iframes)"
+          aria-label="Open as webview tab (for sites that block iframes)"
           className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
           disabled={!url && !draft.trim()}
         >
@@ -218,6 +221,7 @@ export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
             if (url) void openUrl(url).catch(console.error);
           }}
           title="Open in system browser"
+          aria-label="Open in system browser"
           className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
           disabled={!url}
         >

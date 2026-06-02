@@ -218,6 +218,7 @@ export function ChatHistory() {
           />
           <input
             ref={searchInputRef}
+            aria-label="Search chat history"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => {

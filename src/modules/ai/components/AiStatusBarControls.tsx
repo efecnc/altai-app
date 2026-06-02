@@ -328,6 +328,7 @@ export function ModelDropdown() {
           />
           <input
             ref={inputRef}
+            aria-label="Search models"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => e.stopPropagation()}
