@@ -8,9 +8,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
-import { announce } from "@/modules/a11y";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useUpdater } from "./useUpdater";
 
 type DistroKey = "arch" | "debian" | "fedora";
@@ -46,14 +45,6 @@ export function UpdaterDialog() {
     status.kind === "manual-available" ? status.info.version : "";
   const activeCommand = distroCommand(distro, manualVersion);
 
-  // Announce coarse phase transitions through the app-wide live region so a
-  // screen reader user hears download start / completion without focusing the
-  // dialog. Per-percent updates are handled by the dialog's own status node.
-  useEffect(() => {
-    if (status.kind === "downloading") announce("Downloading update…");
-    else if (status.kind === "ready") announce("Update ready");
-  }, [status.kind]);
-
   const open =
     status.kind === "available" ||
     status.kind === "manual-available" ||
@@ -84,11 +75,13 @@ export function UpdaterDialog() {
 
   // Visually-hidden status text so a screen reader hears phase / progress
   // changes even without focus on the dialog.
+  // Announced progress is rounded to 10% steps so the screen reader isn't
+  // spammed on every single percent during a fast download.
   const statusText = ready
     ? "Update ready"
     : downloading
       ? progress !== null
-        ? `Downloading update… ${progress.toFixed(0)}%`
+        ? `Downloading update… ${Math.round(progress / 10) * 10}%`
         : "Downloading update…"
       : "";
 

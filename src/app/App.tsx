@@ -1304,7 +1304,6 @@ export default function App() {
       role="tabpanel"
       id={WORKSPACE_PANEL_ID}
       aria-labelledby={tabTriggerId(activeId)}
-      tabIndex={0}
     >
       <div
         className={cn(
