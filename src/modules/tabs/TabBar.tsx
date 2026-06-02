@@ -26,6 +26,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef } from "react";
 import type { EditorTab, Tab } from "./lib/useTabs";
 
+/** DOM id for a tab trigger; the workspace tabpanel is labelled by the active
+ * one (ARIA tab pattern). Shared with the pane container in App.tsx. */
+export const tabTriggerId = (id: number): string => `workspace-tab-${id}`;
+/** DOM id of the single workspace content surface (the active tabpanel). */
+export const WORKSPACE_PANEL_ID = "workspace-tabpanel";
+
 type Props = {
   tabs: Tab[];
   activeId: number;
@@ -89,13 +95,18 @@ export function TabBar({
           value={String(activeId)}
           onValueChange={(v) => onSelect(Number(v))}
         >
-          <TabsList className="h-7 w-max gap-0.5 bg-transparent p-0">
+          <TabsList
+            aria-label="Open editors"
+            className="h-7 w-max gap-0.5 bg-transparent p-0"
+          >
             {tabs.map((t) => {
               const isPreview = t.kind === "editor" && (t as EditorTab).preview;
               return (
                 <TabsTrigger
                   key={t.id}
                   value={String(t.id)}
+                  id={tabTriggerId(t.id)}
+                  aria-controls={WORKSPACE_PANEL_ID}
                   data-tab-id={t.id}
                   onDoubleClick={() => isPreview && onPin(t.id)}
                   className={cn(

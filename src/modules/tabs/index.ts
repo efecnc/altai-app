@@ -1,4 +1,4 @@
-export { TabBar } from "./TabBar";
+export { TabBar, tabTriggerId, WORKSPACE_PANEL_ID } from "./TabBar";
 export {
   MAX_PANES_PER_TAB,
   useTabs,

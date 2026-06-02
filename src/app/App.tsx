@@ -28,6 +28,7 @@ import { redactSensitive } from "@/modules/ai/lib/redact";
 import { native } from "@/modules/ai/lib/native";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
 import { useSnippetsStore } from "@/modules/ai/store/snippetsStore";
+import { announce, LiveRegion } from "@/modules/a11y";
 import {
   AiDiffStack,
   EditorStack,
@@ -81,7 +82,13 @@ import {
   useSourceControl,
 } from "@/modules/source-control";
 import { StatusBar } from "@/modules/statusbar";
-import { MAX_PANES_PER_TAB, useTabs, useWorkspaceCwd } from "@/modules/tabs";
+import {
+  MAX_PANES_PER_TAB,
+  tabTriggerId,
+  useTabs,
+  useWorkspaceCwd,
+  WORKSPACE_PANEL_ID,
+} from "@/modules/tabs";
 import { folderName, useWorkspaceFolderStore } from "@/modules/workspace/folder";
 import {
   disposeSession,
@@ -393,7 +400,10 @@ export default function App() {
       }
       const dirty = tabsRef.current.some((t) => t.kind === "editor" && t.dirty);
       if (dirty) {
-        window.alert("Save or close unsaved editor tabs before switching workspace.");
+        const msg =
+          "Save or close unsaved editor tabs before switching workspace.";
+        announce(msg);
+        window.alert(msg);
         return;
       }
 
@@ -405,6 +415,7 @@ export default function App() {
           nextHome = (await homeDir()).replace(/\\/g, "/");
         }
       } catch (e) {
+        announce(String(e));
         window.alert(String(e));
         return;
       }
@@ -1288,7 +1299,13 @@ export default function App() {
   }, [setLive, activeId, tabs, explorerRoot, launchCwd, home, openPreviewTab]);
 
   const workspaceSurface = (
-    <div className="relative h-full min-h-0">
+    <div
+      className="relative h-full min-h-0"
+      role="tabpanel"
+      id={WORKSPACE_PANEL_ID}
+      aria-labelledby={tabTriggerId(activeId)}
+      tabIndex={0}
+    >
       <div
         className={cn(
           "absolute inset-0 px-3 pt-2 pb-2",
@@ -1642,6 +1659,8 @@ export default function App() {
           />
 
           <UpdaterDialog />
+
+          <LiveRegion />
 
           <AlertDialog
             open={pendingCloseTab !== null}

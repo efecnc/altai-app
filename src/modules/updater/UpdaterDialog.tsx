@@ -8,8 +8,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
+import { announce } from "@/modules/a11y";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useUpdater } from "./useUpdater";
 
 type DistroKey = "arch" | "debian" | "fedora";
@@ -45,6 +46,14 @@ export function UpdaterDialog() {
     status.kind === "manual-available" ? status.info.version : "";
   const activeCommand = distroCommand(distro, manualVersion);
 
+  // Announce coarse phase transitions through the app-wide live region so a
+  // screen reader user hears download start / completion without focusing the
+  // dialog. Per-percent updates are handled by the dialog's own status node.
+  useEffect(() => {
+    if (status.kind === "downloading") announce("Downloading update…");
+    else if (status.kind === "ready") announce("Update ready");
+  }, [status.kind]);
+
   const open =
     status.kind === "available" ||
     status.kind === "manual-available" ||
@@ -72,6 +81,16 @@ export function UpdaterDialog() {
     downloading && status.contentLength
       ? Math.min(100, (status.downloaded / status.contentLength) * 100)
       : null;
+
+  // Visually-hidden status text so a screen reader hears phase / progress
+  // changes even without focus on the dialog.
+  const statusText = ready
+    ? "Update ready"
+    : downloading
+      ? progress !== null
+        ? `Downloading update… ${progress.toFixed(0)}%`
+        : "Downloading update…"
+      : "";
 
   return (
     <Dialog
@@ -109,11 +128,26 @@ export function UpdaterDialog() {
         </DialogHeader>
 
         {downloading && progress !== null && (
-          <Progress value={progress} className="mt-2" />
+          <Progress
+            value={progress}
+            aria-label="Download progress"
+            className="mt-2"
+          />
         )}
         {downloading && progress === null && (
-          <Progress value={undefined} className="mt-2 animate-pulse" />
+          <Progress
+            value={undefined}
+            aria-label="Download progress"
+            className="mt-2 animate-pulse"
+          />
         )}
+
+        {/* Visually-hidden live status: mirrors the phase/percentage so a
+            screen reader announces progress even when the dialog isn't
+            focused. */}
+        <div className="sr-only" role="status" aria-live="polite">
+          {statusText}
+        </div>
 
         {manual && (
           <div className="mt-2 flex flex-col gap-2">
