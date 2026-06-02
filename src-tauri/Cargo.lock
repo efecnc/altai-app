@@ -3523,7 +3523,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 [[package]]
 name = "isanagent"
 version = "0.9.0"
-source = "git+https://github.com/efecnc/isanagent.git?tag=altai-v0.1.0#e005bcee6296f61b4bc8578dc2e473d67bc21b46"
+source = "git+https://github.com/altaidevorg/isanagent.git?branch=main#2022f3368b61ca569debec56b47efbfd9006f3c5"
 dependencies = [
  "arboard",
  "async-stream",
