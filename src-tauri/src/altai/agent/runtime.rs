@@ -114,6 +114,22 @@ pub enum Event {
         kind: String,
         detail: Option<String>,
     },
+    /// A subagent task was spawned by the main agent (via `subagent_spawn`).
+    SubagentSpawned {
+        task_id: String,
+        child_chat_id: String,
+        display_name: Option<String>,
+        agent_name: Option<String>,
+        background_job_id: Option<String>,
+    },
+    /// A subagent task reached a terminal state.
+    SubagentFinished {
+        task_id: String,
+        child_chat_id: String,
+        /// `completed`, `failed`, or `cancelled`.
+        status: String,
+        agent_name: Option<String>,
+    },
     NotebookOutput {
         notebook_id: String,
         cell_index: usize,
@@ -550,6 +566,73 @@ pub async fn start_agent(
         system_prompt.push_str(persona);
     }
 
+    // Subagent prompt/summary fields are derived from the system prompt as it
+    // stands *before* the named-agent catalog is appended below — subagents do
+    // not spawn nested subagents, so they don't need the catalog. This mirrors
+    // the ordering in isanagent's reference binary (src/main.rs).
+    let subagent_system_prompt = if workspace.config.ml_engineer_subagent_research_overlay() {
+        format!(
+            "{}\n{}",
+            system_prompt,
+            isanagent::ml_engineer::SUBAGENT_RESEARCH_APPEND
+        )
+    } else {
+        system_prompt.clone()
+    };
+    let harness_runtime_summary = workspace.config.runtime_harness_summary_lines().join("\n");
+    let forbid_final_without_tools = workspace.config.ml_engineer_forbid_final_without_tools();
+
+    // Named-agent registry (researcher / coder / evaluator, plus any defined in
+    // `.isanagent/config.toml` under `[harness.agents.*]`). Fall back to the
+    // crate's built-in defaults when none are configured. The catalog is
+    // injected into the main agent's system prompt so the LLM knows which
+    // specialized agents it can dispatch via `subagent_spawn`.
+    let agent_defs = {
+        let defs = workspace.config.agent_definitions();
+        if defs.is_empty() {
+            isanagent::agent::registry::default_agent_definitions()
+        } else {
+            defs
+        }
+    };
+    let agent_registry = Arc::new(isanagent::agent::AgentRegistry::from_definitions(
+        &agent_defs,
+        &sandbox_dir,
+    ));
+    let agent_prompt_section = agent_registry.compile_agent_prompt_section();
+    if !agent_prompt_section.is_empty() {
+        system_prompt.push_str(&agent_prompt_section);
+    }
+
+    // Build the subagent harness params only when enabled in config
+    // (`[harness.subagents] enabled = true`). When disabled, no subagent tools
+    // are registered and no spawn can happen — but note this is *not* a total
+    // no-op vs. the pre-subagent runtime: `harness_runtime_summary` (a per-step
+    // harness snapshot) and the named-agent catalog are now always built into
+    // the prompt regardless of this flag, matching isanagent's reference binary.
+    // Subagent lifecycle telemetry (SubagentSpawned / SubagentFinished) is
+    // emitted on `outbound_tx` and surfaced to the UI by the outbound router
+    // below; wake-on-completion follow-ups ride `bus_tx`.
+    let subagent = if workspace.config.subagent_harness_enabled() {
+        Some(isanagent::agent::SubagentHarnessParams {
+            cancel_children_on_parent_cancel: workspace
+                .config
+                .subagent_cancel_children_on_parent_cancel(),
+            allowed_tools: workspace
+                .config
+                .subagent_allowed_tools_set()
+                .map(Arc::new),
+            max_tasks: workspace.config.subagent_max_tasks(),
+            max_wait_secs: workspace.config.subagent_max_wait_secs(),
+            agent_registry: Some(agent_registry),
+            wake_on_completion: workspace.config.subagent_wake_on_completion(),
+            task_history_retention: workspace.config.subagent_task_history_retention(),
+            bus_tx: Some(bus_tx.clone()),
+        })
+    } else {
+        None
+    };
+
     let max_iterations = workspace.config.resolved_max_iterations().unwrap_or(50);
     let max_tool_output_chars = workspace.config.resolved_max_tool_output_chars().unwrap_or(3000);
     let shell_policy = workspace.config.resolved_shell_policy();
@@ -580,11 +663,11 @@ pub async fn start_agent(
         outbound_tx: global_outbound_tx.clone(),
         logger_tx: isanagent::logging::create_logger_channel(256).0,
         clarification_hub,
-        subagent: None,
+        subagent,
         doom_loop_enabled: workspace.config.doom_loop_enabled(),
-        harness_runtime_summary: String::new(),
-        subagent_system_prompt: String::new(),
-        forbid_final_without_tools: false,
+        harness_runtime_summary,
+        subagent_system_prompt,
+        forbid_final_without_tools,
         shell_policy,
         hook_tool_ctx,
     });

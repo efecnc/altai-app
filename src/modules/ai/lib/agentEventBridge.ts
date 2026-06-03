@@ -1,4 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { plural } from "@/lib/utils";
 import { useChatStore } from "../store/chatStore";
 
 /**
@@ -55,12 +56,23 @@ export type AgentEvent =
     }
   | { type: "done"; reason: string }
   | { type: "error"; message: string }
+  | {
+      type: "subagent_spawned";
+      task_id: string;
+      child_chat_id: string;
+      display_name: string | null;
+      agent_name: string | null;
+      background_job_id: string | null;
+    }
+  | {
+      type: "subagent_finished";
+      task_id: string;
+      child_chat_id: string;
+      status: string;
+      agent_name: string | null;
+    }
   | { type: "notebook_output"; notebook_id: string; cell_index: number; output: unknown }
   | { type: "experiment_result"; experiment_id: string; metrics: unknown; artifacts: string[] };
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
-}
 
 /**
  * Initialize the agent event bridge.
@@ -169,6 +181,41 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
           step: `Background job ${payload.job_id}: ${payload.state}`,
         });
         break;
+
+      // Subagent lifecycle: the main agent dispatched (or finished) a task on
+      // a named/anonymous subagent via `subagent_spawn`. Track active tasks so
+      // the UI can show a live "N subagents running" indicator, and surface a
+      // transient status line for each transition.
+      case "subagent_spawned": {
+        const label =
+          payload.display_name || payload.agent_name || "subagent";
+        store.addSubagentTask({
+          taskId: payload.task_id,
+          childChatId: payload.child_chat_id,
+          displayName: payload.display_name,
+          agentName: payload.agent_name,
+        });
+        store.patchAgentMeta({ step: `Dispatched ${label}…` });
+        break;
+      }
+
+      case "subagent_finished": {
+        // SubagentFinished carries no `display_name`, so recover the friendly
+        // label from the task we tracked at spawn time — keeping the finished
+        // line symmetric with "Dispatched <label>…" instead of falling back to
+        // the bare agent type.
+        const tracked = store.agentMeta.activeSubagents.find(
+          (t) => t.taskId === payload.task_id,
+        );
+        const label =
+          tracked?.displayName ||
+          payload.agent_name ||
+          tracked?.agentName ||
+          "subagent";
+        store.removeSubagentTask(payload.task_id);
+        store.patchAgentMeta({ step: `${label} ${payload.status}` });
+        break;
+      }
 
       case "done":
         store.patchAgentMeta({ status: "idle", step: null });
