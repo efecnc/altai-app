@@ -3,7 +3,6 @@ import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
 import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useEffect, useState } from "react";
-import { useRestoreFocusOnReturn } from "@/lib/useRestoreFocusOnReturn";
 import { normalizeSettingsTab, SettingsContent } from "./SettingsContent";
 
 /**
@@ -23,11 +22,6 @@ function readInitialTab(): SettingsTab {
 
 export function SettingsApp() {
   const [active, setActive] = useState<SettingsTab>(readInitialTab);
-
-  // Settings is its own webview; like the main window it loses native content
-  // focus on reactivation under WebView2 multi-webview mode. Restore it so SR
-  // users returning to this window can interact, not just read.
-  useRestoreFocusOnReturn();
 
   useEffect(() => {
     const unlistenPromise = getCurrentWebviewWindow().listen<string>(

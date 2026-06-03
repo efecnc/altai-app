@@ -68,7 +68,6 @@ import {
 } from "@/modules/terminal/runInTerminal";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useApplyA11yClasses } from "@/modules/settings/applyA11yClasses";
-import { useRestoreFocusOnReturn } from "@/lib/useRestoreFocusOnReturn";
 import { onKeysChanged } from "@/modules/settings/store";
 import {
   ShortcutsDialog,
@@ -186,10 +185,6 @@ export default function App() {
   // globals.css apply reduce-motion, high-contrast, larger-text,
   // strong-focus, underline-links, and visible-skip-link rules app-wide.
   useApplyA11yClasses();
-  // Restore last-focused element when the window regains foreground focus
-  // (Cmd+Tab back, dock click). Without this, the WebView dumps focus on
-  // <body> and screen-reader users lose narration on every app switch.
-  useRestoreFocusOnReturn();
   // The first terminal should open in the chosen workspace folder. App only
   // mounts once the WorkspaceGate has a folder, so a non-reactive read here is
   // safe and reflects the active workspace (a folder switch remounts App).
