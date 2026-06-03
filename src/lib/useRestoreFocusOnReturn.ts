@@ -6,7 +6,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 // reactivation in multi-webview mode — see the native-focus note below. Gate
 // the extra IPC call to it so the already-working macOS/Linux flows are
 // untouched. WebView2's UA always contains "Windows NT".
-const IS_WINDOWS = navigator.userAgent.includes("Windows");
+const IS_WINDOWS =
+  typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
 
 /**
  * Restore keyboard focus to the last-focused element when the window
@@ -70,13 +71,19 @@ export function useRestoreFocusOnReturn(): void {
       if (!focused) return;
       if (IS_WINDOWS) {
         // Move native/UIA focus into the WebView2 content first, then
-        // restore the element on the next frame.
-        getCurrentWebview()
-          .setFocus()
-          .catch(() => {
-            // ACL-denied or webview gone — element restore still runs.
-          })
-          .finally(() => requestAnimationFrame(restoreElement));
+        // restore the element on the next frame. `getCurrentWebview()` reads
+        // `window.__TAURI_INTERNALS__` synchronously and can throw before a
+        // promise exists, so guard it — element restore must still run.
+        try {
+          getCurrentWebview()
+            .setFocus()
+            .catch(() => {
+              // ACL-denied or webview gone — element restore still runs.
+            })
+            .finally(() => requestAnimationFrame(restoreElement));
+        } catch {
+          requestAnimationFrame(restoreElement);
+        }
       } else {
         requestAnimationFrame(restoreElement);
       }
