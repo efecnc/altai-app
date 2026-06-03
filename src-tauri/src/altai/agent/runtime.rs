@@ -9,6 +9,7 @@ use isanagent::agent::{AgentLogic, AgentLogicParams};
 use isanagent::bus::BusMessage;
 use isanagent::channels::Channel;
 use isanagent::clarification::ClarificationHub;
+use isanagent::config::ShellPolicyMode;
 use isanagent::provider;
 use isanagent::session::SessionManager;
 use isanagent::skills::SkillRegistry;
@@ -174,6 +175,26 @@ struct RuntimeFingerprint {
     /// the `~/.isanagent` default). Switching workspaces reinitializes the
     /// runtime AND its memory so chats don't bleed across projects.
     workspace_root: String,
+    /// Active permission mode ("ask" | "auto-edit" | "bypass"). The shell policy is baked into
+    /// `AgentLogic` at construction, so changing the mode must reinitialize the runtime — hence
+    /// it is part of the fingerprint.
+    permission_mode: String,
+}
+
+/// Map the ALTAI UI permission mode to an IsanAgent shell-policy mode for interactive sessions.
+/// `ask` → gate code-exec/destructive-shell (Ask); `auto-edit`/`bypass` → no prompts (Allow).
+/// Unknown/None leaves the on-disk config default untouched.
+fn permission_mode_to_shell_mode(mode: Option<&str>) -> Option<ShellPolicyMode> {
+    match mode.map(str::trim) {
+        Some("ask") | Some("ask_before_edit") | Some("ask-before-edit") => {
+            Some(ShellPolicyMode::Ask)
+        }
+        Some("auto-edit") | Some("auto_edit") | Some("auto") | Some("edit_automatically") => {
+            Some(ShellPolicyMode::Allow)
+        }
+        Some("bypass") | Some("bypass_permissions") => Some(ShellPolicyMode::Allow),
+        _ => None,
+    }
 }
 
 /// Runtime state managed by Tauri — holds the IsanAgent channel and bus.
@@ -235,6 +256,7 @@ pub async fn start_agent(
     persona_instructions: Option<&str>,
     base_url_override: Option<&str>,
     workspace_path: Option<&str>,
+    permission_mode: Option<&str>,
 ) -> Result<(), String> {
     // Root the IsanAgent workspace at `<selected-folder>/.isanagent` so memory,
     // sandbox, config, and skills live with the project. `None` keeps the
@@ -249,6 +271,7 @@ pub async fn start_agent(
         base_url: base_url_override.unwrap_or("").to_string(),
         persona: persona_instructions.unwrap_or("").to_string(),
         workspace_root: workspace_root.clone().unwrap_or_default(),
+        permission_mode: permission_mode.unwrap_or("").to_string(),
     };
 
     // Hold the fingerprint guard for the duration of the init so two
@@ -635,7 +658,12 @@ pub async fn start_agent(
 
     let max_iterations = workspace.config.resolved_max_iterations().unwrap_or(50);
     let max_tool_output_chars = workspace.config.resolved_max_tool_output_chars().unwrap_or(3000);
-    let shell_policy = workspace.config.resolved_shell_policy();
+    // Start from the on-disk shell policy, then let the active UI permission mode override the
+    // interactive gate so the toolbar toggle actually governs code-exec/destructive-shell.
+    let mut shell_policy = workspace.config.resolved_shell_policy();
+    if let Some(mode) = permission_mode_to_shell_mode(permission_mode) {
+        shell_policy.interactive_mode = mode;
+    }
     let default_harness = isanagent::config::HarnessConfig::default();
     let harness_ref = workspace
         .config
