@@ -182,18 +182,52 @@ struct RuntimeFingerprint {
 }
 
 /// Map the ALTAI UI permission mode to an IsanAgent shell-policy mode for interactive sessions.
-/// `ask` → gate code-exec/destructive-shell (Ask); `auto-edit`/`bypass` → no prompts (Allow).
-/// Unknown/None leaves the on-disk config default untouched.
+///
+/// The runtime gate is exec/code-only — it does NOT gate file edits — so this maps only the
+/// shell/code-execution dimension:
+/// - `ask` and `auto-edit` → `Ask`: code-exec / destructive-shell still require approval. This
+///   honors the UI contract that "Edit automatically" auto-approves file *edits* (which the
+///   runtime never gates) while **shell commands still require approval**. Only `bypass` (which
+///   the UI gates behind an explicit Settings toggle + warning) auto-approves shell.
+/// - `bypass` → `Allow`: no prompts.
+/// - unknown / None → leaves the on-disk config default untouched (which defaults to `Ask`).
+///
+/// Fail-safe: any unrecognized value returns `None`, so it can never silently downgrade to
+/// `Allow`.
 fn permission_mode_to_shell_mode(mode: Option<&str>) -> Option<ShellPolicyMode> {
     match mode.map(str::trim) {
-        Some("ask") | Some("ask_before_edit") | Some("ask-before-edit") => {
+        Some("ask") | Some("ask_before_edit") | Some("ask-before-edit") | Some("auto-edit")
+        | Some("auto_edit") | Some("auto") | Some("edit_automatically") => {
             Some(ShellPolicyMode::Ask)
-        }
-        Some("auto-edit") | Some("auto_edit") | Some("auto") | Some("edit_automatically") => {
-            Some(ShellPolicyMode::Allow)
         }
         Some("bypass") | Some("bypass_permissions") => Some(ShellPolicyMode::Allow),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod permission_mode_tests {
+    use super::*;
+
+    #[test]
+    fn only_bypass_allows_shell() {
+        // ask and auto-edit must still gate shell/code (UI contract: auto-edit auto-approves
+        // edits only). bypass is the sole mode that maps to Allow.
+        assert_eq!(
+            permission_mode_to_shell_mode(Some("ask")),
+            Some(ShellPolicyMode::Ask)
+        );
+        assert_eq!(
+            permission_mode_to_shell_mode(Some("auto-edit")),
+            Some(ShellPolicyMode::Ask)
+        );
+        assert_eq!(
+            permission_mode_to_shell_mode(Some("bypass")),
+            Some(ShellPolicyMode::Allow)
+        );
+        // Unknown / empty must not downgrade to Allow — leave the on-disk default.
+        assert_eq!(permission_mode_to_shell_mode(Some("nonsense")), None);
+        assert_eq!(permission_mode_to_shell_mode(None), None);
     }
 }
 
