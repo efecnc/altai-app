@@ -1,32 +1,42 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+
+// WebView2 (Windows) is the only backend that loses content focus on window
+// reactivation in multi-webview mode — see the native-focus note below. Gate
+// the extra IPC call to it so the already-working macOS/Linux flows are
+// untouched. WebView2's UA always contains "Windows NT".
+const IS_WINDOWS =
+  typeof navigator !== "undefined" && navigator.userAgent.includes("Windows");
 
 /**
  * Restore keyboard focus to the last-focused element when the window
  * regains foreground focus (Cmd+Tab back, Alt+Tab back, dock-icon click).
  *
- * Two layers are needed when the window is re-activated:
- *  1. NATIVE focus — re-install the webview as the OS first responder. In
- *     Tauri's `unstable` multi-webview mode the outer window keeps native
- *     focus on reactivation and the child webview is never re-focused, which
- *     strands VoiceOver (macOS) / NVDA / Narrator outside the web content.
- *     This MUST be done natively: `element.focus()` only sets
- *     `document.activeElement`, not the OS first responder. It is handled in
- *     Rust on `WindowEvent::Focused(true)` — see `src-tauri/src/lib.rs`. (The
- *     JS `getCurrentWebview().setFocus()` IPC was tried and proved unreliable,
- *     notably on Windows, due to round-trip timing.)
- *  2. ELEMENT focus — once the content owns native focus again, restore the
- *     precise element that was focused before the app lost focus. That's this
- *     hook's job. Without it the WebView leaves focus on `document.body`: the
- *     visible cursor goes blank and keyboard users Tab from scratch.
+ * Without this, the WebView dumps focus on `document.body` whenever the
+ * window comes back to the front. The visible cursor goes blank, the
+ * screen reader narrates the window title but no focused element, and
+ * keyboard users have to Tab from scratch every time they switch apps.
+ *
+ * Two layers are needed on Windows:
+ *  1. NATIVE focus — push OS/UIA focus into the WebView2 content via
+ *     `webview.setFocus()`. We run with Tauri's `unstable` feature for
+ *     multi-webview tabs; in that mode tao can't decide which child webview
+ *     to focus, so it forwards nothing on `WM_SETFOCUS` and OS focus stays
+ *     stranded on the outer window. JAWS/Narrator then read the virtual
+ *     buffer but the content isn't interactable. `element.focus()` alone
+ *     can't fix this — it only sets `document.activeElement`, not OS focus.
+ *  2. ELEMENT focus — once the content owns native focus, restore the
+ *     precise last-focused element.
  *
  * Pattern:
- *  - capture-phase `focusin` listener tracks the most-recent focused element
- *    while the window is active.
- *  - Tauri `onFocusChanged` fires on every foreground transition. On focus
- *    regain we wait one frame (the native focus push + the WebView's own
- *    focus-handling settle first) and re-focus the tracked element if it's
- *    still in the DOM and rendered.
+ *  - capture-phase `focusin` listener tracks the most-recent focused
+ *    element while the window is active.
+ *  - Tauri `onFocusChanged` fires on every foreground transition. On
+ *    focus regain we move native focus into the webview (Windows), then
+ *    wait one frame (WebView's own focus-handling races with ours
+ *    otherwise) and re-focus the tracked element if it's still in the DOM
+ *    and rendered.
  */
 export function useRestoreFocusOnReturn(): void {
   useEffect(() => {
@@ -59,11 +69,24 @@ export function useRestoreFocusOnReturn(): void {
     const unlistenPromise = win.onFocusChanged((event) => {
       const focused = event.payload as boolean;
       if (!focused) return;
-      // Native first-responder focus is re-asserted in Rust (lib.rs,
-      // `WindowEvent::Focused`). Here we only restore the precise element that
-      // was focused before the switch, one frame later so the native push and
-      // the WebView's own focus handling have settled.
-      requestAnimationFrame(restoreElement);
+      if (IS_WINDOWS) {
+        // Move native/UIA focus into the WebView2 content first, then
+        // restore the element on the next frame. `getCurrentWebview()` reads
+        // `window.__TAURI_INTERNALS__` synchronously and can throw before a
+        // promise exists, so guard it — element restore must still run.
+        try {
+          getCurrentWebview()
+            .setFocus()
+            .catch(() => {
+              // ACL-denied or webview gone — element restore still runs.
+            })
+            .finally(() => requestAnimationFrame(restoreElement));
+        } catch {
+          requestAnimationFrame(restoreElement);
+        }
+      } else {
+        requestAnimationFrame(restoreElement);
+      }
     });
 
     return () => {

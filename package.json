@@ -1,7 +1,7 @@
 {
   "name": "altai",
   "private": true,
-  "version": "0.5.901",
+  "version": "0.5.902",
   "type": "module",
   "description": "ALTAI — open agentic development environment powered by ALTAI",
   "license": "Apache-2.0",

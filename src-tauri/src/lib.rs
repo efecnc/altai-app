@@ -125,44 +125,6 @@ pub fn run() {
             registry
         })
         .manage(LaunchDir(Mutex::new(parse_launch_dir())))
-        // Screen-reader fix: with the `unstable` multi-webview feature, the
-        // window's webview is NOT re-installed as the OS first responder when
-        // the window is re-activated (Cmd-Tab / Alt-Tab back, dock click). The
-        // web content then falls out of the accessibility focus chain, so
-        // VoiceOver (macOS) / NVDA / JAWS / Narrator (Windows) get stranded on
-        // the window chrome and can't enter or interact with it. Re-assert
-        // native webview focus on every focus-regain. Doing this natively
-        // (vs. the JS `getCurrentWebview().setFocus()` IPC, which proved
-        // unreliable on Windows due to round-trip timing) runs synchronously
-        // in the event loop with correct ordering. See tauri-apps/tauri#9755
-        // and #13222.
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Focused(true) = event {
-                // Target the window's PRIMARY webview (its label matches the
-                // window label: "main" / "settings"), NOT an embedded child
-                // webview — those are native browser tabs hosting external
-                // sites (see modules/webview.rs) and must not grab focus here.
-                if let Some(webview) = window.get_webview(window.label()) {
-                    let _ = webview.set_focus();
-                    // Windows/WebView2 settles focus asynchronously after the
-                    // foreground transition, so a single synchronous call can
-                    // land too early and get overridden — the likely reason the
-                    // earlier attempt failed for JAWS/NVDA. Re-assert once more
-                    // shortly after. macOS/Linux focus synchronously, so this
-                    // extra hop is Windows-only; `cfg!` keeps it compiled (and
-                    // type-checked) on every target.
-                    if cfg!(target_os = "windows") {
-                        let window = window.clone();
-                        tauri::async_runtime::spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                            if let Some(webview) = window.get_webview(window.label()) {
-                                let _ = webview.set_focus();
-                            }
-                        });
-                    }
-                }
-            }
-        })
         .setup(|app| {
             altai::agent::runtime::init(app.handle().clone())?;
             Ok(())
