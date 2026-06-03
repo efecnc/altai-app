@@ -33,7 +33,9 @@ export function AgentStatusPill({
 }: Props) {
   const meta = useChatStore((s) => s.agentMeta);
 
-  const active = busy || meta.status !== "idle" || Boolean(meta.error);
+  const subCount = meta.activeSubagents.length;
+  const active =
+    busy || meta.status !== "idle" || Boolean(meta.error) || subCount > 0;
   if (!active) return null;
   if (hideError && meta.status === "error") return null;
 
@@ -52,6 +54,14 @@ export function AgentStatusPill({
     <>
       {icon}
       <span className="max-w-[180px] truncate">{label}</span>
+      {subCount > 0 ? (
+        <span
+          className="ml-0.5 rounded bg-muted px-1 text-[10px] font-medium tabular-nums text-foreground/80"
+          title={`${subCount} subagent${subCount === 1 ? "" : "s"} running`}
+        >
+          {subCount} sub
+        </span>
+      ) : null}
     </>
   );
 

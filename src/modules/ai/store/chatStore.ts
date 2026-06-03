@@ -46,6 +46,16 @@ export type AgentRunStatus =
   | "awaiting-approval"
   | "error";
 
+/** A subagent task currently dispatched by the main agent. */
+export type SubagentTask = {
+  taskId: string;
+  childChatId: string;
+  /** Human-facing label (e.g. "Researcher"), if the agent provided one. */
+  displayName: string | null;
+  /** Named agent the task runs as (e.g. "researcher", "coder"), if any. */
+  agentName: string | null;
+};
+
 export type AgentMeta = {
   status: AgentRunStatus;
   step: string | null;
@@ -54,6 +64,8 @@ export type AgentMeta = {
   tokens: AgentUsage;
   lastInputTokens: number;
   lastCachedTokens: number;
+  /** Subagent tasks running right now, surfaced as a live indicator. */
+  activeSubagents: SubagentTask[];
 };
 
 const ZERO_USAGE: AgentUsage = {
@@ -70,6 +82,7 @@ const IDLE_META: AgentMeta = {
   tokens: ZERO_USAGE,
   lastInputTokens: 0,
   lastCachedTokens: 0,
+  activeSubagents: [],
 };
 
 export type MiniState = {
@@ -127,6 +140,10 @@ type StoreState = {
   agentMeta: AgentMeta;
   patchAgentMeta: (patch: Partial<AgentMeta>) => void;
   resetAgentMeta: () => void;
+  /** Track a newly spawned subagent task (de-duplicated by taskId). */
+  addSubagentTask: (task: SubagentTask) => void;
+  /** Drop a subagent task once it reaches a terminal state. */
+  removeSubagentTask: (taskId: string) => void;
 
   /** Messages from the IsanAgent runtime, rendered as UIMessage parts. */
   nativeMessages: UIMessage[];
@@ -355,6 +372,27 @@ export const useChatStore = create<StoreState>((set, get) => ({
   patchAgentMeta: (patch) =>
     set((s) => ({ agentMeta: { ...s.agentMeta, ...patch } })),
   resetAgentMeta: () => set({ agentMeta: IDLE_META }),
+  addSubagentTask: (task) =>
+    set((s) => {
+      if (s.agentMeta.activeSubagents.some((t) => t.taskId === task.taskId)) {
+        return {};
+      }
+      return {
+        agentMeta: {
+          ...s.agentMeta,
+          activeSubagents: [...s.agentMeta.activeSubagents, task],
+        },
+      };
+    }),
+  removeSubagentTask: (taskId) =>
+    set((s) => ({
+      agentMeta: {
+        ...s.agentMeta,
+        activeSubagents: s.agentMeta.activeSubagents.filter(
+          (t) => t.taskId !== taskId,
+        ),
+      },
+    })),
 
   nativeMessages: [],
   currentAssistantTurnId: null,

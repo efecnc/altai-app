@@ -240,6 +240,32 @@ pub fn map_telemetry_to_event(
             kind: kind.clone(),
             detail: detail.clone(),
         }),
+        TelemetryEvent::SubagentSpawned {
+            child_chat_id,
+            task_id,
+            display_name,
+            agent_name,
+            background_job_id,
+            ..
+        } => Some(Event::SubagentSpawned {
+            task_id: task_id.clone(),
+            child_chat_id: child_chat_id.clone(),
+            display_name: display_name.clone(),
+            agent_name: agent_name.clone(),
+            background_job_id: background_job_id.clone(),
+        }),
+        TelemetryEvent::SubagentFinished {
+            child_chat_id,
+            task_id,
+            status,
+            agent_name,
+            ..
+        } => Some(Event::SubagentFinished {
+            task_id: task_id.clone(),
+            child_chat_id: child_chat_id.clone(),
+            status: status.clone(),
+            agent_name: agent_name.clone(),
+        }),
         _ => None,
     }
 }
@@ -259,6 +285,11 @@ pub fn telemetry_chat_id(
         | ExecutionRunFinished { chat_id, .. }
         | ExecutionJobFinished { chat_id, .. }
         | BackgroundJobUpdated { chat_id, .. } => Some(chat_id.as_str()),
+        // Subagent events are scoped to the *parent* chat — that's the session
+        // the UI filters on, so route them by `parent_chat_id`.
+        SubagentSpawned { parent_chat_id, .. } | SubagentFinished { parent_chat_id, .. } => {
+            Some(parent_chat_id.as_str())
+        }
         _ => None,
     }
 }
@@ -284,6 +315,8 @@ mod tests {
             Event::ExecutionRunFinished { .. } => "execution_run_finished",
             Event::ExecutionJobFinished { .. } => "execution_job_finished",
             Event::BackgroundJobUpdated { .. } => "background_job_updated",
+            Event::SubagentSpawned { .. } => "subagent_spawned",
+            Event::SubagentFinished { .. } => "subagent_finished",
             Event::NotebookOutput { .. } => "notebook_output",
             Event::ExperimentResult { .. } => "experiment_result",
         }
@@ -388,7 +421,6 @@ mod tests {
         }
     }
 
-    // Variants that should hit _ => None
     fn te_subagent_spawned() -> isanagent::bus::TelemetryEvent {
         isanagent::bus::TelemetryEvent::SubagentSpawned {
             parent_chat_id: "c1".into(),
@@ -400,6 +432,17 @@ mod tests {
         }
     }
 
+    fn te_subagent_finished() -> isanagent::bus::TelemetryEvent {
+        isanagent::bus::TelemetryEvent::SubagentFinished {
+            parent_chat_id: "c1".into(),
+            child_chat_id: "c2".into(),
+            task_id: "t1".into(),
+            status: "completed".into(),
+            agent_name: Some("researcher".into()),
+        }
+    }
+
+    // Variants that should hit _ => None
     fn te_cron_trigger() -> isanagent::bus::TelemetryEvent {
         isanagent::bus::TelemetryEvent::CronTrigger {
             job_id: "cj1".into(),
@@ -568,8 +611,53 @@ mod tests {
     }
 
     #[test]
-    fn subagent_spawned_falls_through_to_none() {
-        assert!(map_telemetry_to_event(&te_subagent_spawned()).is_none());
+    fn subagent_spawned_maps_to_subagent_spawned() {
+        let e = map_telemetry_to_event(&te_subagent_spawned()).unwrap();
+        assert_eq!(event_type(&e), "subagent_spawned");
+        if let Event::SubagentSpawned {
+            task_id,
+            child_chat_id,
+            display_name,
+            agent_name,
+            background_job_id,
+        } = e
+        {
+            assert_eq!(task_id, "t1");
+            assert_eq!(child_chat_id, "c2");
+            assert_eq!(display_name.as_deref(), Some("researcher"));
+            assert_eq!(agent_name.as_deref(), Some("researcher"));
+            assert_eq!(background_job_id, None);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn subagent_events_route_by_parent_chat_id() {
+        // The UI filters per session on the parent chat, so routing must
+        // resolve to `parent_chat_id` ("c1"), not the child ("c2").
+        assert_eq!(telemetry_chat_id(&te_subagent_spawned()), Some("c1"));
+        assert_eq!(telemetry_chat_id(&te_subagent_finished()), Some("c1"));
+    }
+
+    #[test]
+    fn subagent_finished_maps_to_subagent_finished() {
+        let e = map_telemetry_to_event(&te_subagent_finished()).unwrap();
+        assert_eq!(event_type(&e), "subagent_finished");
+        if let Event::SubagentFinished {
+            task_id,
+            child_chat_id,
+            status,
+            agent_name,
+        } = e
+        {
+            assert_eq!(task_id, "t1");
+            assert_eq!(child_chat_id, "c2");
+            assert_eq!(status, "completed");
+            assert_eq!(agent_name.as_deref(), Some("researcher"));
+        } else {
+            panic!("wrong variant");
+        }
     }
 
     #[test]
@@ -632,6 +720,8 @@ mod tests {
             map_telemetry_to_event(&te_execution_run_finished()).unwrap(),
             map_telemetry_to_event(&te_execution_job_finished()).unwrap(),
             map_telemetry_to_event(&te_background_job_updated()).unwrap(),
+            map_telemetry_to_event(&te_subagent_spawned()).unwrap(),
+            map_telemetry_to_event(&te_subagent_finished()).unwrap(),
         ];
 
         for e in &events {
