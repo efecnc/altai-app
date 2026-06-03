@@ -104,7 +104,9 @@ export const SHORTCUTS: Shortcut[] = [
     id: "pane.splitRight",
     label: "Split pane right",
     group: "Panes",
-    defaultBindings: [{ [MOD_PROP]: true, key: "d" }],
+    // VSCode "Split Editor" is ⌘\ / Ctrl+\. Leaving ⌘D free lets it fall
+    // through to CodeMirror's native select-next-occurrence in the editor.
+    defaultBindings: [{ [MOD_PROP]: true, key: "\\" }],
   },
   {
     id: "pane.splitDown",
@@ -128,7 +130,8 @@ export const SHORTCUTS: Shortcut[] = [
     id: "pane.source",
     label: "Toggle source panel",
     group: "Panes",
-    defaultBindings: [{ [MOD_PROP]: true, key: "g" }],
+    // VSCode "Show Source Control" is ⌘⇧G / Ctrl+Shift+G.
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "g" }],
   },
   {
     id: "tab.next",
@@ -225,7 +228,12 @@ export const SHORTCUTS: Shortcut[] = [
     id: "editor.redo",
     label: "Redo",
     group: "Editor",
-    defaultBindings: [{ [MOD_PROP]: true, key: "y" }],
+    // VSCode redo: ⌘⇧Z on macOS, Ctrl+Y on Windows/Linux. This also matches
+    // CodeMirror's native historyKeymap ({ key: "Mod-y", mac: "Mod-Shift-z" }),
+    // so the displayed binding stays accurate per platform.
+    defaultBindings: IS_MAC
+      ? [{ meta: true, shift: true, key: "z" }]
+      : [{ ctrl: true, key: "y" }],
   },
 ];
 
