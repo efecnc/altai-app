@@ -185,6 +185,23 @@ function ShortcutRow({
   const isModified = userBindings !== undefined;
   const hasBindings = bindings && bindings.length > 0;
 
+  // Read-only shortcuts are handled natively by CodeMirror and can't be
+  // rebound — show the binding for reference without any edit affordances.
+  if (shortcut.readOnly) {
+    return (
+      <div className="flex items-center justify-between px-3 py-2.5">
+        <span className="text-[12.5px] font-medium">{shortcut.label}</span>
+        {hasBindings ? (
+          <KbdGroup>
+            {getBindingTokens(bindings[0]).map((t, i) => (
+              <Kbd key={i}>{t}</Kbd>
+            ))}
+          </KbdGroup>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="group flex items-center justify-between px-3 py-2.5 transition-colors hover:bg-muted/30">
       <div className="flex flex-col gap-0.5">

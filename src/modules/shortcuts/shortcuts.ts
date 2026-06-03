@@ -30,7 +30,14 @@ export type ShortcutId =
   | "settings.open"
   | "sidebar.toggle"
   | "editor.undo"
-  | "editor.redo";
+  | "editor.redo"
+  | "editor.save"
+  | "editor.toggleComment"
+  | "editor.moveLineUp"
+  | "editor.moveLineDown"
+  | "editor.copyLineUp"
+  | "editor.copyLineDown"
+  | "editor.deleteLine";
 
 export type ShortcutGroup =
   | "General"
@@ -55,6 +62,12 @@ export type Shortcut = {
   group: ShortcutGroup;
   defaultBindings: KeyBinding[];
   allowRepeat?: boolean;
+  /**
+   * Handled natively by CodeMirror (not via an App-level handler), so the
+   * binding is fixed and shown for reference only — not rebindable in the
+   * customization UI.
+   */
+  readOnly?: boolean;
 };
 
 export const SHORTCUTS: Shortcut[] = [
@@ -213,11 +226,11 @@ export const SHORTCUTS: Shortcut[] = [
     group: "View",
     defaultBindings: [{ [MOD_PROP]: true, key: "0" }],
   },
-  // Editor entries are display-only: CodeMirror's historyKeymap binds these
-  // keys natively. We register them here so the shortcuts dialog can surface
-  // them — they don't have App-level handlers, so `useGlobalShortcuts` falls
-  // through without `preventDefault`, leaving CodeMirror to handle the event.
-  // Also excluded from the customization UI in ShortcutsSection.
+  // Editor entries are reference-only: CodeMirror's defaultKeymap/historyKeymap
+  // bind these keys natively. We register them here so the shortcuts dialog can
+  // surface them — those flagged `readOnly` have no App-level handler, so
+  // `useGlobalShortcuts` falls through without `preventDefault`, leaving
+  // CodeMirror to handle the event. They mirror VSCode's editor defaults.
   {
     id: "editor.undo",
     label: "Undo",
@@ -234,6 +247,60 @@ export const SHORTCUTS: Shortcut[] = [
     defaultBindings: IS_MAC
       ? [{ meta: true, shift: true, key: "z" }]
       : [{ ctrl: true, key: "y" }],
+  },
+  {
+    id: "editor.save",
+    label: "Save file",
+    group: "Editor",
+    defaultBindings: [{ [MOD_PROP]: true, key: "s" }],
+    readOnly: true,
+  },
+  {
+    id: "editor.toggleComment",
+    label: "Toggle line comment",
+    group: "Editor",
+    defaultBindings: [{ [MOD_PROP]: true, key: "/" }],
+    readOnly: true,
+  },
+  {
+    id: "editor.moveLineUp",
+    label: "Move line up",
+    group: "Editor",
+    defaultBindings: [{ alt: true, key: "ArrowUp" }],
+    allowRepeat: true,
+    readOnly: true,
+  },
+  {
+    id: "editor.moveLineDown",
+    label: "Move line down",
+    group: "Editor",
+    defaultBindings: [{ alt: true, key: "ArrowDown" }],
+    allowRepeat: true,
+    readOnly: true,
+  },
+  {
+    id: "editor.copyLineUp",
+    label: "Copy line up",
+    group: "Editor",
+    defaultBindings: [{ alt: true, shift: true, key: "ArrowUp" }],
+    allowRepeat: true,
+    readOnly: true,
+  },
+  {
+    id: "editor.copyLineDown",
+    label: "Copy line down",
+    group: "Editor",
+    defaultBindings: [{ alt: true, shift: true, key: "ArrowDown" }],
+    allowRepeat: true,
+    readOnly: true,
+  },
+  {
+    id: "editor.deleteLine",
+    label: "Delete line",
+    group: "Editor",
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "k" }],
+    allowRepeat: true,
+    readOnly: true,
   },
 ];
 
