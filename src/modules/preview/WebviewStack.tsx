@@ -1,5 +1,6 @@
 import type { Tab, WebviewTab } from "@/modules/tabs";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef } from "react";
 
 type Props = {
@@ -72,7 +73,29 @@ function WebviewSlot({ label, url, visible }: SlotProps) {
     observer.observe(el);
     window.addEventListener("resize", sync);
 
+    // The embedded tab is now a SEPARATE OS window positioned in screen
+    // coordinates (we migrated off the `unstable` in-window child webview), so
+    // it must re-sync when the MAIN window itself is dragged or natively
+    // resized. The ResizeObserver / `resize` above only catch in-page layout
+    // changes — without these the overlay is left stranded at its old screen
+    // position after a window move.
+    let unlistenMoved: (() => void) | undefined;
+    let unlistenResized: (() => void) | undefined;
+    let cancelled = false;
+    const appWindow = getCurrentWindow();
+    void appWindow.onMoved(sync).then((fn) => {
+      if (cancelled) fn();
+      else unlistenMoved = fn;
+    });
+    void appWindow.onResized(sync).then((fn) => {
+      if (cancelled) fn();
+      else unlistenResized = fn;
+    });
+
     return () => {
+      cancelled = true;
+      unlistenMoved?.();
+      unlistenResized?.();
       observer.disconnect();
       window.removeEventListener("resize", sync);
       void invoke("webview_close", { label }).catch(() => {});

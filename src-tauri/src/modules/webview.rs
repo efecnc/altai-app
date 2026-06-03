@@ -60,6 +60,11 @@ pub async fn webview_create(
         .map_err(|e| e.to_string())?
         .to_logical::<f64>(scale_factor);
 
+    // SECURITY: this window loads EXTERNAL, untrusted content. `withGlobalTauri`
+    // (tauri.conf.json) injects `window.__TAURI__` into every webview, this one
+    // included, so its label (`wv-*`) must NEVER be added to a capability
+    // `windows` list. The ACL (capabilities/*.json, scoped to "main"/"settings")
+    // is what stops a remote page from invoking Tauri commands — keep it strict.
     WebviewWindowBuilder::new(&app, label.as_str(), WebviewUrl::External(parsed))
         .position(main_pos.x + x, main_pos.y + y)
         .inner_size(width.max(1.0), height.max(1.0))
