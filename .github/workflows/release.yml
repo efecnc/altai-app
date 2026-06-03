@@ -114,8 +114,13 @@ jobs:
           # cannot be greater than 65535 for msi target"). On prerelease
           # tags we drop the MSI bundle for Windows and ship the NSIS .exe
           # only; stable tags still produce both .exe and .msi.
+          #
+          # NOTE: the Windows bundle target is `nsis` ONLY — `app` is a
+          # macOS-only target and `--bundles app,nsis` errors on Windows with
+          # "invalid value 'app' for '--bundles'", which silently broke every
+          # prerelease Windows build (v0.5.8-beta.*, v0.5.903-beta.1).
           if [ "${{ runner.os }}" = "Windows" ] && [ "${{ steps.tag.outputs.prerelease }}" = "true" ]; then
-            echo 'args=--bundles app,nsis' >> "$GITHUB_OUTPUT"
+            echo 'args=--bundles nsis' >> "$GITHUB_OUTPUT"
           else
             echo 'args=${{ matrix.args }}' >> "$GITHUB_OUTPUT"
           fi
