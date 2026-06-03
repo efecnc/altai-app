@@ -426,7 +426,9 @@ mod tests {
             parent_chat_id: "c1".into(),
             child_chat_id: "c2".into(),
             task_id: "t1".into(),
-            display_name: Some("researcher".into()),
+            // Distinct values so the mapping test proves display_name and
+            // agent_name aren't cross-wired.
+            display_name: Some("Research run #2".into()),
             agent_name: Some("researcher".into()),
             background_job_id: None,
         }
@@ -624,7 +626,7 @@ mod tests {
         {
             assert_eq!(task_id, "t1");
             assert_eq!(child_chat_id, "c2");
-            assert_eq!(display_name.as_deref(), Some("researcher"));
+            assert_eq!(display_name.as_deref(), Some("Research run #2"));
             assert_eq!(agent_name.as_deref(), Some("researcher"));
             assert_eq!(background_job_id, None);
         } else {

@@ -39,7 +39,11 @@ export function AgentStatusPill({
   if (!active) return null;
   if (hideError && meta.status === "error") return null;
 
-  const { tone, icon, label } = describe(meta);
+  const { tone, icon, label } = describe(meta, subCount);
+  const subSuffix =
+    subCount > 0
+      ? `, ${subCount} subagent${subCount === 1 ? "" : "s"} running`
+      : "";
   const className = cn(
     "flex h-6 items-center gap-1.5 rounded-md border px-1.5 text-[11px] transition-colors",
     tone,
@@ -56,6 +60,7 @@ export function AgentStatusPill({
       <span className="max-w-[180px] truncate">{label}</span>
       {subCount > 0 ? (
         <span
+          aria-hidden="true"
           className="ml-0.5 rounded bg-muted px-1 text-[10px] font-medium tabular-nums text-foreground/80"
           title={`${subCount} subagent${subCount === 1 ? "" : "s"} running`}
         >
@@ -74,6 +79,7 @@ export function AgentStatusPill({
       {announce ? (
         <span role="status" aria-live="polite" className="sr-only">
           Agent status: {label}
+          {subSuffix}
         </span>
       ) : null}
       <AnimatePresence mode="wait">
@@ -98,7 +104,7 @@ export function AgentStatusPill({
   );
 }
 
-function describe(meta: AgentMeta): {
+function describe(meta: AgentMeta, subCount: number): {
   tone: string;
   icon: React.ReactNode;
   label: string;
@@ -128,10 +134,15 @@ function describe(meta: AgentMeta): {
   }
   // thinking | streaming. `step` is the raw tool name during a tool call —
   // run it through `toolLabel` so the pill reads "Run", not "exec".
+  // When the main turn has gone idle but subagents are still running (e.g. a
+  // fire-and-forget `subagent_spawn`), there's no step — fall back to a
+  // subagent-aware label instead of a misleading "Thinking…".
+  const fallback =
+    meta.status === "idle" && subCount > 0 ? "Subagents running" : "Thinking…";
   return {
     tone:
       "border-border/60 bg-card text-muted-foreground hover:text-foreground",
     icon: <Spinner className="size-3" />,
-    label: meta.step ? toolLabel(meta.step) : "Thinking…",
+    label: meta.step ? toolLabel(meta.step) : fallback,
   };
 }

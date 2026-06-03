@@ -605,10 +605,14 @@ pub async fn start_agent(
     }
 
     // Build the subagent harness params only when enabled in config
-    // (`[harness.subagents] enabled = true`). When disabled the agent runs
-    // exactly as before. Subagent lifecycle telemetry (SubagentSpawned /
-    // SubagentFinished) is emitted on `outbound_tx` and surfaced to the UI by
-    // the outbound router below; wake-on-completion follow-ups ride `bus_tx`.
+    // (`[harness.subagents] enabled = true`). When disabled, no subagent tools
+    // are registered and no spawn can happen — but note this is *not* a total
+    // no-op vs. the pre-subagent runtime: `harness_runtime_summary` (a per-step
+    // harness snapshot) and the named-agent catalog are now always built into
+    // the prompt regardless of this flag, matching isanagent's reference binary.
+    // Subagent lifecycle telemetry (SubagentSpawned / SubagentFinished) is
+    // emitted on `outbound_tx` and surfaced to the UI by the outbound router
+    // below; wake-on-completion follow-ups ride `bus_tx`.
     let subagent = if workspace.config.subagent_harness_enabled() {
         Some(isanagent::agent::SubagentHarnessParams {
             cancel_children_on_parent_cancel: workspace
