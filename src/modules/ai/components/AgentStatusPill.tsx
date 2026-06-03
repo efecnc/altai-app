@@ -1,5 +1,5 @@
 import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
+import { cn, plural } from "@/lib/utils";
 import {
   AlertCircleIcon,
   ShieldUserIcon,
@@ -40,10 +40,8 @@ export function AgentStatusPill({
   if (hideError && meta.status === "error") return null;
 
   const { tone, icon, label } = describe(meta, subCount);
-  const subSuffix =
-    subCount > 0
-      ? `, ${subCount} subagent${subCount === 1 ? "" : "s"} running`
-      : "";
+  const subLabel = subCount > 0 ? `${plural(subCount, "subagent")} running` : "";
+  const subSuffix = subLabel ? `, ${subLabel}` : "";
   const className = cn(
     "flex h-6 items-center gap-1.5 rounded-md border px-1.5 text-[11px] transition-colors",
     tone,
@@ -62,7 +60,7 @@ export function AgentStatusPill({
         <span
           aria-hidden="true"
           className="ml-0.5 rounded bg-muted px-1 text-[10px] font-medium tabular-nums text-foreground/80"
-          title={`${subCount} subagent${subCount === 1 ? "" : "s"} running`}
+          title={subLabel}
         >
           {subCount} sub
         </span>

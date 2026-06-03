@@ -1,4 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { plural } from "@/lib/utils";
 import { useChatStore } from "../store/chatStore";
 
 /**
@@ -72,10 +73,6 @@ export type AgentEvent =
     }
   | { type: "notebook_output"; notebook_id: string; cell_index: number; output: unknown }
   | { type: "experiment_result"; experiment_id: string; metrics: unknown; artifacts: string[] };
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
-}
 
 /**
  * Initialize the agent event bridge.
@@ -203,7 +200,18 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
       }
 
       case "subagent_finished": {
-        const label = payload.agent_name || "subagent";
+        // SubagentFinished carries no `display_name`, so recover the friendly
+        // label from the task we tracked at spawn time — keeping the finished
+        // line symmetric with "Dispatched <label>…" instead of falling back to
+        // the bare agent type.
+        const tracked = store.agentMeta.activeSubagents.find(
+          (t) => t.taskId === payload.task_id,
+        );
+        const label =
+          tracked?.displayName ||
+          payload.agent_name ||
+          tracked?.agentName ||
+          "subagent";
         store.removeSubagentTask(payload.task_id);
         store.patchAgentMeta({ step: `${label} ${payload.status}` });
         break;
