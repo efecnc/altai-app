@@ -91,6 +91,15 @@ async fn open_settings_window(app: tauri::AppHandle, tab: Option<String>) -> Res
 pub fn run() {
     workspace::init_launch_cwd();
 
+    // Per-window debounce timestamps for the screen-reader webview re-focus
+    // below. Keyed by window label so activating the settings window isn't
+    // suppressed by a recent main-window event. Shared into the
+    // `on_window_event` handler so a burst of (noisy) focus events can't spin
+    // set_focus into a freeze.
+    let last_refocus: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         // TODO: Re-enable updater once ALTAI has its own update endpoint
@@ -125,6 +134,60 @@ pub fn run() {
             registry
         })
         .manage(LaunchDir(Mutex::new(parse_launch_dir())))
+        // Screen-reader fix (BETA): when the window is genuinely re-activated
+        // (Cmd/Alt-Tab back), re-assert focus on its webview so VoiceOver /
+        // JAWS / NVDA and the keyboard can re-enter the web content instead of
+        // being stranded on the window chrome.
+        //
+        // Two hard constraints — a naive version (synchronous set_focus on
+        // every Focused(true)) FROZE the app in v0.5.901:
+        //   1. NEVER call set_focus on the event-loop dispatch stack — it
+        //      re-enters the loop and deadlocks (tauri#5120). NB: in tauri
+        //      2.11 `run_on_main_thread` runs INLINE when already on the main
+        //      thread, so it does NOT defer here. We instead hop to a worker
+        //      thread (async_runtime::spawn), let the activation settle a
+        //      frame, then call `run_on_main_thread` from off-thread — which
+        //      genuinely queues the focus onto a later main-loop turn.
+        //   2. `WindowEvent::Focused` is NOISY: it toggles during normal use
+        //      (tabbing past the last DOM element, window drags — tauri#11806 /
+        //      #10767), and set_focus can itself re-emit it. The per-window
+        //      debounce makes a burst (or a self-induced re-fire) a no-op.
+        .on_window_event(move |window, event| {
+            if !matches!(event, tauri::WindowEvent::Focused(true)) {
+                return;
+            }
+            const REFOCUS_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+            let label = window.label().to_string();
+            match last_refocus.lock() {
+                Ok(mut map) => {
+                    let now = std::time::Instant::now();
+                    if map
+                        .get(&label)
+                        .is_some_and(|t| now.duration_since(*t) < REFOCUS_DEBOUNCE)
+                    {
+                        return;
+                    }
+                    map.insert(label, now);
+                }
+                Err(_) => return,
+            }
+            let win = window.clone();
+            tauri::async_runtime::spawn(async move {
+                // One frame off the dispatch stack lets the OS finish the
+                // foreground transition before we touch focus.
+                tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                let target = win.clone();
+                // From a worker thread `run_on_main_thread` truly defers.
+                // Target the window's PRIMARY webview (label == window label
+                // "main"/"settings"), never an embedded child webview — child
+                // labels are reserved-distinct (see modules/webview.rs).
+                let _ = win.run_on_main_thread(move || {
+                    if let Some(webview) = target.get_webview(target.label()) {
+                        let _ = webview.set_focus();
+                    }
+                });
+            });
+        })
         .setup(|app| {
             altai::agent::runtime::init(app.handle().clone())?;
             Ok(())
