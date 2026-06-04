@@ -15,6 +15,19 @@ export type ThemePref = "system" | "light" | "dark";
 
 export type PermissionMode = "ask" | "auto-edit" | "bypass";
 
+/**
+ * The permission mode actually in effect for read-side consumers: a stale `"bypass"` selection
+ * falls back to `"ask"` when bypass is not enabled in Settings, so it can never silently disable
+ * the gate. Single source of truth for this safety invariant — used by the switcher label and the
+ * send-flow runtime wiring so the rule can't drift between them.
+ */
+export function effectivePermissionMode(
+  mode: PermissionMode,
+  bypassEnabled: boolean,
+): PermissionMode {
+  return mode === "bypass" && !bypassEnabled ? "ask" : mode;
+}
+
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   ask: "Ask before edit",
   "auto-edit": "Edit automatically",

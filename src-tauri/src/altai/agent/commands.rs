@@ -17,6 +17,7 @@ use tauri::State;
 /// active model so the model picker actually controls where requests
 /// go (OpenAI vs xAI vs Groq vs LM Studio etc.).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command surface: each field is an explicit IPC arg.
 pub async fn agent_start(
     state: State<'_, AgentRuntime>,
     provider_name: Option<String>,
@@ -25,6 +26,7 @@ pub async fn agent_start(
     instructions: Option<String>,
     base_url: Option<String>,
     workspace_path: Option<String>,
+    permission_mode: Option<String>,
 ) -> Result<(), String> {
     let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
     let key = api_key.unwrap_or_default();
@@ -44,8 +46,14 @@ pub async fn agent_start(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    // Active UI permission mode ("ask" | "auto-edit" | "bypass"). Maps to the
+    // IsanAgent shell policy so the toolbar toggle actually governs the gate.
+    let permission = permission_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
-    runtime::start_agent(&state, &pname, &key, &model, persona, base, workspace).await
+    runtime::start_agent(&state, &pname, &key, &model, persona, base, workspace, permission).await
 }
 
 /// Send a user message into the IsanAgent bus, with optional image
@@ -66,15 +74,19 @@ pub async fn agent_send(
         .await
 }
 
-/// Approve or deny an agent action (placeholder for future approval flow).
+/// Approve or deny an agent action.
+///
+/// Note: code-exec / destructive-shell approvals do NOT flow through this command. The runtime
+/// gate (driven by the active permission mode via `agent_start`) raises an `ask_user`
+/// clarification, which surfaces to the UI as a `Clarification` event with approve/deny choices;
+/// replying resolves the pending wait. This ID-based command is retained for a future
+/// non-clarification approval surface and is intentionally a no-op today.
 #[tauri::command]
 pub async fn agent_approve(
     _state: State<'_, AgentRuntime>,
     _approval_id: String,
     _approved: bool,
 ) -> Result<(), String> {
-    // IsanAgent uses ClarificationHub for approvals, not a simple ID-based
-    // system. This will be wired when the approval UI is built.
     Ok(())
 }
 

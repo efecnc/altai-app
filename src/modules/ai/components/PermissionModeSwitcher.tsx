@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
+  effectivePermissionMode,
   PERMISSION_MODE_DESCRIPTIONS,
   PERMISSION_MODE_LABELS,
   setPermissionMode,
@@ -66,9 +67,8 @@ export function PermissionModeSwitcher({
 
   // If bypass got disabled in Settings while it was the active mode, the
   // setter already downgrades to "ask" — but defensively reflect that here
-  // for the trigger label.
-  const effectiveMode: PermissionMode =
-    mode === "bypass" && !bypassEnabled ? "ask" : mode;
+  // for the trigger label (shared with the send-flow guard).
+  const effectiveMode: PermissionMode = effectivePermissionMode(mode, bypassEnabled);
   const ActiveIcon = ICONS[effectiveMode];
   const activeColors = MODE_COLORS[effectiveMode];
   const isIconOnly = variant === "toolbar-icon";

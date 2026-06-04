@@ -364,6 +364,8 @@ export const native = {
     instructions?: string;
     baseUrl?: string;
     workspacePath?: string;
+    /// "ask" | "auto-edit" | "bypass" — gates code-exec/destructive-shell in the runtime.
+    permissionMode?: string;
   }) => invoke<void>("agent_start", params),
   agentSend: (message: string, images?: string[], chatId?: string) =>
     invoke<void>("agent_send", { message, images, chatId }),

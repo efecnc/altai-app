@@ -27,7 +27,7 @@ import {
   type SessionMeta,
 } from "../lib/sessions";
 import { pushRecentModel } from "../lib/modelPrefs";
-import { setDefaultModel } from "@/modules/settings/store";
+import { effectivePermissionMode, setDefaultModel } from "@/modules/settings/store";
 
 type Live = {
   getCwd: () => string | null;
@@ -780,6 +780,15 @@ async function sendViaIsanAgent(
   // state with the project instead of under ~/.isanagent.
   const workspacePath = currentWorkspaceFolder() ?? undefined;
 
+  // The active permission mode gates code-exec / destructive-shell in the
+  // runtime (maps to IsanAgent's shell policy). Mirror the switcher's guard:
+  // "bypass" falls back to "ask" when bypass is not enabled in Settings, so a stale selection
+  // can never silently disable the gate (shared invariant with PermissionModeSwitcher).
+  const permissionMode = effectivePermissionMode(
+    prefs.permissionMode,
+    prefs.bypassPermissionsEnabled,
+  );
+
   // Only (re)start the runtime when the target config actually changes —
   // avoids a redundant IPC round-trip on every message. Mirrors the fields
   // the Rust runtime fingerprints (provider, key, model, base URL, persona,
@@ -791,6 +800,7 @@ async function sendViaIsanAgent(
     baseUrl ?? "",
     instructions ?? "",
     workspacePath ?? "",
+    permissionMode,
   ]);
   if (startFingerprint !== lastStartFingerprint) {
     try {
@@ -801,6 +811,7 @@ async function sendViaIsanAgent(
         instructions,
         baseUrl,
         workspacePath,
+        permissionMode,
       });
       lastStartFingerprint = startFingerprint;
     } catch (e) {

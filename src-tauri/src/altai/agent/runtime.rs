@@ -9,6 +9,7 @@ use isanagent::agent::{AgentLogic, AgentLogicParams};
 use isanagent::bus::BusMessage;
 use isanagent::channels::Channel;
 use isanagent::clarification::ClarificationHub;
+use isanagent::config::ShellPolicyMode;
 use isanagent::provider;
 use isanagent::session::SessionManager;
 use isanagent::skills::SkillRegistry;
@@ -174,6 +175,34 @@ struct RuntimeFingerprint {
     /// the `~/.isanagent` default). Switching workspaces reinitializes the
     /// runtime AND its memory so chats don't bleed across projects.
     workspace_root: String,
+    /// Active permission mode ("ask" | "auto-edit" | "bypass"). The shell policy is baked into
+    /// `AgentLogic` at construction, so changing the mode must reinitialize the runtime — hence
+    /// it is part of the fingerprint.
+    permission_mode: String,
+}
+
+/// Map the ALTAI UI permission mode to an IsanAgent shell-policy mode for interactive sessions.
+///
+/// The runtime gate is exec/code-only — it does NOT gate file edits — so this maps only the
+/// shell/code-execution dimension:
+/// - `ask` and `auto-edit` → `Ask`: code-exec / destructive-shell still require approval. This
+///   honors the UI contract that "Edit automatically" auto-approves file *edits* (which the
+///   runtime never gates) while **shell commands still require approval**. Only `bypass` (which
+///   the UI gates behind an explicit Settings toggle + warning) auto-approves shell.
+/// - `bypass` → `Allow`: no prompts.
+/// - unknown / None → leaves the on-disk config default untouched (which defaults to `Ask`).
+///
+/// Fail-safe: any unrecognized value returns `None`, so it can never silently downgrade to
+/// `Allow`.
+fn permission_mode_to_shell_mode(mode: Option<&str>) -> Option<ShellPolicyMode> {
+    match mode.map(str::trim) {
+        Some("ask") | Some("ask_before_edit") | Some("ask-before-edit") | Some("auto-edit")
+        | Some("auto_edit") | Some("auto") | Some("edit_automatically") => {
+            Some(ShellPolicyMode::Ask)
+        }
+        Some("bypass") | Some("bypass_permissions") => Some(ShellPolicyMode::Allow),
+        _ => None,
+    }
 }
 
 /// Runtime state managed by Tauri — holds the IsanAgent channel and bus.
@@ -227,6 +256,8 @@ pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 /// `https://api.anthropic.com/v1/messages`,
 /// `http://localhost:1234/v1/chat/completions`). IsanAgent's HTTP
 /// clients POST to this URL as-is.
+#[allow(clippy::too_many_arguments)] // Mirrors the agent_start command surface (provider/model/
+// key/base_url/persona/workspace/permission); bundling into a struct adds no clarity here.
 pub async fn start_agent(
     runtime: &AgentRuntime,
     provider_name: &str,
@@ -235,6 +266,7 @@ pub async fn start_agent(
     persona_instructions: Option<&str>,
     base_url_override: Option<&str>,
     workspace_path: Option<&str>,
+    permission_mode: Option<&str>,
 ) -> Result<(), String> {
     // Root the IsanAgent workspace at `<selected-folder>/.isanagent` so memory,
     // sandbox, config, and skills live with the project. `None` keeps the
@@ -249,6 +281,7 @@ pub async fn start_agent(
         base_url: base_url_override.unwrap_or("").to_string(),
         persona: persona_instructions.unwrap_or("").to_string(),
         workspace_root: workspace_root.clone().unwrap_or_default(),
+        permission_mode: permission_mode.unwrap_or("").to_string(),
     };
 
     // Hold the fingerprint guard for the duration of the init so two
@@ -635,7 +668,12 @@ pub async fn start_agent(
 
     let max_iterations = workspace.config.resolved_max_iterations().unwrap_or(50);
     let max_tool_output_chars = workspace.config.resolved_max_tool_output_chars().unwrap_or(3000);
-    let shell_policy = workspace.config.resolved_shell_policy();
+    // Start from the on-disk shell policy, then let the active UI permission mode override the
+    // interactive gate so the toolbar toggle actually governs code-exec/destructive-shell.
+    let mut shell_policy = workspace.config.resolved_shell_policy();
+    if let Some(mode) = permission_mode_to_shell_mode(permission_mode) {
+        shell_policy.interactive_mode = mode;
+    }
     let default_harness = isanagent::config::HarnessConfig::default();
     let harness_ref = workspace
         .config
@@ -776,4 +814,30 @@ pub async fn start_agent(
     *fp_guard = Some(new_fp);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod permission_mode_tests {
+    use super::*;
+
+    #[test]
+    fn only_bypass_allows_shell() {
+        // ask and auto-edit must still gate shell/code (UI contract: auto-edit auto-approves
+        // edits only). bypass is the sole mode that maps to Allow.
+        assert_eq!(
+            permission_mode_to_shell_mode(Some("ask")),
+            Some(ShellPolicyMode::Ask)
+        );
+        assert_eq!(
+            permission_mode_to_shell_mode(Some("auto-edit")),
+            Some(ShellPolicyMode::Ask)
+        );
+        assert_eq!(
+            permission_mode_to_shell_mode(Some("bypass")),
+            Some(ShellPolicyMode::Allow)
+        );
+        // Unknown / empty must not downgrade to Allow — leave the on-disk default.
+        assert_eq!(permission_mode_to_shell_mode(Some("nonsense")), None);
+        assert_eq!(permission_mode_to_shell_mode(None), None);
+    }
 }
