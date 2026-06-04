@@ -123,6 +123,19 @@ export type GitDiscardEntry = {
   untracked: boolean;
 };
 
+/** A pre-edit checkpoint of a file the agent mutated, for one-step undo. */
+export type CheckpointInfo = {
+  id: string;
+  /** Absolute path of the file that was (or would be) mutated. */
+  path: string;
+  /** The tool that triggered the snapshot (e.g. `edit_file`). */
+  label: string;
+  /** Unix ms when the snapshot was taken. */
+  createdMs: number;
+  /** False when the file did not exist pre-edit — restoring removes it. */
+  existed: boolean;
+};
+
 export const native = {
   workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
   workspaceAuthorize: (path: string) =>
@@ -372,6 +385,10 @@ export const native = {
   agentCancel: (chatId?: string) => invoke<void>("agent_cancel", { chatId }),
   agentApprove: (approvalId: string, approved: boolean) =>
     invoke<void>("agent_approve", { approvalId, approved }),
+  /** List pre-edit checkpoints (newest first) for one-step undo of agent edits. */
+  checkpointList: () => invoke<CheckpointInfo[]>("checkpoint_list"),
+  /** Restore the file recorded by checkpoint `id` to its pre-edit state. */
+  checkpointRestore: (id: string) => invoke<string>("checkpoint_restore", { id }),
   gitClone: (url: string, destParent: string) =>
     invoke<string>("git_clone", { url, destParent }),
 };

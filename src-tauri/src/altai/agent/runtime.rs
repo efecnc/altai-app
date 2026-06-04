@@ -423,6 +423,32 @@ pub async fn start_agent(
         restrict_to_workspace: restrict,
     }));
 
+    // Pre-edit checkpoints for one-step undo of agent edits (isanagent
+    // #53/#56). WriteFileTool/EditFileTool snapshot a file's prior content
+    // before mutating it; the `checkpoint` tool (and the `checkpoint_*` Tauri
+    // commands) roll them back. isanagent's store is process-global and
+    // set-once, while this runtime is rebuilt per workspace — so we root it at
+    // an APP-level directory (not the workspace) and restore by absolute path
+    // (`base = None`), which stays correct across workspace switches. Restores
+    // are safe here because every checkpoint is created by our own sandboxed
+    // edit tools. Trade-off: `base = None` forgoes isanagent's symlink/TOCTOU
+    // restore guard (which only applies when a sandbox `base` is set) — an
+    // acceptable choice since restores act only on agent-authored snapshots of
+    // already sandbox-confined paths, and a single set-once `base` could not
+    // stay correct once the workspace changes. Enabled by default; opt out with
+    // `checkpoint_enabled = false` in `<workspace>/.isanagent/config.toml`.
+    if workspace.config.checkpoint_enabled.unwrap_or(true) {
+        match app.path().app_data_dir() {
+            Ok(data_dir) => {
+                isanagent::checkpoint::init(data_dir.join("checkpoints"), None);
+                tools.register(Box::new(isanagent::checkpoint::CheckpointTool));
+            }
+            Err(e) => log::warn!(
+                "checkpoint: app data dir unavailable ({e}); edit undo disabled"
+            ),
+        }
+    }
+
     // ML domain tools
     let max_web_chars = workspace.config.effective_max_web_tool_output_chars();
     let jina = workspace.config.jina_web_backend();

@@ -129,6 +129,51 @@ pub async fn agent_fetch_paper(url: String) -> Result<serde_json::Value, String>
     parse_arxiv_atom(&xml, &arxiv_id)
 }
 
+/// One pre-edit checkpoint, as exposed to the frontend.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointInfo {
+    pub id: String,
+    /// Absolute path of the file that was (or would be) mutated.
+    pub path: String,
+    /// The tool that triggered the snapshot (e.g. `edit_file`).
+    pub label: String,
+    /// Unix ms when the snapshot was taken.
+    pub created_ms: u64,
+    /// False when the file did not exist pre-edit — restoring it removes the file.
+    pub existed: bool,
+}
+
+fn to_info(e: isanagent::checkpoint::CheckpointEntry) -> CheckpointInfo {
+    CheckpointInfo {
+        id: e.id,
+        path: e.path,
+        label: e.label,
+        // ms timestamp — fits u64 comfortably (u128 source guards against overflow).
+        created_ms: e.created_ms as u64,
+        existed: e.existed,
+    }
+}
+
+/// List available pre-edit checkpoints, newest first. Empty when checkpointing
+/// is disabled or nothing has been edited yet. Does not require the runtime.
+#[tauri::command]
+pub fn checkpoint_list() -> Vec<CheckpointInfo> {
+    isanagent::checkpoint::store()
+        .map(|s| s.list().into_iter().map(to_info).collect())
+        .unwrap_or_default()
+}
+
+/// Restore the file recorded by checkpoint `id` to its pre-edit state (undo a
+/// single agent edit). Returns a human-readable summary of what was restored.
+#[tauri::command]
+pub fn checkpoint_restore(id: String) -> Result<String, String> {
+    match isanagent::checkpoint::store() {
+        Some(s) => s.restore(&id),
+        None => Err("Checkpoints are not enabled.".to_string()),
+    }
+}
+
 fn extract_arxiv_id(url: &str) -> Option<String> {
     let url = url.trim();
     for prefix in &["arxiv.org/abs/", "arxiv.org/pdf/"] {
@@ -239,4 +284,35 @@ fn extract_nested_tag(xml: &str, outer: &str, inner: &str) -> Vec<String> {
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_entry_maps_to_camel_case_info() {
+        let info = to_info(isanagent::checkpoint::CheckpointEntry {
+            id: "abc".into(),
+            path: "/w/file.rs".into(),
+            label: "edit_file".into(),
+            created_ms: 1_700_000_000_000,
+            existed: true,
+        });
+        assert_eq!(info.id, "abc");
+        assert_eq!(info.path, "/w/file.rs");
+        assert_eq!(info.created_ms, 1_700_000_000_000);
+        assert!(info.existed);
+        // Serializes camelCase for the frontend (`createdMs`, not `created_ms`).
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("createdMs").is_some());
+        assert!(json.get("created_ms").is_none());
+    }
+
+    #[test]
+    fn checkpoint_list_is_empty_when_store_uninitialized() {
+        // The global checkpoint store is only init'd by the live runtime, never
+        // in unit tests — so listing yields nothing rather than panicking.
+        assert!(checkpoint_list().is_empty());
+    }
 }
