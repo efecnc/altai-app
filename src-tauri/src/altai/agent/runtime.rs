@@ -438,14 +438,23 @@ pub async fn start_agent(
     // stay correct once the workspace changes. Enabled by default; opt out with
     // `checkpoint_enabled = false` in `<workspace>/.isanagent/config.toml`.
     if workspace.config.checkpoint_enabled.unwrap_or(true) {
-        match app.path().app_data_dir() {
-            Ok(data_dir) => {
-                isanagent::checkpoint::init(data_dir.join("checkpoints"), None);
-                tools.register(Box::new(isanagent::checkpoint::CheckpointTool));
+        // `init` sets a process-global set-once `OnceLock`. start_agent runs
+        // again on every workspace/model switch, so only initialize when the
+        // store isn't already up — a second `init` would allocate a throwaway
+        // store the OnceLock silently drops. The app-level root means the first
+        // init stays correct for the whole session regardless of workspace.
+        if isanagent::checkpoint::store().is_none() {
+            match app.path().app_data_dir() {
+                Ok(data_dir) => isanagent::checkpoint::init(data_dir.join("checkpoints"), None),
+                Err(e) => log::warn!(
+                    "checkpoint: app data dir unavailable ({e}); edit undo disabled"
+                ),
             }
-            Err(e) => log::warn!(
-                "checkpoint: app data dir unavailable ({e}); edit undo disabled"
-            ),
+        }
+        // Register the tool on every runtime build (each gets a fresh
+        // ToolRegistry), but only while the store is actually active.
+        if isanagent::checkpoint::store().is_some() {
+            tools.register(Box::new(isanagent::checkpoint::CheckpointTool));
         }
     }
 
