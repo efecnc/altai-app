@@ -152,13 +152,20 @@ pub fn map_telemetry_to_event(
             tool_name,
             tool_call_id,
             result,
+            is_error,
             ..
         } => Some(Event::ToolCallEnd {
             id: tool_call_id
                 .clone()
                 .unwrap_or_else(|| tool_name.clone()),
             output: serde_json::Value::String(result.clone()),
-            error: None,
+            // isanagent sets `is_error` accurately for both in-band tool
+            // failures (e.g. `edit_file` "old_text not found") and non-zero
+            // `exec`/`python_run` exit codes. Forward it so the UI renders a
+            // failed tool call in its error state instead of as successful
+            // output. When `error` is set the frontend uses it as the error
+            // body and omits `output`, so the text isn't duplicated.
+            error: is_error.then(|| result.clone()),
         }),
         TelemetryEvent::AgentThought { thought, .. } => Some(Event::Thinking {
             content: thought.clone(),
@@ -482,7 +489,34 @@ mod tests {
         if let Event::ToolCallEnd { id, output, error } = e {
             assert_eq!(id, "tc1");
             assert_eq!(output, serde_json::Value::String("hello".into()));
+            // is_error: false → no error, output carried normally.
             assert!(error.is_none());
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn failed_tool_result_surfaces_error_text() {
+        // is_error: true → the result text rides through as `error` so the
+        // frontend renders the tool cell in its `output-error` state.
+        let te = isanagent::bus::TelemetryEvent::ToolResult {
+            chat_id: "c1".into(),
+            channel: "tauri".into(),
+            tool_name: "edit_file".into(),
+            result: "Error: old_text not found".into(),
+            is_error: true,
+            tool_call_id: Some("tc1".into()),
+            background_job_id: None,
+        };
+        let e = map_telemetry_to_event(&te).unwrap();
+        if let Event::ToolCallEnd { error, output, .. } = e {
+            assert_eq!(error.as_deref(), Some("Error: old_text not found"));
+            // output still carries the same text; the frontend prefers `error`.
+            assert_eq!(
+                output,
+                serde_json::Value::String("Error: old_text not found".into())
+            );
         } else {
             panic!("wrong variant");
         }
