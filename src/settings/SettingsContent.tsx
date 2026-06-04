@@ -5,6 +5,7 @@ import {
   AiScanIcon,
   CodeSquareIcon,
   InformationCircleIcon,
+  PuzzleIcon,
   Settings01Icon,
   UniversalAccessIcon,
   UserMultiple02Icon,
@@ -19,6 +20,7 @@ import { GeneralSection } from "./sections/GeneralSection";
 import { LanguageServersSection } from "./sections/LanguageServersSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
+import { SkillsSection } from "./sections/SkillsSection";
 
 const TABS: {
   id: SettingsTab;
@@ -30,6 +32,7 @@ const TABS: {
   { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon, component: ShortcutsSection },
   { id: "models", label: "Models", icon: AiScanIcon, component: ModelsSection },
   { id: "agents", label: "Agents", icon: UserMultiple02Icon, component: AgentsSection },
+  { id: "skills", label: "Skills", icon: PuzzleIcon, component: SkillsSection },
   { id: "language-servers", label: "Languages", icon: CodeSquareIcon, component: LanguageServersSection },
   { id: "accessibility", label: "Accessibility", icon: UniversalAccessIcon, component: AccessibilitySection },
   { id: "about", label: "About", icon: InformationCircleIcon, component: AboutSection },

@@ -218,6 +218,7 @@ pub fn run() {
             agent_commands::agent_fetch_paper,
             agent_commands::checkpoint_list,
             agent_commands::checkpoint_restore,
+            agent_commands::agent_install_skill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

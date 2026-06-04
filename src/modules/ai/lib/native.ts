@@ -389,6 +389,13 @@ export const native = {
   checkpointList: () => invoke<CheckpointInfo[]>("checkpoint_list"),
   /** Restore the file recorded by checkpoint `id` to its pre-edit state. */
   checkpointRestore: (id: string) => invoke<string>("checkpoint_restore", { id }),
+  /**
+   * Install agent skill(s) from a GitHub repo (`owner/repo` or full URL) into
+   * the workspace's skills dir. `skill` installs just one skill from the repo.
+   * Returns the installed skill names.
+   */
+  agentInstallSkill: (repoUrl: string, workspacePath?: string, skill?: string) =>
+    invoke<string[]>("agent_install_skill", { workspacePath, repoUrl, skill }),
   gitClone: (url: string, destParent: string) =>
     invoke<string>("git_clone", { url, destParent }),
 };

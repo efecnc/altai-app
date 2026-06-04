@@ -3,6 +3,7 @@ export type SettingsTab =
   | "shortcuts"
   | "models"
   | "agents"
+  | "skills"
   | "language-servers"
   | "accessibility"
   | "about";

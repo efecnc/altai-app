@@ -174,6 +174,39 @@ pub fn checkpoint_restore(id: String) -> Result<String, String> {
     }
 }
 
+/// Install one or more agent skills from a GitHub repository into the active
+/// workspace's `skills/` directory (isanagent #45). `repo_url` accepts a full
+/// URL or `owner/repo` shorthand; `skill`, when given, installs only that one
+/// skill from the repo. Returns the names of the installed skills.
+///
+/// Does not require the runtime: it builds a throwaway registry over the
+/// workspace skills path and clones into it, mirroring isanagent's own
+/// `skills add` CLI. A running agent picks the new skill up on its next
+/// `load_skill` miss (isanagent #55) — no restart needed.
+#[tauri::command]
+pub async fn agent_install_skill(
+    workspace_path: Option<String>,
+    repo_url: String,
+    skill: Option<String>,
+) -> Result<Vec<String>, String> {
+    let repo = repo_url.trim();
+    if repo.is_empty() {
+        return Err("A repository URL or owner/repo is required.".to_string());
+    }
+    // Same workspace rooting as `start_agent`: `<folder>/.isanagent`, or the
+    // crate default (`~/.isanagent`) when no folder is selected.
+    let workspace_root = workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|p| format!("{}/.isanagent", p.trim_end_matches('/')));
+    let workspace =
+        isanagent::workspace::IsanagentWorkspace::new(workspace_root.as_deref(), None)?;
+    let mut registry = isanagent::skills::SkillRegistry::new(workspace.skills_path());
+    let skill = skill.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    registry.install_skills_from_repo(repo, skill).await
+}
+
 fn extract_arxiv_id(url: &str) -> Option<String> {
     let url = url.trim();
     for prefix in &["arxiv.org/abs/", "arxiv.org/pdf/"] {
