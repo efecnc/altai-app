@@ -34,6 +34,20 @@ export function setDiffViewMode(mode: DiffViewMode): void {
   for (const l of listeners) l();
 }
 
+// Cross-window sync: the `storage` event fires only in *other* windows (e.g. a
+// separate Settings window), so mirror an external change into our in-memory
+// state and notify local subscribers.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key !== STORAGE_KEY) return;
+    const next = e.newValue;
+    if ((next === "unified" || next === "split") && next !== current) {
+      current = next;
+      for (const l of listeners) l();
+    }
+  });
+}
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => {

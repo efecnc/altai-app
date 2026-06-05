@@ -14,8 +14,6 @@ type Props = {
   diffTheme: Extension;
 };
 
-const SHARED_EXT = buildSharedExtensions();
-
 const BASIC_SETUP = {
   lineNumbers: true,
   foldGutter: true,
@@ -51,21 +49,24 @@ export function SplitDiffView({ original, modified, theme, diffTheme }: Props) {
     // can't leave a stale MergeView's DOM behind alongside the new one.
     host.replaceChildren();
 
-    const common: Extension[] = [
+    // Build a fresh extension set per column. CodeMirror extensions can carry
+    // per-editor state (StateFields / view plugins), so sharing one array
+    // across both MergeView editors risks cross-talk — give each its own.
+    const buildColumn = (): Extension[] => [
       ...getDefaultExtensions({
         theme,
         basicSetup: BASIC_SETUP,
         readOnly: true,
         editable: false,
       }),
-      ...SHARED_EXT,
+      ...buildSharedExtensions(),
       ...READONLY,
       diffTheme,
     ];
 
     const view = new MergeView({
-      a: { doc: original, extensions: common },
-      b: { doc: modified, extensions: common },
+      a: { doc: original, extensions: buildColumn() },
+      b: { doc: modified, extensions: buildColumn() },
       parent: host,
       gutter: true,
       highlightChanges: true,
