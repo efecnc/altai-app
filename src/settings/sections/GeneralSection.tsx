@@ -21,6 +21,7 @@ import {
   setAgentPickerEnabled,
   setAutostart,
   setBypassPermissionsEnabled,
+  setMinimapEnabled,
   setRestoreWindowState,
   setShowHidden,
   setTerminalFontFamily,
@@ -58,6 +59,7 @@ export function GeneralSection() {
   const autostart = usePreferencesStore((s) => s.autostart);
   const restoreWindowState = usePreferencesStore((s) => s.restoreWindowState);
   const vimMode = usePreferencesStore((s) => s.vimMode);
+  const minimapEnabled = usePreferencesStore((s) => s.minimapEnabled);
   const showHidden = usePreferencesStore((s) => s.showHidden);
   const terminalWebglEnabled = usePreferencesStore(
     (s) => s.terminalWebglEnabled,
@@ -145,6 +147,15 @@ export function GeneralSection() {
           <Switch
             checked={vimMode}
             onCheckedChange={(v) => void setVimMode(v)}
+          />
+        </SettingRow>
+        <SettingRow
+          title="Minimap"
+          description="Show a code minimap on the right of the editor for quick navigation."
+        >
+          <Switch
+            checked={minimapEnabled}
+            onCheckedChange={(v) => void setMinimapEnabled(v)}
           />
         </SettingRow>
       </div>

@@ -91,6 +91,7 @@ export type Preferences = {
   favoriteModelIds: string[];
   recentModelIds: string[];
   vimMode: boolean;
+  minimapEnabled: boolean;
   showHidden: boolean;
   terminalWebglEnabled: boolean;
   terminalFontFamily: string;
@@ -135,6 +136,7 @@ const KEY_OPENAI_COMPAT_CONTEXT_LIMIT = "openaiCompatibleContextLimit";
 const KEY_FAVORITE_MODELS = "favoriteModelIds";
 const KEY_RECENT_MODELS = "recentModelIds";
 const KEY_VIM_MODE = "vimMode";
+const KEY_MINIMAP = "minimapEnabled";
 const KEY_SHOW_HIDDEN = "showHidden";
 const LEGACY_KEY_SHOW_HIDDEN_DIRS = "showHiddenDirectories";
 const KEY_TERMINAL_WEBGL_ENABLED = "terminalWebglEnabled";
@@ -193,6 +195,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   favoriteModelIds: [],
   recentModelIds: [],
   vimMode: false,
+  minimapEnabled: true,
   showHidden: true,
   terminalWebglEnabled: true,
   terminalFontFamily: "",
@@ -282,6 +285,8 @@ export async function loadPreferences(): Promise<Preferences> {
     recentModelIds:
       get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds,
     vimMode: get<boolean>(KEY_VIM_MODE) ?? DEFAULT_PREFERENCES.vimMode,
+    minimapEnabled:
+      get<boolean>(KEY_MINIMAP) ?? DEFAULT_PREFERENCES.minimapEnabled,
     showHidden:
       get<boolean>(KEY_SHOW_HIDDEN) ??
       get<boolean>(LEGACY_KEY_SHOW_HIDDEN_DIRS) ??
@@ -428,6 +433,10 @@ export async function setRecentModelIds(value: string[]): Promise<void> {
 
 export async function setVimMode(value: boolean): Promise<void> {
   await writePref(KEY_VIM_MODE, value);
+}
+
+export async function setMinimapEnabled(value: boolean): Promise<void> {
+  await writePref(KEY_MINIMAP, value);
 }
 
 export async function setShowHidden(value: boolean): Promise<void> {
@@ -606,6 +615,7 @@ export async function onPreferencesChange(
     [KEY_FAVORITE_MODELS]: "favoriteModelIds",
     [KEY_RECENT_MODELS]: "recentModelIds",
     [KEY_VIM_MODE]: "vimMode",
+    [KEY_MINIMAP]: "minimapEnabled",
     [KEY_SHOW_HIDDEN]: "showHidden",
     [KEY_TERMINAL_WEBGL_ENABLED]: "terminalWebglEnabled",
     [KEY_TERMINAL_FONT_FAMILY]: "terminalFontFamily",

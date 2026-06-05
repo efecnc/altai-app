@@ -4,12 +4,24 @@ import { lintGutter } from "@codemirror/lint";
 import { search } from "@codemirror/search";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { showMinimap } from "@replit/codemirror-minimap";
 
 // Compartments allow runtime reconfiguration without rebuilding state.
 export const languageCompartment = new Compartment();
 export const readOnlyCompartment = new Compartment();
 export const wrapCompartment = new Compartment();
 export const vimCompartment = new Compartment();
+export const minimapCompartment = new Compartment();
+
+/** Right-side code minimap for navigating long files (#66). */
+export function minimapExtension(): Extension {
+  const create = () => ({ dom: document.createElement("div") });
+  return showMinimap.compute([], () => ({
+    create,
+    displayText: "blocks",
+    showOverlay: "mouse-over",
+  }));
+}
 
 // Only what basicSetup doesn't already cover, to avoid duplicate extensions.
 // basicSetup gives us line numbers, fold gutter, history, indentOnInput,

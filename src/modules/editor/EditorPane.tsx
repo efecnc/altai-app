@@ -21,6 +21,8 @@ import { vim } from "@replit/codemirror-vim";
 import {
   buildSharedExtensions,
   languageCompartment,
+  minimapCompartment,
+  minimapExtension,
   vimCompartment,
 } from "./lib/extensions";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
@@ -84,6 +86,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     const cmRef = useRef<ReactCodeMirrorRef>(null);
     const { resolvedTheme } = useTheme();
     const vimMode = usePreferencesStore((s) => s.vimMode);
+    const minimapEnabled = usePreferencesStore((s) => s.minimapEnabled);
     const languageRef = useRef<string | null>(null);
     const apiKeyRef = useRef<string | null>(null);
 
@@ -133,6 +136,11 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         // so we must elevate vim's precedence to win the keymap.
         vimCompartment.of(
           usePreferencesStore.getState().vimMode ? Prec.highest(vim()) : [],
+        ),
+        minimapCompartment.of(
+          usePreferencesStore.getState().minimapEnabled
+            ? minimapExtension()
+            : [],
         ),
         vimHandlersExtension(() => ({
           save: () => {
@@ -188,6 +196,16 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         ),
       });
     }, [vimMode]);
+
+    useEffect(() => {
+      const view = cmRef.current?.view;
+      if (!view) return;
+      view.dispatch({
+        effects: minimapCompartment.reconfigure(
+          minimapEnabled ? minimapExtension() : [],
+        ),
+      });
+    }, [minimapEnabled]);
 
     useEffect(() => {
       let cancelled = false;
