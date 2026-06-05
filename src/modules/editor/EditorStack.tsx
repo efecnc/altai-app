@@ -1,17 +1,43 @@
 import { cn } from "@/lib/utils";
 import { MarkdownPreviewPane } from "@/modules/markdown";
 import type { EditorTab, Tab } from "@/modules/tabs";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
 import { SourceCodeIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 import { ImagePreviewPane } from "./ImagePreviewPane";
+import {
+  addTabToLeaf,
+  allLeaves,
+  emptyLeaf,
+  leafContainingTab,
+  reconcile,
+  setActiveTab,
+  splitLeafWithTab,
+  type EditorGroupNode,
+  type SplitEdge,
+} from "./lib/editorGroups";
+
+const DRAG_MIME = "application/altai-tab";
 
 type Props = {
   tabs: Tab[];
   activeId: number;
   /** Git repo root for minimap git-diff markers (#82). */
   repoRoot?: string | null;
+  onSelect: (id: number) => void;
   onDirtyChange: (id: number, dirty: boolean) => void;
   registerHandle: (id: number, handle: EditorPaneHandle | null) => void;
   onCloseTab: (id: number) => void;
@@ -25,23 +51,37 @@ function isMarkdownPath(path: string): boolean {
   return /\.(md|markdown|mdx)$/i.test(path);
 }
 
+function basename(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : path;
+}
+
 export function EditorStack({
   tabs,
   activeId,
   repoRoot,
+  onSelect,
   onDirtyChange,
   registerHandle,
   onCloseTab,
 }: Props) {
-  const editors = tabs.filter((t): t is EditorTab => t.kind === "editor");
+  const editors = useMemo(
+    () => tabs.filter((t): t is EditorTab => t.kind === "editor"),
+    [tabs],
+  );
+  const editorById = useMemo(() => {
+    const m = new Map<number, EditorTab>();
+    for (const e of editors) m.set(e.id, e);
+    return m;
+  }, [editors]);
+  const editorIdsKey = editors.map((e) => e.id).join(",");
 
-  // Stable per-tab callbacks. Inline arrows in `ref` and `onDirtyChange`
-  // change identity every render, which makes React detach+reattach the ref
-  // callback and re-invoke `onDirtyChange`, triggering setState loops in
-  // the parent. Memoizing per id keeps each callback's identity stable.
+  // Stable per-tab callbacks — inline arrows would change identity each render
+  // and make React detach/reattach refs, re-firing onDirtyChange.
   const registerRef = useRef(registerHandle);
   const dirtyRef = useRef(onDirtyChange);
   const closeRef = useRef(onCloseTab);
+  const selectRef = useRef(onSelect);
   useEffect(() => {
     registerRef.current = registerHandle;
   }, [registerHandle]);
@@ -51,6 +91,9 @@ export function EditorStack({
   useEffect(() => {
     closeRef.current = onCloseTab;
   }, [onCloseTab]);
+  useEffect(() => {
+    selectRef.current = onSelect;
+  }, [onSelect]);
 
   const refCallbacks = useRef(
     new Map<number, (h: EditorPaneHandle | null) => void>(),
@@ -59,14 +102,56 @@ export function EditorStack({
   const closeCallbacks = useRef(new Map<number, () => void>());
   const localHandles = useRef(new Map<number, EditorPaneHandle>());
 
-  // Markdown-preview toggle state, keyed by tab id. Held here so toggling
-  // doesn't unmount the editor and lose unsaved buffer state.
   const [previewIds, setPreviewIds] = useState<Set<number>>(() => new Set());
-  // Snapshot of editor buffer captured at toggle-on time so the preview
-  // reflects unsaved edits.
   const [previewContent, setPreviewContent] = useState<Map<number, string>>(
     () => new Map(),
   );
+
+  // --- Split-group layout (#65) ---
+  const [layout, setLayout] = useState<EditorGroupNode>(() => emptyLeaf(1));
+  const nextLeafIdRef = useRef(2);
+  // Group new tabs land in / splits anchor to — the last leaf the global active
+  // editor lived in.
+  const lastActiveLeafRef = useRef(1);
+  const [draggingTabId, setDraggingTabId] = useState<number | null>(null);
+
+  // Reconcile the tree with the live editor set; place new tabs in the
+  // last-focused leaf and mark the global active tab active in its leaf.
+  useEffect(() => {
+    setLayout((prev) => {
+      const ids = editorIdsKey ? editorIdsKey.split(",").map(Number) : [];
+      let next = reconcile(prev, ids, lastActiveLeafRef.current);
+      const leaf = editorById.has(activeId)
+        ? leafContainingTab(next, activeId)
+        : null;
+      if (leaf) {
+        next = setActiveTab(next, leaf.id, activeId);
+        lastActiveLeafRef.current = leaf.id;
+      }
+      return next;
+    });
+  }, [editorIdsKey, activeId, editorById]);
+
+  // Show drop zones whenever an editor tab is being dragged (from a group strip
+  // or the global tab bar — both mark the node with data-editor-drag-tab).
+  useEffect(() => {
+    const onDragStart = (e: DragEvent) => {
+      const el = (e.target as HTMLElement | null)?.closest?.(
+        "[data-editor-drag-tab]",
+      ) as HTMLElement | null;
+      const id = el?.dataset.editorDragTab;
+      if (id) setDraggingTabId(Number(id));
+    };
+    const clear = () => setDraggingTabId(null);
+    window.addEventListener("dragstart", onDragStart);
+    window.addEventListener("dragend", clear);
+    window.addEventListener("drop", clear);
+    return () => {
+      window.removeEventListener("dragstart", onDragStart);
+      window.removeEventListener("dragend", clear);
+      window.removeEventListener("drop", clear);
+    };
+  }, []);
 
   const getRefCallback = (id: number) => {
     let cb = refCallbacks.current.get(id);
@@ -110,117 +195,243 @@ export function EditorStack({
         });
       } else {
         next.add(id);
-        const handle = localHandles.current.get(id);
-        const content = handle?.getContent();
+        const content = localHandles.current.get(id)?.getContent();
         if (content !== null && content !== undefined) {
-          setPreviewContent((m) => {
-            const nm = new Map(m);
-            nm.set(id, content);
-            return nm;
-          });
+          setPreviewContent((m) => new Map(m).set(id, content));
         }
       }
       return next;
     });
   }, []);
 
-  // Drop callback entries for closed tabs to avoid unbounded growth.
+  // Drop a tab onto a leaf edge → split; center → move into the group.
+  const handleDrop = useCallback((leafId: number, edge: SplitEdge, tabId: number) => {
+    setLayout((prev) =>
+      edge === "center"
+        ? addTabToLeaf(prev, leafId, tabId)
+        : splitLeafWithTab(prev, leafId, tabId, edge, nextLeafIdRef.current++),
+    );
+    lastActiveLeafRef.current = leafId;
+    selectRef.current(tabId);
+    setDraggingTabId(null);
+  }, []);
+
+  // Drop callback / preview cleanup for closed tabs.
   useEffect(() => {
     const live = new Set(editors.map((t) => t.id));
-    for (const id of refCallbacks.current.keys()) {
-      if (!live.has(id)) refCallbacks.current.delete(id);
-    }
-    for (const id of dirtyCallbacks.current.keys()) {
-      if (!live.has(id)) dirtyCallbacks.current.delete(id);
-    }
-    for (const id of closeCallbacks.current.keys()) {
-      if (!live.has(id)) closeCallbacks.current.delete(id);
-    }
-    for (const id of localHandles.current.keys()) {
-      if (!live.has(id)) localHandles.current.delete(id);
+    for (const map of [
+      refCallbacks.current,
+      dirtyCallbacks.current,
+      closeCallbacks.current,
+      localHandles.current,
+    ]) {
+      for (const id of map.keys()) if (!live.has(id)) map.delete(id);
     }
     setPreviewIds((curr) => {
-      let changed = false;
-      const next = new Set<number>();
-      for (const id of curr) {
-        if (live.has(id)) next.add(id);
-        else changed = true;
-      }
-      return changed ? next : curr;
+      const next = new Set([...curr].filter((id) => live.has(id)));
+      return next.size === curr.size ? curr : next;
     });
     setPreviewContent((curr) => {
-      let changed = false;
-      const next = new Map<number, string>();
-      for (const [id, c] of curr) {
-        if (live.has(id)) next.set(id, c);
-        else changed = true;
-      }
-      return changed ? next : curr;
+      const next = new Map([...curr].filter(([id]) => live.has(id)));
+      return next.size === curr.size ? curr : next;
     });
   }, [editors]);
 
   if (editors.length === 0) return null;
-  return (
-    <div className="relative h-full w-full">
-      {editors.map((t) => {
-        const visible = t.id === activeId;
-        const isMd = isMarkdownPath(t.path);
-        const showPreview = previewIds.has(t.id);
-        return (
-          <div
-            key={t.id}
-            className={cn(
-              "absolute inset-0",
-              !visible && "invisible pointer-events-none",
-            )}
-            aria-hidden={!visible}
-          >
-            <div className="relative h-full overflow-hidden rounded-md border border-border/60 bg-background">
-              {isImagePath(t.path) ? (
-                <ImagePreviewPane path={t.path} />
-              ) : (
-                <EditorPane
-                  ref={getRefCallback(t.id)}
-                  path={t.path}
-                  repoRoot={repoRoot}
-                  onDirtyChange={getDirtyCallback(t.id)}
-                  onClose={getCloseCallback(t.id)}
-                />
-              )}
-              {isMd && showPreview && (
-                <div className="absolute inset-0 bg-background">
-                  <MarkdownPreviewPane
-                    path={t.path}
-                    visible={visible}
-                    content={previewContent.get(t.id)}
-                  />
-                </div>
-              )}
-              {isMd && (
-                <button
-                  type="button"
-                  onClick={() => togglePreview(t.id)}
-                  className={cn(
-                    "absolute right-2 top-2 z-10 flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-background/90 px-2 text-[11px] font-medium text-muted-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground",
-                    showPreview && "text-foreground",
-                  )}
-                  title={
-                    showPreview ? "Show markdown source" : "Show markdown preview"
-                  }
-                  aria-pressed={showPreview}
-                >
-                  <HugeiconsIcon
-                    icon={showPreview ? SourceCodeIcon : ViewIcon}
-                    size={13}
-                    strokeWidth={1.75}
-                  />
-                  <span>{showPreview ? "Source" : "Preview"}</span>
-                </button>
-              )}
+
+  const showStrips = allLeaves(layout).length > 1;
+
+  const renderEditorTab = (tabId: number, visibleInLeaf: boolean) => {
+    const t = editorById.get(tabId);
+    if (!t) return null;
+    const isMd = isMarkdownPath(t.path);
+    const showPreview = previewIds.has(t.id);
+    return (
+      <div
+        key={t.id}
+        className={cn(
+          "absolute inset-0",
+          !visibleInLeaf && "invisible pointer-events-none",
+        )}
+        aria-hidden={!visibleInLeaf}
+      >
+        <div className="relative h-full overflow-hidden rounded-md border border-border/60 bg-background">
+          {isImagePath(t.path) ? (
+            <ImagePreviewPane path={t.path} />
+          ) : (
+            <EditorPane
+              ref={getRefCallback(t.id)}
+              path={t.path}
+              repoRoot={repoRoot}
+              onDirtyChange={getDirtyCallback(t.id)}
+              onClose={getCloseCallback(t.id)}
+            />
+          )}
+          {isMd && showPreview && (
+            <div className="absolute inset-0 bg-background">
+              <MarkdownPreviewPane
+                path={t.path}
+                visible={visibleInLeaf}
+                content={previewContent.get(t.id)}
+              />
             </div>
+          )}
+          {isMd && (
+            <button
+              type="button"
+              onClick={() => togglePreview(t.id)}
+              className={cn(
+                "absolute right-2 top-2 z-10 flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-background/90 px-2 text-[11px] font-medium text-muted-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground",
+                showPreview && "text-foreground",
+              )}
+              title={
+                showPreview ? "Show markdown source" : "Show markdown preview"
+              }
+              aria-pressed={showPreview}
+            >
+              <HugeiconsIcon
+                icon={showPreview ? SourceCodeIcon : ViewIcon}
+                size={13}
+                strokeWidth={1.75}
+              />
+              <span>{showPreview ? "Source" : "Preview"}</span>
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderNode = (node: EditorGroupNode) => {
+    if (node.kind === "split") {
+      return (
+        <ResizablePanelGroup
+          orientation={node.dir === "row" ? "horizontal" : "vertical"}
+          className="h-full min-h-0"
+        >
+          {node.children.map((child, i) => (
+            <Fragment key={child.id}>
+              {i > 0 && <ResizableHandle />}
+              <ResizablePanel id={`egroup-${child.id}`} minSize="15%">
+                {renderNode(child)}
+              </ResizablePanel>
+            </Fragment>
+          ))}
+        </ResizablePanelGroup>
+      );
+    }
+    const tabIds = node.tabIds.filter((id) => editorById.has(id));
+    const activeTabId =
+      node.activeTabId != null && tabIds.includes(node.activeTabId)
+        ? node.activeTabId
+        : (tabIds[tabIds.length - 1] ?? null);
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {showStrips && (
+          <div className="flex h-7 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/40 px-1">
+            {tabIds.map((id) => {
+              const t = editorById.get(id)!;
+              return (
+                <div
+                  key={id}
+                  role="tab"
+                  tabIndex={0}
+                  aria-selected={id === activeTabId}
+                  draggable
+                  data-editor-drag-tab={id}
+                  onDragStart={(e) =>
+                    e.dataTransfer.setData(DRAG_MIME, String(id))
+                  }
+                  onClick={() => {
+                    setLayout((prev) => setActiveTab(prev, node.id, id));
+                    lastActiveLeafRef.current = node.id;
+                    selectRef.current(id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setLayout((prev) => setActiveTab(prev, node.id, id));
+                      lastActiveLeafRef.current = node.id;
+                      selectRef.current(id);
+                    }
+                  }}
+                  className={cn(
+                    "group/etab flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-colors",
+                    id === activeTabId
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                  )}
+                >
+                  <span className={cn("truncate", t.preview && "italic")}>
+                    {basename(t.path)}
+                  </span>
+                  {t.dirty ? <span className="text-foreground/70">●</span> : null}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeRef.current(id);
+                    }}
+                    aria-label="Close editor"
+                    className="rounded px-0.5 text-muted-foreground/60 opacity-0 hover:text-foreground focus-visible:opacity-100 group-hover/etab:opacity-100"
+                  >
+                    ✕
+                  </button>
+                </div>
+              );
+            })}
           </div>
-        );
-      })}
+        )}
+        <div
+          className="relative min-h-0 flex-1"
+          onMouseDownCapture={() => {
+            if (activeTabId != null && activeTabId !== activeId) {
+              lastActiveLeafRef.current = node.id;
+              selectRef.current(activeTabId);
+            }
+          }}
+        >
+          {tabIds.map((id) => renderEditorTab(id, id === activeTabId))}
+          {draggingTabId != null && (
+            <LeafDropZones
+              onDrop={(edge) => {
+                if (draggingTabId != null) handleDrop(node.id, edge, draggingTabId);
+              }}
+            />
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return <div className="h-full w-full">{renderNode(layout)}</div>;
+}
+
+/** Edge/center drop targets overlaid on a group while a tab is dragged. */
+function LeafDropZones({ onDrop }: { onDrop: (edge: SplitEdge) => void }) {
+  const zone = (edge: SplitEdge, className: string, label: string) => (
+    <div
+      className={cn("group/zone absolute", className)}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        onDrop(edge);
+      }}
+      aria-label={label}
+    >
+      <div className="h-full w-full rounded bg-primary/0 transition-colors group-hover/zone:bg-primary/20" />
+    </div>
+  );
+  return (
+    <div className="absolute inset-0 z-20">
+      {zone("left", "left-0 top-0 h-full w-1/4", "Split left")}
+      {zone("right", "right-0 top-0 h-full w-1/4", "Split right")}
+      {zone("top", "left-1/4 top-0 h-1/3 w-1/2", "Split up")}
+      {zone("bottom", "left-1/4 bottom-0 h-1/3 w-1/2", "Split down")}
+      {zone("center", "left-1/4 top-1/3 h-1/3 w-1/2", "Move here")}
     </div>
   );
 }

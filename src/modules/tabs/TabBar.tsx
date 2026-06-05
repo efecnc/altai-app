@@ -110,6 +110,19 @@ export function TabBar({
                   id={tabTriggerId(t.id)}
                   aria-controls={WORKSPACE_PANEL_ID}
                   data-tab-id={t.id}
+                  // Editor tabs are draggable so they can be dropped onto an
+                  // editor-group edge to split the view (#65).
+                  draggable={t.kind === "editor"}
+                  data-editor-drag-tab={t.kind === "editor" ? t.id : undefined}
+                  onDragStart={
+                    t.kind === "editor"
+                      ? (e) =>
+                          e.dataTransfer.setData(
+                            "application/altai-tab",
+                            String(t.id),
+                          )
+                      : undefined
+                  }
                   onDoubleClick={() => isPreview && onPin(t.id)}
                   className={cn(
                     "group h-7 shrink-0 gap-1.5 rounded-md text-xs text-muted-foreground transition-colors data-[state=active]:bg-accent data-[state=active]:text-foreground hover:text-foreground/80 justify-between",

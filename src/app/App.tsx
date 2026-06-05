@@ -1565,6 +1565,7 @@ export default function App() {
             tabs={tabs}
             activeId={activeId}
             repoRoot={explorerRoot}
+            onSelect={setActiveId}
             registerHandle={registerEditorHandle}
             onDirtyChange={handleEditorDirty}
             onCloseTab={disposeTab}
