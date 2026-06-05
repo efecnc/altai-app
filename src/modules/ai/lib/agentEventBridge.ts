@@ -5,6 +5,16 @@ import { useAgentRunsStore } from "../store/agentRunsStore";
 import { useTodosStore } from "../store/todoStore";
 import { appendBackgroundMessage } from "./backgroundTranscript";
 import type { Todo, TodoStatus } from "./todos";
+import { z } from "zod";
+
+/**
+ * Trust-boundary schema for the `todo_write` tool input (model-produced, so
+ * untrusted). We validate the *structure* — an `items` array of objects — then
+ * read each item's fields defensively below, since their names vary by model.
+ */
+const todoWriteSchema = z.object({
+  items: z.array(z.record(z.string(), z.unknown())),
+});
 
 /** Normalize the agent's free-form todo status into the app's TodoStatus. */
 function toTodoStatus(value: unknown): TodoStatus {
@@ -25,11 +35,10 @@ function toTodoStatus(value: unknown): TodoStatus {
  * Field names vary, so each item is read defensively.
  */
 function ingestTodoWrite(input: unknown, sessionId: string | null): void {
-  if (!sessionId || !input || typeof input !== "object") return;
-  const items = (input as { items?: unknown }).items;
-  if (!Array.isArray(items)) return;
-  const todos: Todo[] = items.map((raw, i) => {
-    const it = (raw ?? {}) as Record<string, unknown>;
+  if (!sessionId) return;
+  const parsed = todoWriteSchema.safeParse(input);
+  if (!parsed.success) return;
+  const todos: Todo[] = parsed.data.items.map((it, i) => {
     const title =
       (typeof it.content === "string" && it.content) ||
       (typeof it.title === "string" && it.title) ||
