@@ -380,8 +380,36 @@ export const native = {
     /// "ask" | "auto-edit" | "bypass" — gates code-exec/destructive-shell in the runtime.
     permissionMode?: string;
   }) => invoke<void>("agent_start", params),
-  agentSend: (message: string, images?: string[], chatId?: string) =>
-    invoke<void>("agent_send", { message, images, chatId }),
+  agentSend: (
+    message: string,
+    images: string[] | undefined,
+    chatId: string | undefined,
+    // Picks/creates the runtime instance that owns this chat, so different
+    // models / personas / permission-modes run concurrently without tearing
+    // each other down — the Rust side keys instances by this config.
+    config: {
+      providerName: string;
+      apiKey: string;
+      modelName: string;
+      instructions?: string;
+      baseUrl?: string;
+      workspacePath?: string;
+      /// "ask" | "auto-edit" | "bypass" — gates code-exec/destructive-shell.
+      permissionMode?: string;
+    },
+  ) =>
+    invoke<void>("agent_send", {
+      message,
+      images,
+      chatId,
+      providerName: config.providerName,
+      apiKey: config.apiKey,
+      modelName: config.modelName,
+      instructions: config.instructions,
+      baseUrl: config.baseUrl,
+      workspacePath: config.workspacePath,
+      permissionMode: config.permissionMode,
+    }),
   agentCancel: (chatId?: string) => invoke<void>("agent_cancel", { chatId }),
   agentApprove: (approvalId: string, approved: boolean) =>
     invoke<void>("agent_approve", { approvalId, approved }),

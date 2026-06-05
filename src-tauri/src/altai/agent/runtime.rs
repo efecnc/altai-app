@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::async_runtime;
@@ -164,7 +165,7 @@ fn emit_event(app: &AppHandle, chat_id: &str, event: &Event) {
 /// the first model the user picked and silently ignored every later
 /// switch, surfacing as cross-provider 4xx errors that pointed at the
 /// previous endpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RuntimeFingerprint {
     provider_name: String,
     model_name: String,
@@ -176,8 +177,9 @@ struct RuntimeFingerprint {
     /// runtime AND its memory so chats don't bleed across projects.
     workspace_root: String,
     /// Active permission mode ("ask" | "auto-edit" | "bypass"). The shell policy is baked into
-    /// `AgentLogic` at construction, so changing the mode must reinitialize the runtime — hence
-    /// it is part of the fingerprint.
+    /// `AgentLogic` at construction, so a different mode must select a different instance — hence
+    /// it is part of the fingerprint. Without this, flipping the UI permission toggle would route
+    /// to the already-built instance and silently keep the old shell gate.
     permission_mode: String,
 }
 
@@ -205,59 +207,256 @@ fn permission_mode_to_shell_mode(mode: Option<&str>) -> Option<ShellPolicyMode> 
     }
 }
 
-/// Runtime state managed by Tauri — holds the IsanAgent channel and bus.
+/// One running IsanAgent instance — its own channel + agent node + bus routers.
+struct Instance {
+    channel: Arc<TauriChannel>,
+    /// Fires the bus router's shutdown so its task exits and drops `agent_node`.
+    /// Needed because `agent_node` holds `bus_tx` clones (execution-job manager,
+    /// subagent harness), so `channel.stop()` alone can't make `bus_rx.recv()`
+    /// return `None` — the task would otherwise leak on teardown.
+    shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+/// Runtime state managed by Tauri. Instead of a single runtime, holds a
+/// registry of instances keyed by config (fingerprint) so different models /
+/// personas can run **concurrently** — dispatching a run on a new config spins
+/// up its own instance rather than tearing down the others.
 pub struct AgentRuntime {
-    pub channel: Arc<TauriChannel>,
     pub app: AppHandle,
-    /// `Some` once a runtime is up; the value records which config it
-    /// was started with so subsequent `start_agent` calls can decide
-    /// between no-op (same fp), full restart (different fp), or first
-    /// init (None). Held across an `await` (channel teardown) so it
-    /// must be a `tokio::sync::Mutex`, not `std::sync::Mutex`.
-    current_fingerprint: tokio::sync::Mutex<Option<RuntimeFingerprint>>,
-    /// Lazily-initialized memory backend. Survives model switches so
-    /// chat history (which IsanAgent stores in SQLite keyed by the
-    /// stable channel chat_id) actually transfers to the new model
-    /// instead of getting re-opened on each reconfig. The DB file
-    /// itself was already shared across reinits, but spinning up a
-    /// fresh actor + connection on every model switch was wasted work.
-    memory_node: tokio::sync::Mutex<
-        Option<NodeHandle<isanagent::memory::MemoryMessage>>,
-    >,
+    /// One instance per distinct config. All emit to `agent://event` tagged by
+    /// chat_id, which the frontend routes on.
+    instances: tokio::sync::Mutex<HashMap<RuntimeFingerprint, Instance>>,
+    /// One shared SQLite memory actor per workspace root — reused across the
+    /// workspace's model-instances so history transfers and a single actor
+    /// serializes DB access (no contention).
+    memory_by_workspace:
+        tokio::sync::Mutex<HashMap<String, NodeHandle<isanagent::memory::MemoryMessage>>>,
 }
 
 pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let chat_id = uuid::Uuid::new_v4().to_string();
-    let channel = Arc::new(TauriChannel::new(app.clone(), chat_id));
-
     app.manage(AgentRuntime {
-        channel,
         app: app.clone(),
-        current_fingerprint: tokio::sync::Mutex::new(None),
-        memory_node: tokio::sync::Mutex::new(None),
+        instances: tokio::sync::Mutex::new(HashMap::new()),
+        memory_by_workspace: tokio::sync::Mutex::new(HashMap::new()),
     });
 
     Ok(())
 }
 
-/// Start the full IsanAgent runtime. Called lazily on first message.
-///
-/// This bootstraps the workspace, tools, provider, and agent logic,
-/// then wires the TauriChannel as the output channel.
-///
-/// `persona_instructions` is the active altai agent's `instructions`
-/// field. When `Some`, it is appended to the workspace-derived system
-/// prompt under a `## Persona` block so the runtime honors the
-/// user-configured persona (e.g. Coder vs Architect vs custom agent).
-///
-/// `base_url_override`, when `Some`, replaces the workspace-config
-/// base URL. Pass the *full* endpoint (e.g.
-/// `https://api.openai.com/v1/chat/completions`,
-/// `https://api.anthropic.com/v1/messages`,
-/// `http://localhost:1234/v1/chat/completions`). IsanAgent's HTTP
-/// clients POST to this URL as-is.
-#[allow(clippy::too_many_arguments)] // Mirrors the agent_start command surface (provider/model/
-// key/base_url/persona/workspace/permission); bundling into a struct adds no clarity here.
+/// Build the config fingerprint + its resolved workspace root.
+fn make_fingerprint(
+    provider_name: &str,
+    api_key: &str,
+    model_name: &str,
+    persona_instructions: Option<&str>,
+    base_url_override: Option<&str>,
+    workspace_path: Option<&str>,
+    permission_mode: Option<&str>,
+) -> RuntimeFingerprint {
+    let workspace_root = workspace_path
+        .map(|p| format!("{}/.isanagent", p.trim_end_matches('/')))
+        .unwrap_or_default();
+    RuntimeFingerprint {
+        provider_name: provider_name.to_string(),
+        model_name: model_name.to_string(),
+        api_key: api_key.to_string(),
+        base_url: base_url_override.unwrap_or("").to_string(),
+        persona: persona_instructions.unwrap_or("").to_string(),
+        workspace_root,
+        permission_mode: permission_mode.unwrap_or("").to_string(),
+    }
+}
+
+/// Get-or-create the shared memory actor for a workspace root (`""` = default).
+async fn ensure_memory(
+    runtime: &AgentRuntime,
+    workspace_root: &str,
+) -> Result<NodeHandle<isanagent::memory::MemoryMessage>, String> {
+    let mut guard = runtime.memory_by_workspace.lock().await;
+    if let Some(existing) = guard.get(workspace_root) {
+        return Ok(existing.clone());
+    }
+    let ws_opt = if workspace_root.is_empty() {
+        None
+    } else {
+        Some(workspace_root)
+    };
+    let dir = resolve_workspace_root(ws_opt);
+    let db_path = dir.join(".system_generated").join("agent_memory.db");
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let db_path_str = db_path
+        .to_str()
+        .ok_or("workspace DB path is not valid UTF-8")?;
+    let memory_actor = isanagent::memory::SqliteMemoryActor::new(db_path_str)
+        .map_err(|e| format!("Failed to initialize SqliteMemoryActor: {}", e))?;
+    let node = NodeHandle::<isanagent::memory::MemoryMessage>::new(
+        memory_actor,
+        100,
+        1,
+        Duration::from_millis(5),
+    );
+    guard.insert(workspace_root.to_string(), node.clone());
+    Ok(node)
+}
+
+/// Ensure an instance exists for this config and return its channel. The app
+/// runs one workspace at a time, so instances (and memory) of *other*
+/// workspaces are torn down here to bound growth.
+#[allow(clippy::too_many_arguments)]
+async fn ensure_instance(
+    runtime: &AgentRuntime,
+    provider_name: &str,
+    api_key: &str,
+    model_name: &str,
+    persona_instructions: Option<&str>,
+    base_url_override: Option<&str>,
+    workspace_path: Option<&str>,
+    permission_mode: Option<&str>,
+) -> Result<Arc<TauriChannel>, String> {
+    let fp = make_fingerprint(
+        provider_name,
+        api_key,
+        model_name,
+        persona_instructions,
+        base_url_override,
+        workspace_path,
+        permission_mode,
+    );
+    let workspace_root = fp.workspace_root.clone();
+
+    // Fine-grained locking: the `instances` lock is only ever held for cheap
+    // map ops, never across the heavy `build_instance().await` or any channel
+    // teardown — so a build/cancel on one config can't block sends/cancels on
+    // another (the whole point of concurrent instances). Note: within a single
+    // workspace, distinct configs accrete instances for the session (only
+    // other-workspace instances are torn down) — acceptable given typical
+    // config churn; revisit with idle-eviction if that proves heavy.
+
+    // Fast path: instance already built for this exact config.
+    {
+        let instances = runtime.instances.lock().await;
+        if let Some(inst) = instances.get(&fp) {
+            return Ok(inst.channel.clone());
+        }
+    }
+
+    // Tear down instances of other workspaces (the UI uses one at a time).
+    // Remove them under the lock, but defer the async teardown until the lock
+    // is released. Firing `shutdown` stops the bus-router task (so `agent_node`
+    // drops and the `bus_tx` cycle unwinds); `stop()` then closes the channel.
+    let stale: Vec<Instance> = {
+        let mut instances = runtime.instances.lock().await;
+        let keys: Vec<RuntimeFingerprint> = instances
+            .keys()
+            .filter(|k| k.workspace_root != workspace_root)
+            .cloned()
+            .collect();
+        keys.into_iter().filter_map(|k| instances.remove(&k)).collect()
+    };
+    runtime
+        .memory_by_workspace
+        .lock()
+        .await
+        .retain(|k, _| k == &workspace_root);
+    for inst in stale {
+        let _ = inst.shutdown.send(());
+        let _ = inst.channel.cancel(String::new()).await;
+        let _ = inst.channel.stop().await;
+    }
+
+    // Build the (heavy) instance WITHOUT holding the instances lock.
+    let memory_node = ensure_memory(runtime, &workspace_root).await?;
+    let workspace_root_opt = if workspace_root.is_empty() {
+        None
+    } else {
+        Some(workspace_root.as_str())
+    };
+    let (channel, shutdown) = build_instance(
+        runtime.app.clone(),
+        memory_node,
+        provider_name,
+        api_key,
+        model_name,
+        persona_instructions,
+        base_url_override,
+        workspace_root_opt,
+        permission_mode,
+    )
+    .await?;
+
+    // Re-acquire to insert. If a concurrent call built the same config while we
+    // were building, keep theirs and tear down our now-duplicate instance.
+    let mut instances = runtime.instances.lock().await;
+    if let Some(inst) = instances.get(&fp) {
+        let winner = inst.channel.clone();
+        drop(instances);
+        let _ = shutdown.send(());
+        let _ = channel.stop().await;
+        return Ok(winner);
+    }
+    instances.insert(
+        fp,
+        Instance {
+            channel: channel.clone(),
+            shutdown,
+        },
+    );
+    Ok(channel)
+}
+
+/// Route a user message to the instance for `config` (built or reused).
+#[allow(clippy::too_many_arguments)]
+pub async fn route_send(
+    runtime: &AgentRuntime,
+    provider_name: &str,
+    api_key: &str,
+    model_name: &str,
+    persona_instructions: Option<&str>,
+    base_url_override: Option<&str>,
+    workspace_path: Option<&str>,
+    permission_mode: Option<&str>,
+    message: String,
+    images: Vec<String>,
+    chat_id: String,
+) -> Result<(), String> {
+    let channel = ensure_instance(
+        runtime,
+        provider_name,
+        api_key,
+        model_name,
+        persona_instructions,
+        base_url_override,
+        workspace_path,
+        permission_mode,
+    )
+    .await?;
+    channel.inject_user_message(message, images, chat_id).await
+}
+
+/// Cancel a chat's run. Fan out to every live instance rather than tracking a
+/// chat→instance owner: cancellation is `chat_id`-scoped and idempotent inside
+/// IsanAgent, so a stray cancel to an instance that doesn't own the chat is a
+/// harmless no-op. Targeted ownership would be stale after a mid-session
+/// model/persona switch (the chat's old instance still draining), silently
+/// dropping the cancel — fanning out can't.
+pub async fn route_cancel(runtime: &AgentRuntime, chat_id: String) -> Result<(), String> {
+    // Clone the channels under a short-lived lock, then cancel outside it so the
+    // cancel awaits don't block concurrent sends/cancels on the registry.
+    let channels: Vec<Arc<TauriChannel>> = {
+        let instances = runtime.instances.lock().await;
+        instances.values().map(|inst| inst.channel.clone()).collect()
+    };
+    for channel in channels {
+        let _ = channel.cancel(chat_id.clone()).await;
+    }
+    Ok(())
+}
+
+/// Warm up (or ensure) the instance for a config. Kept for the `agent_start`
+/// command; dispatch now happens through `route_send`.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_agent(
     runtime: &AgentRuntime,
     provider_name: &str,
@@ -268,115 +467,67 @@ pub async fn start_agent(
     workspace_path: Option<&str>,
     permission_mode: Option<&str>,
 ) -> Result<(), String> {
-    // Root the IsanAgent workspace at `<selected-folder>/.isanagent` so memory,
-    // sandbox, config, and skills live with the project. `None` keeps the
-    // legacy `~/.isanagent` default (resolved by the crate).
-    let workspace_root: Option<String> = workspace_path
-        .map(|p| format!("{}/.isanagent", p.trim_end_matches('/')));
+    ensure_instance(
+        runtime,
+        provider_name,
+        api_key,
+        model_name,
+        persona_instructions,
+        base_url_override,
+        workspace_path,
+        permission_mode,
+    )
+    .await
+    .map(|_| ())
+}
 
-    let new_fp = RuntimeFingerprint {
-        provider_name: provider_name.to_string(),
-        model_name: model_name.to_string(),
-        api_key: api_key.to_string(),
-        base_url: base_url_override.unwrap_or("").to_string(),
-        persona: persona_instructions.unwrap_or("").to_string(),
-        workspace_root: workspace_root.clone().unwrap_or_default(),
-        permission_mode: permission_mode.unwrap_or("").to_string(),
-    };
-
-    // Hold the fingerprint guard for the duration of the init so two
-    // concurrent calls can't race two runtimes into existence. The guard
-    // is awaited across teardown + spawn work — `tokio::sync::Mutex` is
-    // required for that.
-    let mut fp_guard = runtime.current_fingerprint.lock().await;
-
-    // Same config — runtime is already up with these exact credentials,
-    // model, base URL, and persona. Skip the bootstrap entirely (the
-    // original behavior, just now keyed on config instead of a boolean).
-    if fp_guard.as_ref() == Some(&new_fp) {
-        return Ok(());
-    }
-
-    // Different config — tear down whatever runtime is in flight so the
-    // bus router task exits and drops the old `agent_node` (and with it
-    // the old LLM provider, session manager, and outbound senders).
-    //
-    // The cascade: `channel.stop()` drops the only retained
-    // `Sender<BusMessage>`, the bus router's `bus_rx.recv()` resolves
-    // to `None`, the task exits, `agent_node` is dropped, its captured
-    // `global_outbound_tx` clones drop, and the outbound router task
-    // exits when `global_outbound_rx` drains.
-    //
-    // Errors are ignored — if the channel is in an inconsistent state
-    // we'd rather proceed to a fresh init than fail the user's send.
-    let workspace_changed = fp_guard
-        .as_ref()
-        .map(|old| old.workspace_root != new_fp.workspace_root)
-        .unwrap_or(false);
-    if fp_guard.is_some() {
-        // Teardown cancel — empty chat_id targets the channel default.
-        let _ = runtime.channel.cancel(String::new()).await;
-        let _ = runtime.channel.stop().await;
-        // The memory actor is bound to one workspace's SQLite file. If the
-        // workspace changed, drop it so it's rebuilt against the new project's
-        // DB (otherwise the new project would read the old project's history).
-        if workspace_changed {
-            *runtime.memory_node.lock().await = None;
-        }
-    }
-
-    let app = runtime.app.clone();
-    let channel = runtime.channel.clone();
+/// Build ONE IsanAgent instance: a fresh `TauriChannel` + agent node + bus
+/// routers, sharing the passed-in (per-workspace) memory actor. Returns the
+/// instance's channel. No teardown/fingerprint logic — the registry
+/// (`ensure_instance`) owns instance lifecycle now.
+///
+/// `persona_instructions`, when `Some`, is appended to the system prompt under
+/// a `## Persona` block. `base_url_override`, when `Some`, is the *full*
+/// chat-completions endpoint POSTed as-is.
+///
+/// `permission_mode` ("ask" | "auto-edit" | "bypass"), when it maps to a shell
+/// mode, overrides the interactive shell-policy gate so the UI permission
+/// toggle actually governs code-exec / destructive-shell for this instance.
+#[allow(clippy::too_many_arguments)]
+async fn build_instance(
+    app: AppHandle,
+    memory_node: NodeHandle<isanagent::memory::MemoryMessage>,
+    provider_name: &str,
+    api_key: &str,
+    model_name: &str,
+    persona_instructions: Option<&str>,
+    base_url_override: Option<&str>,
+    workspace_root: Option<&str>,
+    permission_mode: Option<&str>,
+) -> Result<(Arc<TauriChannel>, tokio::sync::oneshot::Sender<()>), String> {
+    // Each instance gets its own channel with a unique bootstrap chat_id;
+    // actual routing is by per-message chat_id.
+    let channel = Arc::new(TauriChannel::new(
+        app.clone(),
+        uuid::Uuid::new_v4().to_string(),
+    ));
 
     // Resolve workspace — `<selected-folder>/.isanagent`, or `~/.isanagent`.
-    let workspace_dir = resolve_workspace_root(workspace_root.as_deref());
+    let workspace_dir = resolve_workspace_root(workspace_root);
     if !workspace_dir.exists() {
         // Auto-create minimal workspace
         let _ = std::fs::create_dir_all(workspace_dir.join(".system_generated"));
     }
 
     let workspace =
-        IsanagentWorkspace::new(workspace_root.as_deref(), None).map_err(|e| {
+        IsanagentWorkspace::new(workspace_root, None).map_err(|e| {
             format!("Failed to load IsanAgent workspace: {}", e)
         })?;
 
-    // Memory (SQLite) — lazy-init once and keep alive across model
-    // switches. IsanAgent reads chat history by session_key
-    // (`channel:chat_id:thread`), and both `channel.name()` and
-    // `channel.chat_id` are stable across reinits. So as long as the
-    // memory actor outlives the per-model agent node, the next model
-    // sees the prior conversation transparently.
-    let memory_node = {
-        let mut guard = runtime.memory_node.lock().await;
-        if let Some(existing) = guard.as_ref() {
-            existing.clone()
-        } else {
-            let db_path = workspace
-                .dir
-                .join(".system_generated")
-                .join("agent_memory.db");
-            if let Some(parent) = db_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let db_path_str = db_path
-                .to_str()
-                .ok_or("workspace DB path is not valid UTF-8")?;
-
-            let memory_actor = isanagent::memory::SqliteMemoryActor::new(db_path_str)
-                .map_err(|e| {
-                    format!("Failed to initialize SqliteMemoryActor: {}", e)
-                })?;
-            let node = NodeHandle::<isanagent::memory::MemoryMessage>::new(
-                memory_actor,
-                100,
-                1,
-                Duration::from_millis(5),
-            );
-            *guard = Some(node.clone());
-            node
-        }
-    };
-
+    // Memory (SQLite) is the shared per-workspace actor passed in by
+    // `ensure_instance` — one actor per project, reused across this
+    // workspace's model-instances so history transfers and DB access is
+    // serialized through a single actor (no contention).
     let session_manager = SessionManager::new(memory_node.clone());
     let skills = SkillRegistry::new(workspace.skills_path());
     let clarification_hub = ClarificationHub::shared();
@@ -438,7 +589,7 @@ pub async fn start_agent(
     // stay correct once the workspace changes. Enabled by default; opt out with
     // `checkpoint_enabled = false` in `<workspace>/.isanagent/config.toml`.
     if workspace.config.checkpoint_enabled.unwrap_or(true) {
-        // `init` sets a process-global set-once `OnceLock`. start_agent runs
+        // `init` sets a process-global set-once `OnceLock`. build_instance runs
         // again on every workspace/model switch, so only initialize when the
         // store isn't already up — a second `init` would allocate a throwaway
         // store the OnceLock silently drops. The app-level root means the first
@@ -704,7 +855,8 @@ pub async fn start_agent(
     let max_iterations = workspace.config.resolved_max_iterations().unwrap_or(50);
     let max_tool_output_chars = workspace.config.resolved_max_tool_output_chars().unwrap_or(3000);
     // Start from the on-disk shell policy, then let the active UI permission mode override the
-    // interactive gate so the toolbar toggle actually governs code-exec/destructive-shell.
+    // interactive gate so the toolbar toggle actually governs code-exec/destructive-shell. The
+    // mode is baked into `AgentLogic` here, which is why it is part of the instance fingerprint.
     let mut shell_policy = workspace.config.resolved_shell_policy();
     if let Some(mode) = permission_mode_to_shell_mode(permission_mode) {
         shell_policy.interactive_mode = mode;
@@ -753,8 +905,18 @@ pub async fn start_agent(
     // Bus router: forward inbound → agent, outbound → channel. (Telemetry is
     // emitted by the outbound router below, not here — see note in the loop.)
     let channel_for_outbound = channel.clone();
+    // Shutdown trigger: `agent_node` (moved into this task) holds `bus_tx`
+    // clones, so `channel.stop()` can't drop the last sender. On teardown we
+    // fire `shutdown_tx`; the task breaks, drops `agent_node`, and the cycle
+    // unwinds (its `global_outbound_tx` clones drop, ending the outbound task).
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     async_runtime::spawn(async move {
-        while let Some(msg) = bus_rx.recv().await {
+        loop {
+            let msg = tokio::select! {
+                m = bus_rx.recv() => m,
+                _ = &mut shutdown_rx => break,
+            };
+            let Some(msg) = msg else { break };
             match msg {
                 BusMessage::Inbound(inbound) => {
                     let _ = agent_node.send_packet(BusMessage::Inbound(inbound)).await;
@@ -843,12 +1005,7 @@ pub async fn start_agent(
         },
     );
 
-    // Commit the new fingerprint last — if any of the spawn/init steps
-    // above bailed early we'd have left a half-built runtime tagged as
-    // "ready", and the next call would skip re-initializing it.
-    *fp_guard = Some(new_fp);
-
-    Ok(())
+    Ok((channel, shutdown_tx))
 }
 
 #[cfg(test)]

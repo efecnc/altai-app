@@ -839,7 +839,17 @@ async function sendViaIsanAgent(
   // IsanAgent manages its own system prompt and tools; we only feed input.
   // Image attachments (data URIs) go as multimodal parts for vision models.
   try {
-    await native.agentSend(payload, images, chatId);
+    // Carry the same config the pre-warm used, so the runtime routes this
+    // message to that instance (route_send keys instances by this config).
+    await native.agentSend(payload, images, chatId, {
+      providerName,
+      apiKey,
+      modelName,
+      instructions,
+      baseUrl,
+      workspacePath,
+      permissionMode,
+    });
     return true;
   } catch (e) {
     // Without this the status would stay stuck on "thinking" if the IPC call

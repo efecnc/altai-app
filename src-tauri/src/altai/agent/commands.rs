@@ -56,22 +56,51 @@ pub async fn agent_start(
     runtime::start_agent(&state, &pname, &key, &model, persona, base, workspace, permission).await
 }
 
-/// Send a user message into the IsanAgent bus, with optional image
-/// attachments (base64 data URIs or https URLs) for vision-capable models.
+/// Send a user message, routing it to the runtime instance that owns this
+/// chat. The per-message `config` (provider/model/key/persona/base/workspace/
+/// permission) lets different chats run on different models concurrently
+/// without tearing anything down — `route_send` picks or creates the matching
+/// instance. Defaults mirror `agent_start`.
 ///
 /// `chat_id` scopes the message to one ALTAI chat tab (its session id), so
 /// each tab keeps an isolated conversation. Empty → the channel default.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command surface: each field is an explicit IPC arg.
 pub async fn agent_send(
     state: State<'_, AgentRuntime>,
     message: String,
     images: Option<Vec<String>>,
     chat_id: Option<String>,
+    provider_name: Option<String>,
+    api_key: Option<String>,
+    model_name: Option<String>,
+    instructions: Option<String>,
+    base_url: Option<String>,
+    workspace_path: Option<String>,
+    permission_mode: Option<String>,
 ) -> Result<(), String> {
-    state
-        .channel
-        .inject_user_message(message, images.unwrap_or_default(), chat_id.unwrap_or_default())
-        .await
+    let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
+    let key = api_key.unwrap_or_default();
+    let model = model_name.unwrap_or_else(|| "gemini-2.5-flash".to_string());
+    let persona = instructions.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let base = base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let workspace = workspace_path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let permission = permission_mode.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    runtime::route_send(
+        &state,
+        &pname,
+        &key,
+        &model,
+        persona,
+        base,
+        workspace,
+        permission,
+        message,
+        images.unwrap_or_default(),
+        chat_id.unwrap_or_default(),
+    )
+    .await
 }
 
 /// Approve or deny an agent action.
@@ -90,14 +119,14 @@ pub async fn agent_approve(
     Ok(())
 }
 
-/// Cancel the current agent reasoning loop for a chat. `chat_id` empty → the
-/// channel default.
+/// Cancel the current agent reasoning loop for a chat, routed to the instance
+/// that owns `chat_id`. Empty → the default instance.
 #[tauri::command]
 pub async fn agent_cancel(
     state: State<'_, AgentRuntime>,
     chat_id: Option<String>,
 ) -> Result<(), String> {
-    state.channel.cancel(chat_id.unwrap_or_default()).await
+    runtime::route_cancel(&state, chat_id.unwrap_or_default()).await
 }
 
 /// Fetch paper metadata directly from the arXiv Atom API.
