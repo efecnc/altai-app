@@ -16,6 +16,11 @@ import {
   commitDiffKey,
 } from "./lib/diffCache";
 import { resolveLanguage, resolveLanguageSync } from "./lib/languageResolver";
+import { setDiffViewMode, useDiffViewMode } from "./lib/diffViewMode";
+import { SplitDiffView } from "./SplitDiffView";
+import { cn } from "@/lib/utils";
+import { LayoutTwoColumnIcon, Menu01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 type WorkingSource = {
   kind: "working";
@@ -46,28 +51,42 @@ const READONLY_EXT = [
   EditorState.readOnly.of(true),
   EditorView.editable.of(false),
 ];
+// Shared by the unified view (whose editor root carries `cm-merge-b`) and the
+// side-by-side MergeView (left editor = `cm-merge-a` original, right editor =
+// `cm-merge-b` modified). Colors are scoped per column so both layouts read the
+// same: the removed/original side is red, the added/modified side is green.
 const DIFF_THEME = EditorView.theme({
-  "&.cm-merge-b .cm-changedText, .cm-changedText": {
+  // Added text — modified column (split) / additions (unified): green.
+  "&.cm-merge-b .cm-changedText": {
     background: "rgba(110, 200, 120, 0.20) !important",
     borderRadius: "3px",
     padding: "0 1px",
   },
-  ".cm-deletedChunk .cm-deletedText, &.cm-merge-b .cm-deletedText": {
-    background: "rgba(220, 90, 90, 0.22) !important",
-    borderRadius: "3px",
-    padding: "0 1px",
-  },
-  "&.cm-merge-b .cm-changedLine, .cm-changedLine, .cm-inlineChangedLine": {
+  // Removed text — original column (split) / deleted chunks (unified): red.
+  "&.cm-merge-a .cm-changedText, .cm-deletedChunk .cm-deletedText, &.cm-merge-b .cm-deletedText":
+    {
+      background: "rgba(220, 90, 90, 0.22) !important",
+      borderRadius: "3px",
+      padding: "0 1px",
+    },
+  // Added line background: green.
+  "&.cm-merge-b .cm-changedLine, .cm-inlineChangedLine": {
     backgroundColor: "rgba(110, 200, 120, 0.05) !important",
+  },
+  // Removed line background — original column (split): red.
+  "&.cm-merge-a .cm-changedLine": {
+    backgroundColor: "rgba(220, 90, 90, 0.05) !important",
   },
   ".cm-deletedChunk": {
     backgroundColor: "rgba(220, 90, 90, 0.05) !important",
     paddingTop: "1px",
     paddingBottom: "1px",
   },
-  "&.cm-merge-b .cm-changedLineGutter, .cm-changedLineGutter": {
+  // Added line gutter marker: green.
+  "&.cm-merge-b .cm-changedLineGutter": {
     background: "rgba(110, 200, 120, 0.55) !important",
   },
+  // Removed line gutter marker: red.
   ".cm-deletedLineGutter, &.cm-merge-a .cm-changedLineGutter": {
     background: "rgba(220, 90, 90, 0.5) !important",
   },
@@ -135,6 +154,7 @@ function loadStateFromCache(
 export function GitDiffPane({ source, chipLabel, active }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const { resolvedTheme } = useTheme();
+  const viewMode = useDiffViewMode();
   const [state, setState] = useState<LoadState>(() =>
     active ? loadStateFromCache(source) : { kind: "idle" },
   );
@@ -278,6 +298,48 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-3 text-[10.5px] tabular-nums text-muted-foreground">
+          {!useFallback ? (
+            <div
+              role="group"
+              aria-label="Diff view mode"
+              className="flex items-center rounded-lg bg-muted/40 p-0.5"
+            >
+              <button
+                type="button"
+                aria-label="Inline diff"
+                aria-pressed={viewMode === "unified"}
+                title="Inline"
+                onClick={() => setDiffViewMode("unified")}
+                className={cn(
+                  "flex items-center justify-center rounded-md px-1.5 py-1 transition-all",
+                  viewMode === "unified"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground/70 hover:text-foreground",
+                )}
+              >
+                <HugeiconsIcon icon={Menu01Icon} size={13} strokeWidth={1.9} />
+              </button>
+              <button
+                type="button"
+                aria-label="Side-by-side diff"
+                aria-pressed={viewMode === "split"}
+                title="Side-by-side"
+                onClick={() => setDiffViewMode("split")}
+                className={cn(
+                  "flex items-center justify-center rounded-md px-1.5 py-1 transition-all",
+                  viewMode === "split"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground/70 hover:text-foreground",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={LayoutTwoColumnIcon}
+                  size={13}
+                  strokeWidth={1.9}
+                />
+              </button>
+            </div>
+          ) : null}
           <span className="truncate max-w-80 font-mono">{repoRoot}</span>
           {useFallback ? (
             <span className="flex items-center gap-3">
@@ -317,6 +379,13 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
               {fallbackPatch || "Diff preview is not available for this file."}
             </pre>
           </ScrollArea>
+        ) : viewMode === "split" ? (
+          <SplitDiffView
+            original={originalContent}
+            modified={modifiedContent}
+            theme={resolvedTheme}
+            diffTheme={DIFF_THEME}
+          />
         ) : (
           <CodeMirror
             ref={cmRef}
