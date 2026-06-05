@@ -9,7 +9,8 @@ const COLOR_MODIFIED = "#f59e0b"; // amber — modified lines
 const COLOR_DELETED = "#ef4444"; // red — line(s) removed here
 const COLOR_MATCH = "#3b82f6"; // blue — selection / search matches
 
-const MAX_MATCH_SCAN = 2000; // cap whole-doc match scans on huge files
+const MAX_MATCH_SCAN = 2000; // cap match count on a single scan
+const MAX_MATCH_SCAN_CHARS = 2_000_000; // skip match scans on very large docs
 
 export type GitChangedLines = {
   added: Set<number>;
@@ -52,6 +53,7 @@ export function parseChangedLines(diffText: string): GitChangedLines {
 
   let newLine = 0; // 1-based line in the new file
   let pendingRemovals = 0;
+  let inHunk = false;
 
   const flushRemovals = (atLine: number) => {
     if (pendingRemovals > 0) {
@@ -66,11 +68,16 @@ export function parseChangedLines(diffText: string): GitChangedLines {
       const m = /\+(\d+)/.exec(raw.split("@@")[1] ?? "");
       flushRemovals(newLine);
       newLine = m ? parseInt(m[1], 10) : newLine;
+      inHunk = true;
       continue;
     }
-    if (raw.startsWith("+++") || raw.startsWith("---") || raw.startsWith("diff ") || raw.startsWith("index ")) {
-      continue;
-    }
+    // Everything before the first hunk is file header/preamble. Gating on this
+    // (instead of matching "+++"/"---") avoids miscounting hunk-body lines whose
+    // content happens to start with "++" / "--", which would shift every later
+    // marker by one.
+    if (!inHunk) continue;
+    // "\ No newline at end of file" is diff metadata, not a document line.
+    if (raw.startsWith("\\")) continue;
     const marker = raw[0];
     if (marker === "+") {
       if (pendingRemovals > 0) {
@@ -111,6 +118,9 @@ function lineNumbersForLiteral(
 ): Set<number> {
   const lines = new Set<number>();
   if (needle.length < 2) return lines;
+  // Skip whole-doc materialization on very large files — these scans run
+  // synchronously in the minimap facet on every doc/selection change.
+  if (state.doc.length > MAX_MATCH_SCAN_CHARS) return lines;
   const docText = state.doc.toString();
   const hay = caseSensitive ? docText : docText.toLowerCase();
   const find = caseSensitive ? needle : needle.toLowerCase();
