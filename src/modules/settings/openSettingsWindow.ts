@@ -5,6 +5,7 @@ export type SettingsTab =
   | "agents"
   | "skills"
   | "language-servers"
+  | "github"
   | "accessibility"
   | "about";
 

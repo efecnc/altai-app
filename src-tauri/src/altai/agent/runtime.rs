@@ -417,6 +417,7 @@ pub async fn route_send(
     base_url_override: Option<&str>,
     workspace_path: Option<&str>,
     permission_mode: Option<&str>,
+    fallback: Option<isanagent::agent::FallbackProviderSpec>,
     message: String,
     images: Vec<String>,
     chat_id: String,
@@ -432,6 +433,26 @@ pub async fn route_send(
         permission_mode,
     )
     .await?;
+
+    // Cross-provider failover: refresh the process-global fallback list per send
+    // so it tracks the current primary. `build_fallback_specs` drops the
+    // candidate if it equals the primary (so the primary is never its own
+    // fallback). Empty = failover off. Process-global, so with several
+    // different-model runs in flight the most recent send's primary is excluded
+    // — correct for the common (sequential) case.
+    match fallback {
+        Some(fb) => {
+            let specs = isanagent::agent::build_fallback_specs(
+                provider_name,
+                base_url_override.unwrap_or(""),
+                model_name,
+                vec![fb],
+            );
+            isanagent::agent::set_fallback_providers(specs);
+        }
+        None => isanagent::agent::set_fallback_providers(Vec::new()),
+    }
+
     channel.inject_user_message(message, images, chat_id).await
 }
 
@@ -712,42 +733,10 @@ async fn build_instance(
             harness: harness.clone(),
         }));
 
-        // Colab MCP tool-call proxy — registered only when colab_mcp is the
-        // default provider, the feature is enabled, and a non-empty allowlist
-        // compiles. Mirrors the gating in the isanagent reference binary.
-        if workspace.config.execution_default_provider() == "colab_mcp"
-            && workspace
-                .config
-                .execution_colab_mcp_extra_mcp_tool_call_enabled()
-        {
-            let patterns = workspace
-                .config
-                .execution_colab_mcp_extra_mcp_tool_allowlist();
-            if patterns.is_empty() {
-                log::warn!(
-                    "colab_mcp extra_mcp_tool_call enabled but allowlist empty; skipping colab_mcp_tool_call registration."
-                );
-            } else {
-                match isanagent::tools::execution::compile_colab_mcp_tool_allowlist(&patterns) {
-                    Ok(gs) => {
-                        let max_chars =
-                            workspace.config.execution_max_output_bytes().min(512 * 1024);
-                        tools.register(Box::new(
-                            isanagent::tools::execution::ColabMcpToolCallTool {
-                                harness: harness.clone(),
-                                allowlist: gs,
-                                max_result_chars: max_chars,
-                                jobs: Some(execution_jobs.clone()),
-                                inflight: Some(inflight_sync.clone()),
-                            },
-                        ));
-                    }
-                    Err(e) => log::warn!(
-                        "invalid colab_mcp extra_mcp_tool_allowlist: {e}; skipping colab_mcp_tool_call"
-                    ),
-                }
-            }
-        }
+        // NOTE: The colab_mcp `extra_mcp_tool_call` proxy registration was
+        // removed here — the isanagent bump to ff54632 (for the resettable
+        // failover API, PR #57) dropped `ColabMcpToolCallTool`,
+        // `compile_colab_mcp_tool_allowlist`, and the related AppConfig getters.
     }
 
     // Provider — `base_url_override` (from the JS side, derived from the

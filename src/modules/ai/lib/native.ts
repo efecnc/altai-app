@@ -396,6 +396,13 @@ export const native = {
       workspacePath?: string;
       /// "ask" | "auto-edit" | "bypass" — gates code-exec/destructive-shell.
       permissionMode?: string;
+      // Cross-provider failover model, routed via `set_fallback_providers`.
+      fallback?: {
+        providerName: string;
+        baseUrl: string;
+        apiKey: string;
+        modelName: string;
+      } | null;
     },
   ) =>
     invoke<void>("agent_send", {
@@ -409,6 +416,7 @@ export const native = {
       baseUrl: config.baseUrl,
       workspacePath: config.workspacePath,
       permissionMode: config.permissionMode,
+      fallback: config.fallback ?? null,
     }),
   agentCancel: (chatId?: string) => invoke<void>("agent_cancel", { chatId }),
   agentApprove: (approvalId: string, approved: boolean) =>

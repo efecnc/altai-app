@@ -309,16 +309,17 @@ fn header_map_to_strings(headers: &HeaderMap) -> HashMap<String, String> {
     out
 }
 
-#[tauri::command]
-pub async fn ai_http_request(
-    url: String,
-    method: String,
+/// SSRF-safe HTTP request usable from other Rust modules (e.g. the `github`
+/// module's API + OAuth device-flow calls). Same validation/pinning pipeline
+/// as `ai_http_request`; that command is a thin wrapper over this.
+pub(crate) async fn safe_http_request(
+    url: &str,
+    method: &str,
     headers: Option<HashMap<String, String>>,
     body: Option<Vec<u8>>,
-    allow_private_network: Option<bool>,
+    allow_private: bool,
 ) -> Result<HttpResponse, String> {
-    let allow_private = allow_private_network.unwrap_or(false);
-    let parsed = validate_url(&url, allow_private)?;
+    let parsed = validate_url(url, allow_private)?;
     let host = parsed
         .host_str()
         .ok_or_else(|| "missing host".to_string())?
@@ -327,7 +328,7 @@ pub async fn ai_http_request(
 
     let client = build_safe_client(allow_private, &[(host, safe_ips)])?;
 
-    let req = build_request(&client, &method, parsed, headers, body)?;
+    let req = build_request(&client, method, parsed, headers, body)?;
     let resp = req.send().await.map_err(|e| e.to_string())?;
 
     let status = resp.status().as_u16();
@@ -338,6 +339,18 @@ pub async fn ai_http_request(
         headers,
         body,
     })
+}
+
+#[tauri::command]
+pub async fn ai_http_request(
+    url: String,
+    method: String,
+    headers: Option<HashMap<String, String>>,
+    body: Option<Vec<u8>>,
+    allow_private_network: Option<bool>,
+) -> Result<HttpResponse, String> {
+    let allow_private = allow_private_network.unwrap_or(false);
+    safe_http_request(&url, &method, headers, body, allow_private).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

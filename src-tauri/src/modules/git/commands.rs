@@ -5,6 +5,8 @@ use crate::modules::git::types::{
     DiscardEntry, GitCommitFileChange, GitCommitResult, GitDiffContentResult, GitDiffResult,
     GitLogEntry, GitPanelSnapshot, GitPushResult, GitRepoInfo, GitStatusSnapshot,
 };
+use crate::modules::github::config as github_config;
+use crate::modules::secrets::{self, SecretsState};
 use crate::modules::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
 async fn blocking<F, T>(app: AppHandle, f: F) -> Result<T, String>
@@ -18,6 +20,20 @@ where
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Read the stored GitHub access token (if connected) so network ops can
+/// authenticate GitHub HTTPS remotes. Read on the async side before `blocking`
+/// moves `app`. Never surfaced to the frontend.
+fn github_token(app: &AppHandle, secrets: &SecretsState) -> Option<String> {
+    secrets::get_secret(
+        app,
+        secrets,
+        github_config::SECRETS_SERVICE,
+        github_config::SECRETS_ACCOUNT,
+    )
+    .ok()
+    .flatten()
 }
 
 #[tauri::command]
@@ -160,12 +176,14 @@ pub async fn git_clone(
     dest_parent: String,
     workspace: Option<WorkspaceEnv>,
     app: AppHandle,
+    secrets: tauri::State<'_, SecretsState>,
 ) -> Result<String, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
+    let token = github_token(&app, secrets.inner());
     // clone targets a fresh dir the user explicitly picked — no workspace
     // registry lookup needed, so the closure ignores it.
     blocking(app, move |_r| {
-        operations::clone(&workspace, &url, &dest_parent).map_err(Into::into)
+        operations::clone(&workspace, &url, &dest_parent, token.as_deref()).map_err(Into::into)
     })
     .await
 }
@@ -175,10 +193,12 @@ pub async fn git_fetch(
     repo_root: String,
     workspace: Option<WorkspaceEnv>,
     app: AppHandle,
+    secrets: tauri::State<'_, SecretsState>,
 ) -> Result<(), String> {
     let workspace = WorkspaceEnv::from_option(workspace);
+    let token = github_token(&app, secrets.inner());
     blocking(app, move |r| {
-        operations::fetch(r, &repo_root, &workspace).map_err(Into::into)
+        operations::fetch(r, &repo_root, &workspace, token.as_deref()).map_err(Into::into)
     })
     .await
 }
@@ -188,10 +208,12 @@ pub async fn git_pull_ff_only(
     repo_root: String,
     workspace: Option<WorkspaceEnv>,
     app: AppHandle,
+    secrets: tauri::State<'_, SecretsState>,
 ) -> Result<(), String> {
     let workspace = WorkspaceEnv::from_option(workspace);
+    let token = github_token(&app, secrets.inner());
     blocking(app, move |r| {
-        operations::pull_ff_only(r, &repo_root, &workspace).map_err(Into::into)
+        operations::pull_ff_only(r, &repo_root, &workspace, token.as_deref()).map_err(Into::into)
     })
     .await
 }
@@ -201,10 +223,29 @@ pub async fn git_push(
     repo_root: String,
     workspace: Option<WorkspaceEnv>,
     app: AppHandle,
+    secrets: tauri::State<'_, SecretsState>,
 ) -> Result<GitPushResult, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
+    let token = github_token(&app, secrets.inner());
     blocking(app, move |r| {
-        operations::push(r, &repo_root, &workspace).map_err(Into::into)
+        operations::push(r, &repo_root, &workspace, token.as_deref()).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_publish(
+    repo_root: String,
+    remote_url: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+    secrets: tauri::State<'_, SecretsState>,
+) -> Result<GitPushResult, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let token = github_token(&app, secrets.inner());
+    blocking(app, move |r| {
+        operations::publish(r, &repo_root, &remote_url, &workspace, token.as_deref())
+            .map_err(Into::into)
     })
     .await
 }

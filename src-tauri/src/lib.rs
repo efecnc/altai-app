@@ -2,7 +2,7 @@ mod modules;
 mod altai;
 
 use modules::{
-    fs, git, lsp_install, net, notebook, proc, pty, secrets, shell, webview, workspace,
+    fs, git, github, lsp_install, net, notebook, proc, pty, secrets, shell, webview, workspace,
 };
 use altai::agent::commands as agent_commands;
 use std::sync::Mutex;
@@ -163,6 +163,7 @@ pub fn run() {
             git::commands::git_fetch,
             git::commands::git_pull_ff_only,
             git::commands::git_push,
+            git::commands::git_publish,
             git::commands::git_log,
             git::commands::git_show_commit,
             git::commands::git_commit_files,
@@ -194,6 +195,13 @@ pub fn run() {
             net::lm_ping,
             net::ai_http_request,
             net::ai_http_stream,
+            // ALTAI — GitHub integration (OAuth Device Flow + API proxy)
+            github::commands::github_device_start,
+            github::commands::github_poll_token,
+            github::commands::github_status,
+            github::commands::github_disconnect,
+            github::commands::github_api_request,
+            github::commands::github_create_repo,
             // ALTAI — notebook execution
             notebook::notebook_execute_cell,
             // ALTAI — generic stdio process (LSP/MCP servers)

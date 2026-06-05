@@ -3,13 +3,13 @@ import {
   Cancel01Icon,
   Clock01Icon,
   FolderOpenIcon,
-  GitForkIcon,
+  GithubIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { homeDir } from "@tauri-apps/api/path";
 import { useEffect, useRef, useState } from "react";
-import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { CloneFromGitHub } from "@/modules/github/components/CloneFromGitHub";
 import { folderName, prettyDir, useWorkspaceFolderStore } from "./folder";
 
 /**
@@ -27,11 +27,8 @@ export function WorkspaceWelcome() {
   const [picking, setPicking] = useState(false);
   const [home, setHome] = useState<string | null>(null);
 
-  // Clone-repo inline form state.
-  const [cloneOpen, setCloneOpen] = useState(false);
-  const [cloneUrl, setCloneUrl] = useState("");
-  const [cloning, setCloning] = useState(false);
-  const [cloneError, setCloneError] = useState<string | null>(null);
+  // Clone-from-GitHub repo picker state.
+  const [ghOpen, setGhOpen] = useState(false);
 
   // Move SR focus into the title on mount so screen-reader users land in
   // context instead of at the top of an unlabelled document.
@@ -58,21 +55,6 @@ export function WorkspaceWelcome() {
       await pickFolder();
     } finally {
       setPicking(false);
-    }
-  };
-
-  const onClone = async () => {
-    if (cloning) return;
-    setCloneError(null);
-    setCloning(true);
-    try {
-      // On success the workspace folder is set → this screen unmounts. A null
-      // result means the user cancelled the destination dialog: stay put.
-      await cloneRepo(cloneUrl);
-    } catch (e) {
-      setCloneError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCloning(false);
     }
   };
 
@@ -112,67 +94,19 @@ export function WorkspaceWelcome() {
             loading={picking}
           />
           <ActionRow
-            icon={GitForkIcon}
-            title="Clone repo"
-            hint="Clone a Git repository"
-            onClick={() => setCloneOpen((v) => !v)}
-            active={cloneOpen}
-            disabled={cloning}
+            icon={GithubIcon}
+            title="Clone from GitHub"
+            hint="Browse and clone your GitHub repositories"
+            onClick={() => setGhOpen(true)}
+            active={ghOpen}
           />
-          {cloneOpen ? (
-            <div className="mb-1 ml-12 mr-1 flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 p-2.5">
-              <input
-                type="text"
-                value={cloneUrl}
-                onChange={(e) => setCloneUrl(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void onClone();
-                }}
-                placeholder="https://github.com/user/repo.git"
-                aria-label="Repository URL"
-                autoFocus
-                spellCheck={false}
-                disabled={cloning}
-                className={cn(
-                  "w-full rounded-md border border-border/60 bg-background px-2.5 py-1.5",
-                  "font-mono text-[12px] text-foreground placeholder:text-muted-foreground/50",
-                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  "disabled:opacity-60",
-                )}
-              />
-              {cloneError ? (
-                <div
-                  role="alert"
-                  className="rounded bg-destructive/10 px-2 py-1.5 text-[11px] leading-relaxed text-destructive"
-                >
-                  {cloneError}
-                </div>
-              ) : null}
-              <span role="status" className="sr-only">
-                {cloning ? "Cloning repository…" : ""}
-              </span>
-              <button
-                type="button"
-                onClick={() => void onClone()}
-                disabled={cloning || cloneUrl.trim().length === 0}
-                className={cn(
-                  "flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5",
-                  "text-[12px] font-medium text-primary-foreground transition-colors",
-                  "hover:bg-primary/90 disabled:opacity-50",
-                )}
-              >
-                {cloning ? (
-                  <>
-                    <Spinner className="size-3.5" />
-                    Cloning…
-                  </>
-                ) : (
-                  "Choose location & clone"
-                )}
-              </button>
-            </div>
-          ) : null}
         </div>
+
+        <CloneFromGitHub
+          open={ghOpen}
+          onOpenChange={setGhOpen}
+          cloneRepo={cloneRepo}
+        />
 
         {/* Recent projects */}
         <div className="mt-8 flex w-full flex-col">

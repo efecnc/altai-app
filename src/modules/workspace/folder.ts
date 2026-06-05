@@ -27,6 +27,13 @@ type State = {
   /** Most-recently-opened workspaces, newest first. Powers the welcome list. */
   recents: string[];
   hydrated: boolean;
+  /**
+   * Set when the active workspace was just produced by a clone, so the app can
+   * open straight into the Source Control view instead of the file explorer.
+   * Transient (never persisted); consumed + cleared by the app on mount.
+   */
+  justCloned: boolean;
+  clearJustCloned: () => void;
   hydrate: () => Promise<void>;
   setFolder: (path: string) => void;
   /** Open the native directory picker; persists + returns the chosen path. */
@@ -52,6 +59,10 @@ export const useWorkspaceFolderStore = create<State>((set, get) => ({
   folder: null,
   recents: [],
   hydrated: false,
+  justCloned: false,
+  clearJustCloned: () => {
+    if (get().justCloned) set({ justCloned: false });
+  },
   hydrate: async () => {
     if (get().hydrated) return;
     const saved = (await store.get<string>(KEY_FOLDER)) ?? null;
@@ -95,6 +106,7 @@ export const useWorkspaceFolderStore = create<State>((set, get) => ({
     });
     if (typeof parent !== "string") return null; // cancelled
     const dest = await native.gitClone(trimmed, parent);
+    set({ justCloned: true });
     get().setFolder(dest);
     return dest;
   },

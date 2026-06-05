@@ -1,5 +1,18 @@
 use super::runtime::{self, AgentRuntime};
+use serde::Deserialize;
 use tauri::State;
+
+/// Cross-provider failover spec sent from JS (camelCase) — the model the agent
+/// retries on when the primary provider is exhausted. Maps to the isanagent
+/// crate's `FallbackProviderSpec`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FallbackArg {
+    pub provider_name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub model_name: String,
+}
 
 /// Start (or ensure running) the IsanAgent runtime.
 ///
@@ -78,6 +91,7 @@ pub async fn agent_send(
     base_url: Option<String>,
     workspace_path: Option<String>,
     permission_mode: Option<String>,
+    fallback: Option<FallbackArg>,
 ) -> Result<(), String> {
     let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
     let key = api_key.unwrap_or_default();
@@ -86,6 +100,12 @@ pub async fn agent_send(
     let base = base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let workspace = workspace_path.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let permission = permission_mode.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let fb = fallback.map(|f| isanagent::agent::FallbackProviderSpec {
+        provider_name: f.provider_name,
+        base_url: f.base_url,
+        api_key: f.api_key,
+        model_name: f.model_name,
+    });
 
     runtime::route_send(
         &state,
@@ -96,6 +116,7 @@ pub async fn agent_send(
         base,
         workspace,
         permission,
+        fb,
         message,
         images.unwrap_or_default(),
         chat_id.unwrap_or_default(),
