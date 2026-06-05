@@ -3,8 +3,8 @@ export type SettingsTab =
   | "shortcuts"
   | "models"
   | "agents"
-  | "skills"
   | "language-servers"
+  | "github"
   | "accessibility"
   | "about";
 

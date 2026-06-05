@@ -1,5 +1,6 @@
 pub mod fs;
 pub mod git;
+pub mod github;
 pub mod lsp_install;
 pub mod net;
 pub mod notebook;

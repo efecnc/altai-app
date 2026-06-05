@@ -13,7 +13,10 @@ import { currentWorkspaceFolder } from "@/modules/workspace/folder";
 import { useAgentsStore } from "./agentsStore";
 import { useTodosStore } from "./todoStore";
 import type { AgentUsage } from "../lib/provider";
-import { resolveIsanAgentTarget } from "../lib/isanagentTarget";
+import {
+  resolveFallbackSpec,
+  resolveIsanAgentTarget,
+} from "../lib/isanagentTarget";
 import { EMPTY_PROVIDER_KEYS, type ProviderKeys } from "../lib/keyring";
 import {
   deleteSessionData,
@@ -27,7 +30,7 @@ import {
   type SessionMeta,
 } from "../lib/sessions";
 import { pushRecentModel } from "../lib/modelPrefs";
-import { effectivePermissionMode, setDefaultModel } from "@/modules/settings/store";
+import { setDefaultModel } from "@/modules/settings/store";
 
 type Live = {
   getCwd: () => string | null;
@@ -191,6 +194,9 @@ type StoreState = {
   activeSessionId: string | null;
   hydrateSessions: () => Promise<void>;
   newSession: () => string;
+  /** Create a titled session WITHOUT focusing it (no active-session change,
+   *  no transcript reset) — for background agent dispatch from the board. */
+  createBackgroundSession: (title: string) => string;
   switchSession: (id: string) => void;
   deleteSession: (id: string) => void;
   renameSession: (id: string, title: string) => void;
@@ -219,12 +225,6 @@ const pendingPersist = new Map<
 // Message arrays freshly hydrated from disk. The persistence subscription
 // skips these once — re-writing a thread we just read back is pure waste.
 const loadedMessagesRefs = new WeakSet<UIMessage[]>();
-
-// Fingerprint of the runtime config we last successfully started. Lets us skip
-// the per-message `agent_start` IPC when nothing changed (the Rust side no-ops
-// on an identical fingerprint anyway). Reset to null on any start/send failure
-// so a dead runtime is always restarted on the next attempt.
-let lastStartFingerprint: string | null = null;
 
 function flushPersistEntry(id: string) {
   const entry = pendingPersist.get(id);
@@ -592,6 +592,20 @@ export const useChatStore = create<StoreState>((set, get) => ({
     return id;
   },
 
+  createBackgroundSession: (title) => {
+    const id = newSessionId();
+    const meta: SessionMeta = {
+      id,
+      title,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const next = [...get().sessions, meta];
+    set({ sessions: next });
+    void saveSessionsList(next);
+    return id;
+  },
+
   switchSession: (id) => {
     const prevId = get().activeSessionId;
     if (prevId === id) return;
@@ -780,49 +794,27 @@ async function sendViaIsanAgent(
   // state with the project instead of under ~/.isanagent.
   const workspacePath = currentWorkspaceFolder() ?? undefined;
 
-  // The active permission mode gates code-exec / destructive-shell in the
-  // runtime (maps to IsanAgent's shell policy). Mirror the switcher's guard:
-  // "bypass" falls back to "ask" when bypass is not enabled in Settings, so a stale selection
-  // can never silently disable the gate (shared invariant with PermissionModeSwitcher).
-  const permissionMode = effectivePermissionMode(
-    prefs.permissionMode,
-    prefs.bypassPermissionsEnabled,
-  );
-
-  // Only (re)start the runtime when the target config actually changes —
-  // avoids a redundant IPC round-trip on every message. Mirrors the fields
-  // the Rust runtime fingerprints (provider, key, model, base URL, persona,
-  // workspace root).
-  const startFingerprint = JSON.stringify([
+  // The runtime keeps one instance per config (model/persona/workspace), so we
+  // no longer pre-start or gate on a fingerprint — `agentSend` carries the
+  // config and routes to (or spins up) the matching instance, letting different
+  // models run concurrently without tearing each other down.
+  const config = {
     providerName,
     apiKey,
     modelName,
-    baseUrl ?? "",
-    instructions ?? "",
-    workspacePath ?? "",
-    permissionMode,
-  ]);
-  if (startFingerprint !== lastStartFingerprint) {
-    try {
-      await native.agentStart({
-        providerName,
-        apiKey,
-        modelName,
-        instructions,
-        baseUrl,
-        workspacePath,
-        permissionMode,
-      });
-      lastStartFingerprint = startFingerprint;
-    } catch (e) {
-      lastStartFingerprint = null;
-      store.patchAgentMeta({
-        status: "error",
-        error: `ALTAI runtime failed to start: ${e}`,
-      });
-      return false;
-    }
-  }
+    instructions,
+    baseUrl,
+    workspacePath,
+    // Configured failover model (ignored by the runtime until the crate bump).
+    fallback: resolveFallbackSpec(prefs.fallbackModelId, store.apiKeys, {
+      lmstudioBaseURL: prefs.lmstudioBaseURL,
+      lmstudioModelId: prefs.lmstudioModelId,
+      mlxBaseURL: prefs.mlxBaseURL,
+      mlxModelId: prefs.mlxModelId,
+      openaiCompatibleBaseURL: prefs.openaiCompatibleBaseURL,
+      openaiCompatibleModelId: prefs.openaiCompatibleModelId,
+    }),
+  };
 
   store.patchAgentMeta({ status: "thinking", step: "Sending to ALTAI..." });
 
@@ -839,18 +831,85 @@ async function sendViaIsanAgent(
   // IsanAgent manages its own system prompt and tools; we only feed input.
   // Image attachments (data URIs) go as multimodal parts for vision models.
   try {
-    await native.agentSend(payload, images, chatId);
+    await native.agentSend(payload, images, chatId, config);
     return true;
   } catch (e) {
-    // Without this the status would stay stuck on "thinking" if the IPC call
-    // rejects (e.g. the runtime died between start and send). Drop the start
-    // fingerprint so the next message re-initializes the runtime.
-    lastStartFingerprint = null;
     store.patchAgentMeta({
       status: "error",
       error: e instanceof Error ? e.message : String(e),
       step: null,
     });
+    return false;
+  }
+}
+
+/**
+ * Dispatch a seeded turn into a SPECIFIC session (chat_id) WITHOUT touching the
+ * focused chat's global state — no active-session change, no global
+ * `nativeMessages`/`agentMeta` writes. Used for background agent assignments so
+ * dispatching a run never hijacks the chat on screen or wipes its todos. Live
+ * status/sub-agents flow to `useAgentRunsStore` via the event bridge (keyed by
+ * chat_id). The seed is persisted as the session's first message so its
+ * transcript opens with context. Returns false if no runtime target resolves.
+ */
+export async function dispatchToSession(
+  text: string,
+  chatId: string,
+): Promise<boolean> {
+  const store = useChatStore.getState();
+  const prefs = usePreferencesStore.getState();
+  const resolution = resolveIsanAgentTarget(store.selectedModelId, store.apiKeys, {
+    lmstudioBaseURL: prefs.lmstudioBaseURL,
+    lmstudioModelId: prefs.lmstudioModelId,
+    mlxBaseURL: prefs.mlxBaseURL,
+    mlxModelId: prefs.mlxModelId,
+    openaiCompatibleBaseURL: prefs.openaiCompatibleBaseURL,
+    openaiCompatibleModelId: prefs.openaiCompatibleModelId,
+  });
+  if (!resolution.ok) return false;
+  const { providerName, apiKey, modelName, baseUrl } = resolution.target;
+
+  const agentsState = useAgentsStore.getState();
+  const activeAgent = agentsState.all().find((a) => a.id === agentsState.activeId);
+  const instructions = activeAgent?.instructions?.trim() || undefined;
+  const workspacePath = currentWorkspaceFolder() ?? undefined;
+
+  // The config routes this chat to its own runtime instance — so this
+  // background run can be on a different model than the focused chat (or other
+  // assignments) and run concurrently without tearing anything down.
+  const config = {
+    providerName,
+    apiKey,
+    modelName,
+    instructions,
+    baseUrl,
+    workspacePath,
+    // Configured failover model (ignored by the runtime until the crate bump).
+    fallback: resolveFallbackSpec(prefs.fallbackModelId, store.apiKeys, {
+      lmstudioBaseURL: prefs.lmstudioBaseURL,
+      lmstudioModelId: prefs.lmstudioModelId,
+      mlxBaseURL: prefs.mlxBaseURL,
+      mlxModelId: prefs.mlxModelId,
+      openaiCompatibleBaseURL: prefs.openaiCompatibleBaseURL,
+      openaiCompatibleModelId: prefs.openaiCompatibleModelId,
+    }),
+  };
+
+  // Persist the seed as the session's opening message (so "Open transcript"
+  // shows context) without routing it through the focused chat's thread.
+  const seedMessage: UIMessage = {
+    id: `native-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role: "user",
+    parts: [{ type: "text", text }],
+  };
+  void saveMessages(chatId, [seedMessage]);
+
+  const envBlock = buildEnvBlock(store.live);
+  const payload = envBlock ? `${envBlock}\n\n${text}` : text;
+  try {
+    await native.agentSend(payload, undefined, chatId, config);
+    return true;
+  } catch {
     return false;
   }
 }

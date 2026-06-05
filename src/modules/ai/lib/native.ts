@@ -123,19 +123,6 @@ export type GitDiscardEntry = {
   untracked: boolean;
 };
 
-/** A pre-edit checkpoint of a file the agent mutated, for one-step undo. */
-export type CheckpointInfo = {
-  id: string;
-  /** Absolute path of the file that was (or would be) mutated. */
-  path: string;
-  /** The tool that triggered the snapshot (e.g. `edit_file`). */
-  label: string;
-  /** Unix ms when the snapshot was taken. */
-  createdMs: number;
-  /** False when the file did not exist pre-edit — restoring removes it. */
-  existed: boolean;
-};
-
 export const native = {
   workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
   workspaceAuthorize: (path: string) =>
@@ -377,25 +364,46 @@ export const native = {
     instructions?: string;
     baseUrl?: string;
     workspacePath?: string;
-    /// "ask" | "auto-edit" | "bypass" — gates code-exec/destructive-shell in the runtime.
-    permissionMode?: string;
   }) => invoke<void>("agent_start", params),
-  agentSend: (message: string, images?: string[], chatId?: string) =>
-    invoke<void>("agent_send", { message, images, chatId }),
+  agentSend: (
+    message: string,
+    images: string[] | undefined,
+    chatId: string | undefined,
+    // The config picks/creates the runtime instance that owns this chat, so
+    // different models/personas can run concurrently (no teardown).
+    config: {
+      providerName: string;
+      apiKey: string;
+      modelName: string;
+      instructions?: string;
+      baseUrl?: string;
+      workspacePath?: string;
+      // Failover provider chain. The Rust side ignores this until the isanagent
+      // crate ships re-settable fallback providers (altaidevorg/isanagent#57),
+      // at which point `agent_send` will read it and call `set_fallback_providers`.
+      fallback?: {
+        providerName: string;
+        baseUrl: string;
+        apiKey: string;
+        modelName: string;
+      } | null;
+    },
+  ) =>
+    invoke<void>("agent_send", {
+      message,
+      images,
+      chatId,
+      providerName: config.providerName,
+      apiKey: config.apiKey,
+      modelName: config.modelName,
+      instructions: config.instructions,
+      baseUrl: config.baseUrl,
+      workspacePath: config.workspacePath,
+      fallback: config.fallback ?? null,
+    }),
   agentCancel: (chatId?: string) => invoke<void>("agent_cancel", { chatId }),
   agentApprove: (approvalId: string, approved: boolean) =>
     invoke<void>("agent_approve", { approvalId, approved }),
-  /** List pre-edit checkpoints (newest first) for one-step undo of agent edits. */
-  checkpointList: () => invoke<CheckpointInfo[]>("checkpoint_list"),
-  /** Restore the file recorded by checkpoint `id` to its pre-edit state. */
-  checkpointRestore: (id: string) => invoke<string>("checkpoint_restore", { id }),
-  /**
-   * Install agent skill(s) from a GitHub repo (`owner/repo` or full URL) into
-   * the workspace's skills dir. `skill` installs just one skill from the repo.
-   * Returns the installed skill names.
-   */
-  agentInstallSkill: (repoUrl: string, workspacePath?: string, skill?: string) =>
-    invoke<string[]>("agent_install_skill", { workspacePath, repoUrl, skill }),
   gitClone: (url: string, destParent: string) =>
     invoke<string>("git_clone", { url, destParent }),
 };

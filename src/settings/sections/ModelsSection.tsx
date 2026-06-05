@@ -27,6 +27,7 @@ import {
   setAutocompleteModelId,
   setAutocompleteProvider,
   setDefaultModel,
+  setFallbackModelId,
   setLmstudioBaseURL,
   setLmstudioModelId,
   setMlxBaseURL,
@@ -130,6 +131,119 @@ export function ModelsSection() {
       />
 
       <AutocompleteBlock keys={keys} />
+
+      <FailoverBlock keys={keys} />
+    </div>
+  );
+}
+
+function FailoverBlock({ keys }: { keys: KeysMap }) {
+  const fallbackModelId = usePreferencesStore((s) => s.fallbackModelId);
+  const current = useMemo(
+    () => MODELS.find((m) => m.id === fallbackModelId) ?? null,
+    [fallbackModelId],
+  );
+  const grouped = useMemo(() => {
+    const map = new Map<ProviderId, (typeof MODELS)[number][]>();
+    for (const m of MODELS) {
+      const arr = map.get(m.provider) ?? [];
+      arr.push(m);
+      map.set(m.provider, arr);
+    }
+    return map;
+  }, []);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-[13px] font-medium">Failover model</h3>
+        <span className="text-[10.5px] leading-relaxed text-muted-foreground">
+          When the primary provider is exhausted (rate limit / outage), the agent
+          automatically retries on this model. Needs an API key for its provider.
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
+        <FieldRow label="Model">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                className="h-8 flex-1 justify-between gap-2 px-2.5 text-[11.5px]"
+              >
+                <span className="flex items-center gap-2 truncate">
+                  {current ? (
+                    <>
+                      <ProviderIcon provider={current.provider} size={12} />
+                      <span className="truncate">{current.label}</span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">
+                      None (no failover)
+                    </span>
+                  )}
+                </span>
+                <HugeiconsIcon
+                  icon={ArrowDown01Icon}
+                  size={11}
+                  strokeWidth={2}
+                  className="opacity-70"
+                />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="max-h-[24rem] min-w-[280px] overflow-y-auto"
+            >
+              <DropdownMenuItem
+                onSelect={() => void setFallbackModelId("")}
+                className={cn(
+                  "text-[11.5px]",
+                  !fallbackModelId && "bg-accent/50",
+                )}
+              >
+                None (no failover)
+              </DropdownMenuItem>
+              {PROVIDERS.map((p) => {
+                const list = grouped.get(p.id);
+                if (!list || list.length === 0) return null;
+                const pHasKey = providerNeedsKey(p.id) ? !!keys[p.id] : true;
+                return (
+                  <div key={p.id} className="px-1 pt-1.5">
+                    <div className="mb-0.5 flex items-center gap-1.5 px-2 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                      <ProviderIcon provider={p.id} size={11} />
+                      <span>{p.label}</span>
+                      {!pHasKey ? (
+                        <span className="ml-auto text-[9.5px] normal-case tracking-normal text-muted-foreground/70">
+                          no key
+                        </span>
+                      ) : null}
+                    </div>
+                    {list.map((m) => (
+                      <DropdownMenuItem
+                        key={m.id}
+                        disabled={!pHasKey}
+                        onSelect={() => pHasKey && void setFallbackModelId(m.id)}
+                        className={cn(
+                          "text-[11.5px]",
+                          m.id === fallbackModelId && "bg-accent/50",
+                        )}
+                      >
+                        <span className="flex flex-col">
+                          <span>{m.label}</span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {m.description}
+                          </span>
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                  </div>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </FieldRow>
+      </div>
     </div>
   );
 }

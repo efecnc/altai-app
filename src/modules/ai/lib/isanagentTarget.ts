@@ -194,6 +194,42 @@ function ok(target: IsanAgentTarget): IsanAgentTargetResolution {
   return { ok: true, target };
 }
 
+/** A failover provider, matching the isanagent crate's `FallbackProviderSpec`
+ *  ({ provider_name, base_url, api_key, model_name }). */
+export type FallbackProviderSpec = {
+  providerName: string;
+  baseUrl: string;
+  apiKey: string;
+  modelName: string;
+};
+
+/**
+ * Resolve the configured failover model into a fallback spec, or null when none
+ * is set or it can't be resolved (no API key, missing local model id, etc.).
+ * The runtime excludes it automatically if it equals the active primary.
+ */
+export function resolveFallbackSpec(
+  fallbackModelId: string,
+  apiKeys: ProviderKeys,
+  prefs: IsanAgentPrefsView,
+): FallbackProviderSpec | null {
+  const id = fallbackModelId.trim();
+  if (!id) return null;
+  let res: IsanAgentTargetResolution;
+  try {
+    res = resolveIsanAgentTarget(id as ModelId, apiKeys, prefs);
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  return {
+    providerName: res.target.providerName,
+    baseUrl: res.target.baseUrl,
+    apiKey: res.target.apiKey,
+    modelName: res.target.modelName,
+  };
+}
+
 function ensureChatCompletions(base: string): string {
   const trimmed = base.replace(/\/+$/, "");
   if (/\/(chat\/)?completions$/.test(trimmed)) return trimmed;

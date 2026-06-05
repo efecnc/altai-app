@@ -13,7 +13,8 @@ use crate::modules::git::types::{
     TextSource, DEFAULT_TIMEOUT_SECS, NETWORK_TIMEOUT_SECS,
 };
 use crate::modules::git::utils::{
-    authorized_repo_root, canonical_dir, resolve_within_repo, split_upstream, ResolvedGitDirectory,
+    authorized_repo_root, canonical_dir, github_auth_config_args, resolve_within_repo,
+    split_upstream, ResolvedGitDirectory,
 };
 use crate::modules::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
@@ -424,10 +425,18 @@ pub fn commit(
     })
 }
 
+/// Read the URL configured for `remote` (e.g. "origin"), if any.
+fn remote_url_for(workspace: &WorkspaceEnv, git_path: &str, remote: &str) -> Option<String> {
+    git_stdout_line_opt(workspace, git_path, ["remote", "get-url", remote])
+        .ok()
+        .flatten()
+}
+
 pub fn push(
     registry: &WorkspaceRegistry,
     repo_root: &str,
     workspace: &WorkspaceEnv,
+    token: Option<&str>,
 ) -> Result<GitPushResult> {
     let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
     ensure_git_available(&repo_root.workspace)?;
@@ -436,24 +445,100 @@ pub fn push(
         &repo_root.workspace,
         &repo_root.git_path,
         ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-    )?;
-    if upstream.is_none() {
-        return Err(GitError::NoUpstream);
-    }
+    )?
+    .ok_or(GitError::NoUpstream)?;
+    let (remote, branch) = split_upstream(&upstream);
+
+    // Authenticate GitHub HTTPS pushes with the stored token (no-op for SSH or
+    // non-GitHub remotes, which keep using existing credentials).
+    let remote_url = remote
+        .as_deref()
+        .and_then(|r| remote_url_for(&repo_root.workspace, &repo_root.git_path, r));
+    let mut args: Vec<OsString> = github_auth_config_args(remote_url.as_deref(), token)
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    args.push(OsString::from("push"));
 
     let output = run_git(
         &repo_root.workspace,
         Some(&repo_root.git_path),
-        ["push"],
+        args,
         NETWORK_TIMEOUT_SECS,
     )?;
     ensure_success(&output, "git push failed")?;
 
-    let upstream = upstream.unwrap();
-    let (remote, branch) = split_upstream(&upstream);
     Ok(GitPushResult {
         remote,
         branch,
+        pushed: true,
+    })
+}
+
+/// Create `origin` (or repoint it) to `remote_url`, then `push -u origin
+/// <branch>` with token auth. Used by the "Publish to GitHub" flow.
+pub fn publish(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    remote_url: &str,
+    workspace: &WorkspaceEnv,
+    token: Option<&str>,
+) -> Result<GitPushResult> {
+    let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
+    ensure_git_available(&repo_root.workspace)?;
+
+    let remote_url = remote_url.trim();
+    if remote_url.is_empty() || remote_url.starts_with('-') {
+        return Err(GitError::command("git publish", "invalid remote URL"));
+    }
+
+    let branch = git_stdout_line_opt(
+        &repo_root.workspace,
+        &repo_root.git_path,
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+    )?
+    .filter(|b| b != "HEAD")
+    .ok_or_else(|| GitError::command("git publish", "no commits yet — make a commit first"))?;
+
+    let existing = git_stdout_line_opt(
+        &repo_root.workspace,
+        &repo_root.git_path,
+        ["remote", "get-url", "origin"],
+    )?;
+    let verb = if existing.is_some() { "set-url" } else { "add" };
+    let setup = run_git(
+        &repo_root.workspace,
+        Some(&repo_root.git_path),
+        [
+            OsStr::new("remote"),
+            OsStr::new(verb),
+            OsStr::new("origin"),
+            OsStr::new(remote_url),
+        ],
+        DEFAULT_TIMEOUT_SECS,
+    )?;
+    ensure_success(&setup, "git remote setup failed")?;
+
+    let mut args: Vec<OsString> = github_auth_config_args(Some(remote_url), token)
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    args.push(OsString::from("push"));
+    args.push(OsString::from("-u"));
+    args.push(OsString::from("origin"));
+    args.push(OsString::from(&branch));
+
+    let output = run_git(
+        &repo_root.workspace,
+        Some(&repo_root.git_path),
+        args,
+        NETWORK_TIMEOUT_SECS,
+    )?;
+    ensure_success(&output, "git push failed")?;
+
+    Ok(GitPushResult {
+        remote: Some("origin".to_string()),
+        branch: Some(branch),
         pushed: true,
     })
 }
@@ -912,13 +997,21 @@ pub fn fetch(
     registry: &WorkspaceRegistry,
     repo_root: &str,
     workspace: &WorkspaceEnv,
+    token: Option<&str>,
 ) -> Result<()> {
     let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
     ensure_git_available(&repo_root.workspace)?;
+    let remote_url = remote_url_for(&repo_root.workspace, &repo_root.git_path, "origin");
+    let mut args: Vec<OsString> = github_auth_config_args(remote_url.as_deref(), token)
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    args.push(OsString::from("fetch"));
+    args.push(OsString::from("--prune"));
     let output = run_git(
         &repo_root.workspace,
         Some(&repo_root.git_path),
-        ["fetch", "--prune"],
+        args,
         NETWORK_TIMEOUT_SECS,
     )?;
     ensure_success(&output, "git fetch failed")
@@ -928,13 +1021,21 @@ pub fn pull_ff_only(
     registry: &WorkspaceRegistry,
     repo_root: &str,
     workspace: &WorkspaceEnv,
+    token: Option<&str>,
 ) -> Result<()> {
     let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
     ensure_git_available(&repo_root.workspace)?;
+    let remote_url = remote_url_for(&repo_root.workspace, &repo_root.git_path, "origin");
+    let mut args: Vec<OsString> = github_auth_config_args(remote_url.as_deref(), token)
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    args.push(OsString::from("pull"));
+    args.push(OsString::from("--ff-only"));
     let output = run_git(
         &repo_root.workspace,
         Some(&repo_root.git_path),
-        ["pull", "--ff-only"],
+        args,
         NETWORK_TIMEOUT_SECS,
     )?;
     ensure_success(&output, "git pull --ff-only failed")
@@ -949,7 +1050,12 @@ const CLONE_TIMEOUT_SECS: u64 = 1800;
 /// *outside* any authorized workspace — the user picks `dest_parent` via the
 /// native folder dialog, so it's already a trusted, explicit choice — and the
 /// resulting folder becomes the new workspace.
-pub fn clone(workspace: &WorkspaceEnv, url: &str, dest_parent: &str) -> Result<String> {
+pub fn clone(
+    workspace: &WorkspaceEnv,
+    url: &str,
+    dest_parent: &str,
+    token: Option<&str>,
+) -> Result<String> {
     ensure_git_available(workspace)?;
     let url = url.trim();
     if url.is_empty() {
@@ -963,30 +1069,51 @@ pub fn clone(workspace: &WorkspaceEnv, url: &str, dest_parent: &str) -> Result<S
         ));
     }
 
-    // Pick a target dir from the URL's last segment; if it's taken, suffix it
-    // so we never clone into / clobber an existing folder.
+    // Pick a target dir from the URL's last segment.
     let base = repo_dir_name(url);
-    let mut target = parent.join(&base);
-    let mut n = 2;
-    while target.exists() {
-        target = parent.join(format!("{base}-{n}"));
-        n += 1;
-    }
+    let target = parent.join(&base);
     let target_str = target.to_string_lossy().into_owned();
 
-    let output = run_git(
-        workspace,
-        Some(dest_parent),
-        [
-            OsString::from("clone"),
-            // `--` terminates option parsing so a URL beginning with `-`
-            // (e.g. `--upload-pack=…`) can't be smuggled in as a git flag.
-            OsString::from("--"),
-            OsString::from(url),
-            OsString::from(&target_str),
-        ],
-        CLONE_TIMEOUT_SECS,
-    )?;
+    // If something already sits at the target path, don't silently clone into a
+    // suffixed duplicate. Reuse a prior clone of THIS repo; refuse if a
+    // different repository (or a non-repo folder) already occupies the path.
+    if target.exists() {
+        if !target.is_dir() {
+            return Err(GitError::command(
+                "clone",
+                format!("a file already exists at {target_str}"),
+            ));
+        }
+        match remote_url_for(workspace, &target_str, "origin") {
+            Some(existing) if same_remote(&existing, url) => return Ok(target_str),
+            Some(existing) => {
+                return Err(GitError::command(
+                    "clone",
+                    format!(
+                        "a different repository is already cloned at {target_str} (origin: {existing})"
+                    ),
+                ));
+            }
+            None => {
+                return Err(GitError::command(
+                    "clone",
+                    format!("a non-repository folder already exists at {target_str}"),
+                ));
+            }
+        }
+    }
+
+    let mut args: Vec<OsString> = github_auth_config_args(Some(url), token)
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    args.push(OsString::from("clone"));
+    // `--` terminates option parsing so a URL beginning with `-`
+    // (e.g. `--upload-pack=…`) can't be smuggled in as a git flag.
+    args.push(OsString::from("--"));
+    args.push(OsString::from(url));
+    args.push(OsString::from(&target_str));
+    let output = run_git(workspace, Some(dest_parent), args, CLONE_TIMEOUT_SECS)?;
     ensure_success(&output, "git clone failed")?;
     Ok(target_str)
 }
@@ -1009,6 +1136,26 @@ fn repo_dir_name(url: &str) -> String {
     } else {
         cleaned
     }
+}
+
+/// Normalize a git remote URL to a comparable `host/owner/repo` form, ignoring
+/// scheme, embedded credentials, a trailing `.git`, trailing slashes, and case.
+/// Handles both `https://h/o/r(.git)` and scp-like `git@h:o/r(.git)`.
+fn normalize_remote(url: &str) -> String {
+    let s = url.trim().trim_end_matches('/');
+    let s = s.strip_suffix(".git").unwrap_or(s);
+    // Drop the scheme (`https://`, `ssh://`, …) if present.
+    let s = s.split("://").last().unwrap_or(s);
+    // Drop any `user[:pass]@` credentials prefix.
+    let s = s.rsplit('@').next().unwrap_or(s);
+    // scp-like `host:owner/repo` → `host/owner/repo`.
+    let s = s.replacen(':', "/", 1);
+    s.to_ascii_lowercase()
+}
+
+/// True when two clone URLs point at the same repository.
+fn same_remote(a: &str, b: &str) -> bool {
+    normalize_remote(a) == normalize_remote(b)
 }
 
 fn nothing_to_commit(output: &GitOutput) -> bool {
