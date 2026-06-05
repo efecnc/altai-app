@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 /** Inline (single editor) vs. side-by-side (two editors) diff layout. */
 export type DiffViewMode = "unified" | "split";
@@ -16,7 +16,7 @@ function readInitial(): DiffViewMode {
 }
 
 let current: DiffViewMode = readInitial();
-const listeners = new Set<(mode: DiffViewMode) => void>();
+const listeners = new Set<() => void>();
 
 export function getDiffViewMode(): DiffViewMode {
   return current;
@@ -31,20 +31,17 @@ export function setDiffViewMode(mode: DiffViewMode): void {
   } catch {
     /* ignore */
   }
-  for (const l of listeners) l(mode);
+  for (const l of listeners) l();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 /** Subscribe a component to the shared diff view mode. */
 export function useDiffViewMode(): DiffViewMode {
-  const [mode, setMode] = useState(current);
-  useEffect(() => {
-    const listener = (next: DiffViewMode) => setMode(next);
-    listeners.add(listener);
-    // Sync in case it changed between render and effect.
-    setMode(current);
-    return () => {
-      listeners.delete(listener);
-    };
-  }, []);
-  return mode;
+  return useSyncExternalStore(subscribe, getDiffViewMode);
 }

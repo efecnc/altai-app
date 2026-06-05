@@ -47,6 +47,9 @@ export function SplitDiffView({ original, modified, theme, diffTheme }: Props) {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    // Start from a clean host so a re-run (deps change / StrictMode double-mount)
+    // can't leave a stale MergeView's DOM behind alongside the new one.
+    host.replaceChildren();
 
     const common: Extension[] = [
       ...getDefaultExtensions({

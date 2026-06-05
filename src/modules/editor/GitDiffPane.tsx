@@ -299,7 +299,11 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
         </div>
         <div className="flex shrink-0 items-center gap-3 text-[10.5px] tabular-nums text-muted-foreground">
           {!useFallback ? (
-            <div className="flex items-center rounded-lg bg-muted/40 p-0.5">
+            <div
+              role="group"
+              aria-label="Diff view mode"
+              className="flex items-center rounded-lg bg-muted/40 p-0.5"
+            >
               <button
                 type="button"
                 aria-label="Inline diff"
