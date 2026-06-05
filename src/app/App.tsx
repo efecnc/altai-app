@@ -1864,6 +1864,7 @@ export default function App() {
                         onOpenGitGraph={openGitGraphFromContext}
                         onOpenGitHubItems={openGitHubItemsFromContext}
                         onOpenProjects={openProjectBoardFromContext}
+                        onBranchSwitched={handleBranchSwitched}
                       />
                     )}
                   </div>
@@ -1979,18 +1980,6 @@ export default function App() {
             privateActive={activeTerminalTab?.private === true}
             terminalOpen={terminalDrawerOpen}
             onToggleTerminal={toggleTerminalDrawer}
-            branch={
-              sourceControl.hasRepo && sourceControl.repo
-                ? {
-                    repoRoot: sourceControl.repo.repoRoot,
-                    name:
-                      sourceControl.status?.branch ??
-                      sourceControl.repo.branch,
-                    isDetached: sourceControl.repo.isDetached,
-                  }
-                : null
-            }
-            onBranchSwitched={handleBranchSwitched}
           />
 
           {hasComposer ? (

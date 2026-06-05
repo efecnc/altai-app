@@ -5,7 +5,6 @@ import {
 } from "@/components/ui/tooltip";
 import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { cn } from "@/lib/utils";
-import { BranchSwitcher } from "@/modules/source-control";
 import {
   ComputerTerminal02Icon,
   IncognitoIcon,
@@ -24,9 +23,6 @@ type Props = {
   privateActive: boolean;
   terminalOpen: boolean;
   onToggleTerminal: () => void;
-  /** Git branch indicator / switcher (hidden when not in a repo). */
-  branch: { repoRoot: string; name: string; isDetached: boolean } | null;
-  onBranchSwitched: () => void;
 };
 
 export function StatusBar({
@@ -38,21 +34,11 @@ export function StatusBar({
   privateActive,
   terminalOpen,
   onToggleTerminal,
-  branch,
-  onBranchSwitched,
 }: Props) {
   return (
     <footer className="flex h-8 shrink-0 items-center justify-between gap-3 border-t border-border/60 bg-card/60 px-3 text-[11px]">
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <WorkspaceEnvSelector onSelect={onWorkspaceChange} />
-        {branch ? (
-          <BranchSwitcher
-            repoRoot={branch.repoRoot}
-            currentBranch={branch.name}
-            isDetached={branch.isDetached}
-            onSwitched={onBranchSwitched}
-          />
-        ) : null}
         <CwdBreadcrumb cwd={cwd} filePath={filePath} home={home} onCd={onCd} />
         {privateActive ? (
           <Tooltip>

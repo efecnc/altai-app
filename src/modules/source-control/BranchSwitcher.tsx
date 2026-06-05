@@ -184,7 +184,7 @@ export function BranchSwitcher({
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        side="top"
+        side="bottom"
         sideOffset={6}
         className="w-72 p-0"
       >
