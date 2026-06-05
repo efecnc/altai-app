@@ -257,7 +257,14 @@ export default function App() {
   const agentSidebarRef = useRef<PanelImperativeHandle | null>(null);
   const agentSidebarWidthRef = useRef(readAgentSidebarWidth());
   const agentSidebarWidthWriteTimerRef = useRef(0);
-  const [sidebarView, setSidebarViewState] = useState<SidebarViewId>(readSidebarView);
+  // A freshly cloned workspace opens straight into Source Control so the new
+  // repo is visible without manually switching views; otherwise restore the
+  // persisted view. The transient flag is cleared on mount below.
+  const [sidebarView, setSidebarViewState] = useState<SidebarViewId>(() =>
+    useWorkspaceFolderStore.getState().justCloned
+      ? "source-control"
+      : readSidebarView(),
+  );
   const persistSidebarView = useCallback((view: SidebarViewId) => {
     setSidebarViewState(view);
     try {
@@ -592,6 +599,12 @@ export default function App() {
 
   const workspaceFolder = useWorkspaceFolderStore((s) => s.folder);
   const closeFolder = useWorkspaceFolderStore((s) => s.closeFolder);
+
+  // Consume the one-shot "just cloned" flag that steered the initial sidebar
+  // view, so a later folder switch falls back to the persisted preference.
+  useEffect(() => {
+    useWorkspaceFolderStore.getState().clearJustCloned();
+  }, []);
   const { explorerRoot: terminalExplorerRoot, inheritedCwdForNewTab } =
     useWorkspaceCwd(activeTab, tabs, workspaceFolder ?? launchCwd ?? home);
   // The opened workspace folder IS the explorer root (IDE behavior): the file

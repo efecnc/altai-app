@@ -2,7 +2,55 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { plural } from "@/lib/utils";
 import { useChatStore } from "../store/chatStore";
 import { useAgentRunsStore } from "../store/agentRunsStore";
+import { useTodosStore } from "../store/todoStore";
 import { appendBackgroundMessage } from "./backgroundTranscript";
+import type { Todo, TodoStatus } from "./todos";
+import { z } from "zod";
+
+/**
+ * Trust-boundary schema for the `todo_write` tool input (model-produced, so
+ * untrusted). We validate the *structure* — an `items` array of objects — then
+ * read each item's fields defensively below, since their names vary by model.
+ */
+const todoWriteSchema = z.object({
+  items: z.array(z.record(z.string(), z.unknown())),
+});
+
+/** Normalize the agent's free-form todo status into the app's TodoStatus.
+ *  Case-insensitive + tolerant of common LLM variants. */
+function toTodoStatus(value: unknown): TodoStatus {
+  const v = typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+  if (["completed", "complete", "done", "finished"].includes(v)) return "completed";
+  if (["in_progress", "active", "running", "doing", "started", "wip"].includes(v)) {
+    return "in_progress";
+  }
+  return "pending";
+}
+
+/**
+ * Mirror a `todo_write` tool call into the per-session todo store so the agent's
+ * plan flows to the Todo strip AND the project board. The runtime never feeds
+ * `todoStore` otherwise — this bridge is the "make a TODO → it shows up" hook.
+ * Field names vary, so each item is read defensively.
+ */
+function ingestTodoWrite(input: unknown, sessionId: string | null): void {
+  if (!sessionId) return;
+  const parsed = todoWriteSchema.safeParse(input);
+  if (!parsed.success) return;
+  const todos: Todo[] = parsed.data.items.map((it, i) => {
+    const title =
+      (typeof it.content === "string" && it.content) ||
+      (typeof it.title === "string" && it.title) ||
+      (typeof it.task === "string" && it.task) ||
+      (typeof it.text === "string" && it.text) ||
+      "Untitled task";
+    const id = typeof it.id === "string" ? it.id : `${sessionId}:${i}`;
+    const description =
+      typeof it.description === "string" ? it.description : undefined;
+    return { id, title, status: toTodoStatus(it.status), description };
+  });
+  useTodosStore.getState().setTodos(sessionId, todos);
+}
 
 /**
  * Agent event types emitted by the Rust runtime via `agent://event`.
@@ -131,6 +179,9 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         // each new tool overwriting the last one on a single status line.
         store.patchAgentMeta({ status: "streaming", step: payload.name });
         store.startNativeToolCall(payload.id, payload.name, payload.input);
+        if (payload.name === "todo_write") {
+          ingestTodoWrite(payload.input, store.activeSessionId);
+        }
         break;
 
       case "tool_call_end":

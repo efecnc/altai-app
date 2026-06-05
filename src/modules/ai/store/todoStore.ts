@@ -26,6 +26,11 @@ export const useTodosStore = create<TodosState>((set, get) => ({
     set((s) => {
       const nextHydrated = new Set(s.hydrated);
       nextHydrated.add(sessionId);
+      // A setTodos() (e.g. a todo_write ingest) may have populated this session
+      // while persistLoad was awaited — don't clobber the live plan with disk.
+      if (s.bySession[sessionId] !== undefined) {
+        return { hydrated: nextHydrated };
+      }
       return {
         bySession: { ...s.bySession, [sessionId]: todos },
         hydrated: nextHydrated,
