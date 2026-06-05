@@ -1590,6 +1590,11 @@ export default function App() {
                 }}
               >
                 <div className="flex h-full min-h-0 flex-col border-r border-border/60 bg-card">
+                  <SidebarRail
+                    activeView={sidebarView}
+                    onSelectView={persistSidebarView}
+                    changedCount={sourceControl.changedCount}
+                  />
                   {workspaceFolder ? (
                     <div className="group/ws flex items-center gap-1 border-b border-border/60 px-2 py-1.5">
                       <span
@@ -1632,11 +1637,6 @@ export default function App() {
                       />
                     )}
                   </div>
-                  <SidebarRail
-                    activeView={sidebarView}
-                    onSelectView={persistSidebarView}
-                    changedCount={sourceControl.changedCount}
-                  />
                 </div>
               </ResizablePanel>
               <ResizableHandle withHandle />
