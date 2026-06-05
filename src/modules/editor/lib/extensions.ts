@@ -15,12 +15,12 @@ export const minimapCompartment = new Compartment();
 
 /** Right-side code minimap for navigating long files (#66). */
 export function minimapExtension(): Extension {
-  const create = () => ({ dom: document.createElement("div") });
-  return showMinimap.compute([], () => ({
-    create,
+  // Static config, so `.of` is the idiomatic form (no doc/state dependency).
+  return showMinimap.of({
+    create: () => ({ dom: document.createElement("div") }),
     displayText: "blocks",
     showOverlay: "mouse-over",
-  }));
+  });
 }
 
 // Only what basicSetup doesn't already cover, to avoid duplicate extensions.
