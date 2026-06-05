@@ -31,6 +31,7 @@ import { useSnippetsStore } from "@/modules/ai/store/snippetsStore";
 import { announce, LiveRegion } from "@/modules/a11y";
 import {
   AiDiffStack,
+  EditorBreadcrumb,
   EditorStack,
   GitDiffStack,
   NewEditorDialog,
@@ -1383,18 +1384,23 @@ export default function App() {
       </div>
       <div
         className={cn(
-          "absolute inset-0 px-3 pt-2 pb-2",
+          "absolute inset-0 flex flex-col px-3 pt-2 pb-2",
           !isEditorTab && "invisible pointer-events-none",
         )}
         aria-hidden={!isEditorTab}
       >
-        <EditorStack
-          tabs={tabs}
-          activeId={activeId}
-          registerHandle={registerEditorHandle}
-          onDirtyChange={handleEditorDirty}
-          onCloseTab={disposeTab}
-        />
+        {activeTab?.kind === "editor" ? (
+          <EditorBreadcrumb path={activeTab.path} root={explorerRoot} />
+        ) : null}
+        <div className="min-h-0 flex-1">
+          <EditorStack
+            tabs={tabs}
+            activeId={activeId}
+            registerHandle={registerEditorHandle}
+            onDirtyChange={handleEditorDirty}
+            onCloseTab={disposeTab}
+          />
+        </div>
       </div>
       <div
         className={cn(
