@@ -588,6 +588,19 @@ export function getModel(id: ModelId): ModelInfo {
 
 export const DEFAULT_MODEL_ID: ModelId = "gpt-5.4-mini";
 
+/**
+ * Pick the first model whose provider the user has actually configured.
+ * Used so the default model follows the enabled providers instead of staying
+ * on a hardcoded one the user has no key for (#71). Returns null when nothing
+ * is configured.
+ */
+export function pickDefaultModel(
+  isProviderConfigured: (provider: ProviderId) => boolean,
+): ModelId | null {
+  const match = MODELS.find((m) => isProviderConfigured(m.provider));
+  return match ? (match.id as ModelId) : null;
+}
+
 /** Approximate context window (in tokens) per model. Used for the
  *  context-usage indicator in the AI mini-window header. Conservative
  *  estimates — actual provider limits may shift. */
@@ -729,6 +742,18 @@ export const DEFAULT_AUTOCOMPLETE_MODEL: Partial<Record<ProviderId, string>> = {
   openrouter: "openai/gpt-5.4-mini",
   "openai-compatible": "",
 };
+
+/**
+ * Pick the first autocomplete-capable provider the user has configured, so
+ * inline completion stops demanding a key for a provider that isn't set up
+ * (#71). Returns null when no eligible provider is configured.
+ */
+export function pickAutocompleteProvider(
+  isProviderConfigured: (provider: ProviderId) => boolean,
+): ProviderId | null {
+  const candidates = Object.keys(DEFAULT_AUTOCOMPLETE_MODEL) as ProviderId[];
+  return candidates.find((p) => isProviderConfigured(p)) ?? null;
+}
 
 /** Curated list of fast models suitable for inline completion (speed ≥ 4). */
 export function getAutocompleteEligibleModels(): readonly ModelInfo[] {
