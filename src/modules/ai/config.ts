@@ -751,8 +751,26 @@ export const DEFAULT_AUTOCOMPLETE_MODEL: Partial<Record<ProviderId, string>> = {
 export function pickAutocompleteProvider(
   isProviderConfigured: (provider: ProviderId) => boolean,
 ): ProviderId | null {
-  const candidates = Object.keys(DEFAULT_AUTOCOMPLETE_MODEL) as ProviderId[];
-  return candidates.find((p) => isProviderConfigured(p)) ?? null;
+  // Cloud providers that have a known fast default model, then the key-optional
+  // local providers (whose autocomplete model is the user's configured local
+  // model, so they're absent from DEFAULT_AUTOCOMPLETE_MODEL or map to ""):
+  // mlx and openai-compatible would otherwise never be pickable. Skipping the
+  // empty-default cloud entries avoids switching to one with no usable model.
+  const candidates: ProviderId[] = [
+    ...(Object.keys(DEFAULT_AUTOCOMPLETE_MODEL) as ProviderId[]).filter(
+      (p) => DEFAULT_AUTOCOMPLETE_MODEL[p],
+    ),
+    "lmstudio",
+    "mlx",
+    "openai-compatible",
+  ];
+  const seen = new Set<ProviderId>();
+  for (const p of candidates) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    if (isProviderConfigured(p)) return p;
+  }
+  return null;
 }
 
 /** Curated list of fast models suitable for inline completion (speed ≥ 4). */

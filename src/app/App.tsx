@@ -515,6 +515,7 @@ export default function App() {
   // into chatStore so the dropdown reflects what the user picked in Settings.
   const initPrefs = usePreferencesStore((s) => s.init);
   const prefDefaultModel = usePreferencesStore((s) => s.defaultModelId);
+  const autocompleteProvider = usePreferencesStore((s) => s.autocompleteProvider);
   const prefsHydrated = usePreferencesStore((s) => s.hydrated);
   useEffect(() => {
     void initPrefs();
@@ -574,14 +575,31 @@ export default function App() {
   // to a configured one instead of demanding a key for an unused provider (#71).
   useEffect(() => {
     if (!prefsHydrated || !keysLoaded) return;
-    const acProvider = usePreferencesStore.getState().autocompleteProvider;
-    if (isProviderConfigured(acProvider)) return;
+    if (isProviderConfigured(autocompleteProvider)) return;
     const fallback = pickAutocompleteProvider(isProviderConfigured);
-    if (!fallback || fallback === acProvider) return;
+    if (!fallback || fallback === autocompleteProvider) return;
     void setAutocompleteProvider(fallback);
-    const model = DEFAULT_AUTOCOMPLETE_MODEL[fallback];
+    // Cloud providers have a fixed fast default; the key-optional local
+    // providers use the user's configured local model id.
+    const model =
+      DEFAULT_AUTOCOMPLETE_MODEL[fallback] ||
+      (fallback === "lmstudio"
+        ? lmstudioModelId
+        : fallback === "mlx"
+          ? mlxModelId
+          : fallback === "openai-compatible"
+            ? openaiCompatibleModelId
+            : "");
     if (model) void setAutocompleteModelId(model);
-  }, [prefsHydrated, keysLoaded, isProviderConfigured]);
+  }, [
+    prefsHydrated,
+    keysLoaded,
+    isProviderConfigured,
+    autocompleteProvider,
+    lmstudioModelId,
+    mlxModelId,
+    openaiCompatibleModelId,
+  ]);
 
   const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   useEffect(() => {
