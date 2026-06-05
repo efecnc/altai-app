@@ -7,6 +7,7 @@ import { fmtShortcut, MOD_KEY } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import type { TerminalTab } from "@/modules/tabs";
 import {
+  ArrowDown01Icon,
   Cancel01Icon,
   ColumnInsertIcon,
   ComputerTerminal02Icon,
@@ -72,10 +73,18 @@ export function TerminalPanelHeader({
           : (i + (e.key === "ArrowRight" ? 1 : -1) + ids.length) % ids.length;
     const nextId = ids[nextIdx];
     onSelect(nextId);
-    e.currentTarget.parentElement
-      ?.querySelector<HTMLElement>(`#${tabDomId(nextId)}`)
-      ?.focus();
+    const list = e.currentTarget.parentElement;
+    // Defer the focus move so the SR re-reads the tab after React has flipped
+    // aria-selected/tabIndex on re-render (matches AiSidePanel's pattern).
+    requestAnimationFrame(() => {
+      list?.querySelector<HTMLElement>(`#${tabDomId(nextId)}`)?.focus();
+    });
   };
+
+  // Roving-focus entry point: the active tab, or the first tab if there's no
+  // active id yet (so Tab never skips the whole tablist).
+  const rovingId =
+    activeId != null && ids.includes(activeId) ? activeId : ids[0];
 
   return (
     <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/50 bg-card/40 pl-1 pr-1.5">
@@ -85,7 +94,7 @@ export function TerminalPanelHeader({
         aria-orientation="horizontal"
         className="flex min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
-        {terminals.map((t) => {
+        {terminals.map((t, i) => {
           const selected = t.id === activeId;
           return (
             <div
@@ -93,7 +102,8 @@ export function TerminalPanelHeader({
               id={tabDomId(t.id)}
               role="tab"
               aria-selected={selected}
-              tabIndex={selected ? 0 : -1}
+              aria-label={`${labelFor(t)} terminal, tab ${i + 1} of ${terminals.length}`}
+              tabIndex={t.id === rovingId ? 0 : -1}
               onClick={() => onSelect(t.id)}
               onKeyDown={(e) => onTabKeyDown(e, t.id)}
               onAuxClick={(e) => {
@@ -122,6 +132,11 @@ export function TerminalPanelHeader({
                 onClick={(e) => {
                   e.stopPropagation();
                   onClose(t.id);
+                }}
+                onKeyDown={(e) => {
+                  // Don't let Enter/Space bubble to the parent tab's keydown
+                  // (which would re-select a tab that's being closed).
+                  if (e.key === "Enter" || e.key === " ") e.stopPropagation();
                 }}
                 aria-label={`Close ${labelFor(t)} terminal`}
                 className="ml-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground/60 opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/term:opacity-100"
@@ -152,7 +167,7 @@ export function TerminalPanelHeader({
           disabled={activeId == null}
         />
         <HeaderAction
-          icon={Cancel01Icon}
+          icon={ArrowDown01Icon}
           label={`Hide panel (${fmtShortcut(MOD_KEY, "J")})`}
           onClick={onHide}
         />
