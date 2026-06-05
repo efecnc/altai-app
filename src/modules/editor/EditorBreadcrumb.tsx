@@ -3,7 +3,6 @@ import {
   BreadcrumbItem,
   BreadcrumbLink,
   BreadcrumbList,
-  BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import {
@@ -35,29 +34,48 @@ function basename(p: string): string {
  * file's parent directory when there's no root or the file is outside it.
  */
 function buildSegments(filePath: string, root: string | null): Segment[] {
-  const file = normalize(filePath);
+  // `normalize` only swaps "\\" → "/", so indices line up 1:1 with `filePath`.
+  // We compute boundaries on the normalized string but slice `fullPath` from the
+  // ORIGINAL path so it keeps native separators — every other caller of
+  // revealInFinder passes native paths, and forward slashes break it on Windows.
+  const norm = normalize(filePath);
   const normRoot = root ? normalize(root).replace(/\/+$/, "") : null;
 
-  let baseDir: string;
-  let tail: string;
-  if (normRoot && (file === normRoot || file.startsWith(normRoot + "/"))) {
-    baseDir = normRoot;
-    tail = file.slice(normRoot.length).replace(/^\//, "");
+  // Index in `norm` (== index in `filePath`) where the base directory ends.
+  let baseEnd: number;
+  if (normRoot && (norm === normRoot || norm.startsWith(normRoot + "/"))) {
+    baseEnd = normRoot.length;
   } else {
-    const i = file.lastIndexOf("/");
-    baseDir = i > 0 ? file.slice(0, i) : "/";
-    tail = i >= 0 ? file.slice(i + 1) : file;
+    const i = norm.lastIndexOf("/");
+    baseEnd = i > 0 ? i : i === 0 ? 1 : 0;
   }
 
-  const parts = tail ? tail.split("/").filter(Boolean) : [];
+  const baseSlice = norm.slice(0, baseEnd);
   const segments: Segment[] = [
-    { label: basename(baseDir) || baseDir, fullPath: baseDir, isFile: false },
+    {
+      label: basename(baseSlice) || baseSlice || "/",
+      fullPath: filePath.slice(0, baseEnd) || filePath,
+      isFile: false,
+    },
   ];
-  let acc = baseDir;
-  parts.forEach((part, idx) => {
-    acc = acc.endsWith("/") ? acc + part : acc + "/" + part;
-    segments.push({ label: part, fullPath: acc, isFile: idx === parts.length - 1 });
-  });
+
+  // Walk the remaining "/"-separated parts, tracking the running index so each
+  // fullPath is sliced from the original (native-separator) path.
+  let idx = baseEnd;
+  while (idx < norm.length) {
+    if (norm[idx] === "/") {
+      idx++;
+      continue;
+    }
+    let end = norm.indexOf("/", idx);
+    if (end === -1) end = norm.length;
+    segments.push({
+      label: norm.slice(idx, end),
+      fullPath: filePath.slice(0, end),
+      isFile: end === norm.length,
+    });
+    idx = end;
+  }
   return segments;
 }
 
@@ -85,21 +103,22 @@ export function EditorBreadcrumb({ path, root }: Props) {
             return (
               <BreadcrumbItem key={seg.fullPath} className="shrink-0">
                 {seg.isFile ? (
-                  <BreadcrumbPage className="flex items-center gap-1 font-medium text-foreground">
+                  // A single interactive element (not a button nested inside a
+                  // role="link" BreadcrumbPage, which is an invalid a11y tree).
+                  <button
+                    type="button"
+                    aria-current="page"
+                    onClick={() =>
+                      void copyToClipboard(relativePath(root ?? "", path))
+                    }
+                    title="Copy relative path"
+                    className="flex cursor-pointer items-center gap-1 font-medium text-foreground hover:text-foreground"
+                  >
                     {iconUrl ? (
                       <img src={iconUrl} alt="" className="size-3.5 shrink-0" />
                     ) : null}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void copyToClipboard(relativePath(root ?? "", path))
-                      }
-                      title="Copy relative path"
-                      className="cursor-pointer truncate hover:text-foreground"
-                    >
-                      {seg.label}
-                    </button>
-                  </BreadcrumbPage>
+                    <span className="truncate">{seg.label}</span>
+                  </button>
                 ) : (
                   <>
                     <BreadcrumbLink asChild>
