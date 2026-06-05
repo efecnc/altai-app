@@ -5,6 +5,7 @@ import { SourceCodeIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
+import { ImagePreviewPane } from "./ImagePreviewPane";
 
 type Props = {
   tabs: Tab[];
@@ -13,6 +14,10 @@ type Props = {
   registerHandle: (id: number, handle: EditorPaneHandle | null) => void;
   onCloseTab: (id: number) => void;
 };
+
+function isImagePath(path: string): boolean {
+  return /\.(png|jpe?g|gif|svg|webp|ico|bmp)$/i.test(path);
+}
 
 function isMarkdownPath(path: string): boolean {
   return /\.(md|markdown|mdx)$/i.test(path);
@@ -168,12 +173,16 @@ export function EditorStack({
             aria-hidden={!visible}
           >
             <div className="relative h-full overflow-hidden rounded-md border border-border/60 bg-background">
-              <EditorPane
-                ref={getRefCallback(t.id)}
-                path={t.path}
-                onDirtyChange={getDirtyCallback(t.id)}
-                onClose={getCloseCallback(t.id)}
-              />
+              {isImagePath(t.path) ? (
+                <ImagePreviewPane path={t.path} />
+              ) : (
+                <EditorPane
+                  ref={getRefCallback(t.id)}
+                  path={t.path}
+                  onDirtyChange={getDirtyCallback(t.id)}
+                  onClose={getCloseCallback(t.id)}
+                />
+              )}
               {isMd && showPreview && (
                 <div className="absolute inset-0 bg-background">
                   <MarkdownPreviewPane

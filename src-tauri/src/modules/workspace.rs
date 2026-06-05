@@ -4,6 +4,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 // Short TTL keeps the auth-check TOCTOU window tight while still coalescing the
 // burst of canonicalize calls within a single panel refresh (~100ms).
@@ -96,15 +97,35 @@ pub fn bootstrap_registry(registry: &WorkspaceRegistry) {
     }
 }
 
+/// Grant the webview's asset protocol (`asset:`/`convertFileSrc`) read access to
+/// `dir`. Scoped deliberately to authorized workspace roots — the static config
+/// scope is empty — so image preview can load files the user actually opened
+/// without exposing the whole filesystem (the prior `"**"` scope did).
+fn allow_asset_directory<R: tauri::Runtime>(app: &tauri::AppHandle<R>, dir: &Path) {
+    if let Err(e) = app.asset_protocol_scope().allow_directory(dir, true) {
+        log::warn!("asset scope grant failed for {}: {e}", dir.display());
+    }
+}
+
+/// Authorize the launch directory for the asset protocol at startup so files in
+/// the initially-opened project preview before any explicit workspace open.
+pub fn grant_startup_asset_scope<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    allow_asset_directory(app, &resolve_launch_dir());
+}
+
 #[tauri::command]
 pub async fn workspace_authorize(
     path: String,
     workspace: Option<WorkspaceEnv>,
     registry: tauri::State<'_, WorkspaceRegistry>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
     let resolved = resolve_path(&path, &workspace);
     let canonical = registry.authorize(&resolved).map_err(|e| e.to_string())?;
+    // Mirror the registry grant into the asset protocol so previews work for
+    // files under any opened workspace, but nothing outside it.
+    allow_asset_directory(&app, &canonical);
     Ok(canonical.to_string_lossy().replace('\\', "/"))
 }
 

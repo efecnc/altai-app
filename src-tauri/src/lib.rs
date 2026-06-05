@@ -127,6 +127,7 @@ pub fn run() {
         .manage(LaunchDir(Mutex::new(parse_launch_dir())))
         .setup(|app| {
             altai::agent::runtime::init(app.handle().clone())?;
+            workspace::grant_startup_asset_scope(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
