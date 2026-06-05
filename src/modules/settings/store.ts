@@ -77,6 +77,10 @@ export type Preferences = {
   autocompleteEnabled: boolean;
   autocompleteProvider: AutocompleteProviderId;
   autocompleteModelId: string;
+  /** Model the agent falls back to when the primary provider is exhausted.
+   *  Empty = no failover. Activated once the isanagent crate ships re-settable
+   *  fallback providers (PR altaidevorg/isanagent#57). */
+  fallbackModelId: string;
   lmstudioBaseURL: string;
   lmstudioModelId: string;
   mlxBaseURL: string;
@@ -120,6 +124,7 @@ const KEY_RESTORE_WINDOW = "restoreWindowState";
 const KEY_AUTOCOMPLETE_ENABLED = "autocompleteEnabled";
 const KEY_AUTOCOMPLETE_PROVIDER = "autocompleteProvider";
 const KEY_AUTOCOMPLETE_MODEL = "autocompleteModelId";
+const KEY_FALLBACK_MODEL = "fallbackModelId";
 const KEY_LMSTUDIO_BASE_URL = "lmstudioBaseURL";
 const KEY_LMSTUDIO_MODEL_ID = "lmstudioModelId";
 const KEY_MLX_BASE_URL = "mlxBaseURL";
@@ -177,6 +182,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   autocompleteEnabled: false,
   autocompleteProvider: "cerebras",
   autocompleteModelId: DEFAULT_AUTOCOMPLETE_MODEL.cerebras ?? "",
+  fallbackModelId: "",
   lmstudioBaseURL: LMSTUDIO_DEFAULT_BASE_URL,
   lmstudioModelId: "",
   mlxBaseURL: MLX_DEFAULT_BASE_URL,
@@ -251,6 +257,8 @@ export async function loadPreferences(): Promise<Preferences> {
     autocompleteModelId:
       get<string>(KEY_AUTOCOMPLETE_MODEL) ??
       DEFAULT_PREFERENCES.autocompleteModelId,
+    fallbackModelId:
+      get<string>(KEY_FALLBACK_MODEL) ?? DEFAULT_PREFERENCES.fallbackModelId,
     lmstudioBaseURL:
       get<string>(KEY_LMSTUDIO_BASE_URL) ?? DEFAULT_PREFERENCES.lmstudioBaseURL,
     lmstudioModelId:
@@ -371,6 +379,10 @@ export async function setAutocompleteProvider(
 
 export async function setAutocompleteModelId(value: string): Promise<void> {
   await writePref(KEY_AUTOCOMPLETE_MODEL, value);
+}
+
+export async function setFallbackModelId(value: string): Promise<void> {
+  await writePref(KEY_FALLBACK_MODEL, value);
 }
 
 export async function setLmstudioBaseURL(value: string): Promise<void> {
@@ -583,6 +595,7 @@ export async function onPreferencesChange(
     [KEY_AUTOCOMPLETE_ENABLED]: "autocompleteEnabled",
     [KEY_AUTOCOMPLETE_PROVIDER]: "autocompleteProvider",
     [KEY_AUTOCOMPLETE_MODEL]: "autocompleteModelId",
+    [KEY_FALLBACK_MODEL]: "fallbackModelId",
     [KEY_LMSTUDIO_BASE_URL]: "lmstudioBaseURL",
     [KEY_LMSTUDIO_MODEL_ID]: "lmstudioModelId",
     [KEY_MLX_BASE_URL]: "mlxBaseURL",

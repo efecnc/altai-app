@@ -424,6 +424,15 @@ export const native = {
       workspacePath?: string;
       /// "ask" | "auto-edit" | "bypass" — gates code-exec/destructive-shell.
       permissionMode?: string;
+      // Failover provider. The Rust side refreshes the process-global fallback
+      // list per send (via `set_fallback_providers`) so the agent retries on
+      // this model when the primary provider is exhausted. Null = failover off.
+      fallback?: {
+        providerName: string;
+        baseUrl: string;
+        apiKey: string;
+        modelName: string;
+      } | null;
     },
   ) =>
     invoke<void>("agent_send", {
@@ -437,6 +446,7 @@ export const native = {
       baseUrl: config.baseUrl,
       workspacePath: config.workspacePath,
       permissionMode: config.permissionMode,
+      fallback: config.fallback ?? null,
     }),
   agentCancel: (chatId?: string) => invoke<void>("agent_cancel", { chatId }),
   agentApprove: (approvalId: string, approved: boolean) =>

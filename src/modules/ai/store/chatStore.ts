@@ -13,7 +13,10 @@ import { currentWorkspaceFolder } from "@/modules/workspace/folder";
 import { useAgentsStore } from "./agentsStore";
 import { useTodosStore } from "./todoStore";
 import type { AgentUsage } from "../lib/provider";
-import { resolveIsanAgentTarget } from "../lib/isanagentTarget";
+import {
+  resolveFallbackSpec,
+  resolveIsanAgentTarget,
+} from "../lib/isanagentTarget";
 import { EMPTY_PROVIDER_KEYS, type ProviderKeys } from "../lib/keyring";
 import {
   deleteSessionData,
@@ -807,6 +810,18 @@ async function sendViaIsanAgent(
     prefs.bypassPermissionsEnabled,
   );
 
+  // Configured failover model. The runtime refreshes its process-global
+  // fallback list per send so the agent retries here when the primary provider
+  // is exhausted; null when no failover model is set or it can't be resolved.
+  const fallback = resolveFallbackSpec(prefs.fallbackModelId, store.apiKeys, {
+    lmstudioBaseURL: prefs.lmstudioBaseURL,
+    lmstudioModelId: prefs.lmstudioModelId,
+    mlxBaseURL: prefs.mlxBaseURL,
+    mlxModelId: prefs.mlxModelId,
+    openaiCompatibleBaseURL: prefs.openaiCompatibleBaseURL,
+    openaiCompatibleModelId: prefs.openaiCompatibleModelId,
+  });
+
   // Only (re)start the runtime when the target config actually changes —
   // avoids a redundant IPC round-trip on every message. Mirrors the fields
   // the Rust runtime fingerprints (provider, key, model, base URL, persona,
@@ -867,6 +882,7 @@ async function sendViaIsanAgent(
       baseUrl,
       workspacePath,
       permissionMode,
+      fallback,
     });
     return true;
   } catch (e) {
@@ -915,6 +931,16 @@ export async function dispatchToSession(
     instructions,
     baseUrl,
     workspacePath,
+    // Configured failover model — same per-send failover policy as the focused
+    // chat; null when none is set or it can't be resolved.
+    fallback: resolveFallbackSpec(prefs.fallbackModelId, store.apiKeys, {
+      lmstudioBaseURL: prefs.lmstudioBaseURL,
+      lmstudioModelId: prefs.lmstudioModelId,
+      mlxBaseURL: prefs.mlxBaseURL,
+      mlxModelId: prefs.mlxModelId,
+      openaiCompatibleBaseURL: prefs.openaiCompatibleBaseURL,
+      openaiCompatibleModelId: prefs.openaiCompatibleModelId,
+    }),
   };
 
   // Persist the seed as the session's opening message (so "Open transcript"
