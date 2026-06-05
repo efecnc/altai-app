@@ -19,6 +19,25 @@ type Options = {
   onDirtyChange?: (dirty: boolean) => void;
 };
 
+/**
+ * Survives the remount that happens when an editor pane is reparented by a
+ * split/layout change (#65): without it, dragging a tab to split the view —
+ * which moves panes into `ResizablePanel`s — would silently discard unsaved
+ * edits. Keyed by path; evicted via {@link pruneDocumentCache} when a tab is
+ * actually closed (not merely remounted).
+ */
+const bufferCache = new Map<
+  string,
+  { saved: string; buffer: string; size: number }
+>();
+
+/** Drop cached buffers whose path is no longer open. */
+export function pruneDocumentCache(livePaths: Set<string>): void {
+  for (const p of [...bufferCache.keys()]) {
+    if (!livePaths.has(p)) bufferCache.delete(p);
+  }
+}
+
 export function useDocument({ path, onDirtyChange }: Options) {
   const [doc, setDoc] = useState<DocumentState>({ status: "loading" });
   const [dirty, setDirty] = useState(false);
@@ -44,6 +63,20 @@ export function useDocument({ path, onDirtyChange }: Options) {
   // Load on path change or explicit reload.
   useEffect(() => {
     let cancelled = false;
+
+    // Restore an unsaved buffer carried across a remount (e.g. split layout
+    // change) instead of re-reading and clobbering the user's edits.
+    const cached = bufferCache.get(path);
+    if (cached) {
+      savedRef.current = cached.saved;
+      bufferRef.current = cached.buffer;
+      setDoc({ status: "ready", content: cached.buffer, size: cached.size });
+      setDirty(cached.buffer !== cached.saved);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     setDoc({ status: "loading" });
     setDirty(false);
 
@@ -53,6 +86,11 @@ export function useDocument({ path, onDirtyChange }: Options) {
         if (res.kind === "text") {
           savedRef.current = res.content;
           bufferRef.current = res.content;
+          bufferCache.set(path, {
+            saved: res.content,
+            buffer: res.content,
+            size: res.size,
+          });
           setDoc({
             status: "ready",
             content: res.content,
@@ -81,14 +119,21 @@ export function useDocument({ path, onDirtyChange }: Options) {
    *  callers shouldn't clobber unsaved user edits. Returns whether reload ran. */
   const reload = useCallback((): boolean => {
     if (dirtyRef.current) return false;
+    // Discard the cached buffer so the effect re-reads from disk.
+    bufferCache.delete(path);
     setReloadCounter((n) => n + 1);
     return true;
-  }, []);
+  }, [path]);
 
-  const onChange = useCallback((next: string) => {
-    bufferRef.current = next;
-    setDirty(next !== savedRef.current);
-  }, []);
+  const onChange = useCallback(
+    (next: string) => {
+      bufferRef.current = next;
+      const cached = bufferCache.get(path);
+      if (cached) cached.buffer = next;
+      setDirty(next !== savedRef.current);
+    },
+    [path],
+  );
 
   const save = useCallback(async () => {
     if (!dirty) return;
@@ -100,6 +145,8 @@ export function useDocument({ path, onDirtyChange }: Options) {
       source: "editor",
     });
     savedRef.current = content;
+    const cached = bufferCache.get(path);
+    if (cached) cached.saved = content;
     setDirty(false);
   }, [path, dirty]);
 

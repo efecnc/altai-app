@@ -10,6 +10,7 @@ import { SourceCodeIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Fragment,
+  type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -18,8 +19,8 @@ import {
 } from "react";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 import { ImagePreviewPane } from "./ImagePreviewPane";
+import { pruneDocumentCache } from "./lib/useDocument";
 import {
-  addTabToLeaf,
   allLeaves,
   emptyLeaf,
   leafContainingTab,
@@ -116,21 +117,28 @@ export function EditorStack({
   const [draggingTabId, setDraggingTabId] = useState<number | null>(null);
 
   // Reconcile the tree with the live editor set; place new tabs in the
-  // last-focused leaf and mark the global active tab active in its leaf.
+  // last-focused leaf and mark the global active tab active in its leaf. The
+  // updater is pure — the lastActiveLeafRef sync lives in its own effect below
+  // (a side effect inside a state updater can run twice under StrictMode).
   useEffect(() => {
+    const ids = editorIdsKey ? editorIdsKey.split(",").map(Number) : [];
     setLayout((prev) => {
-      const ids = editorIdsKey ? editorIdsKey.split(",").map(Number) : [];
       let next = reconcile(prev, ids, lastActiveLeafRef.current);
       const leaf = editorById.has(activeId)
         ? leafContainingTab(next, activeId)
         : null;
-      if (leaf) {
-        next = setActiveTab(next, leaf.id, activeId);
-        lastActiveLeafRef.current = leaf.id;
-      }
+      if (leaf) next = setActiveTab(next, leaf.id, activeId);
       return next;
     });
   }, [editorIdsKey, activeId, editorById]);
+
+  // Keep lastActiveLeafRef pointing at the leaf that holds the global active
+  // tab, so the next reconcile drops new tabs into the right group.
+  useEffect(() => {
+    if (!editorById.has(activeId)) return;
+    const leaf = leafContainingTab(layout, activeId);
+    if (leaf) lastActiveLeafRef.current = leaf.id;
+  }, [layout, activeId, editorById]);
 
   // Show drop zones whenever an editor tab is being dragged (from a group strip
   // or the global tab bar — both mark the node with data-editor-drag-tab).
@@ -140,7 +148,7 @@ export function EditorStack({
         "[data-editor-drag-tab]",
       ) as HTMLElement | null;
       const id = el?.dataset.editorDragTab;
-      if (id) setDraggingTabId(Number(id));
+      if (id != null && id !== "") setDraggingTabId(Number(id));
     };
     const clear = () => setDraggingTabId(null);
     window.addEventListener("dragstart", onDragStart);
@@ -205,18 +213,23 @@ export function EditorStack({
   }, []);
 
   // Drop a tab onto a leaf edge → split; center → move into the group.
-  const handleDrop = useCallback((leafId: number, edge: SplitEdge, tabId: number) => {
-    setLayout((prev) =>
-      edge === "center"
-        ? addTabToLeaf(prev, leafId, tabId)
-        : splitLeafWithTab(prev, leafId, tabId, edge, nextLeafIdRef.current++),
-    );
-    lastActiveLeafRef.current = leafId;
-    selectRef.current(tabId);
-    setDraggingTabId(null);
-  }, []);
+  // (splitLeafWithTab handles both, including the center no-op.) Ids are
+  // allocated here, not inside the updater, so the updater stays pure.
+  const handleDrop = useCallback(
+    (targetLeafId: number, edge: SplitEdge, tabId: number) => {
+      const newLeafId = nextLeafIdRef.current++;
+      const newSplitId = nextLeafIdRef.current++;
+      setLayout((prev) =>
+        splitLeafWithTab(prev, targetLeafId, tabId, edge, newLeafId, newSplitId),
+      );
+      lastActiveLeafRef.current = targetLeafId;
+      selectRef.current(tabId);
+      setDraggingTabId(null);
+    },
+    [],
+  );
 
-  // Drop callback / preview cleanup for closed tabs.
+  // Drop callback / preview / buffer-cache state for closed tabs.
   useEffect(() => {
     const live = new Set(editors.map((t) => t.id));
     for (const map of [
@@ -227,6 +240,9 @@ export function EditorStack({
     ]) {
       for (const id of map.keys()) if (!live.has(id)) map.delete(id);
     }
+    // Evict cached buffers for files no longer open (so a true close, not a
+    // split remount, re-reads fresh from disk on reopen).
+    pruneDocumentCache(new Set(editors.map((t) => t.path)));
     setPreviewIds((curr) => {
       const next = new Set([...curr].filter((id) => live.has(id)));
       return next.size === curr.size ? curr : next;
@@ -325,39 +341,69 @@ export function EditorStack({
       node.activeTabId != null && tabIds.includes(node.activeTabId)
         ? node.activeTabId
         : (tabIds[tabIds.length - 1] ?? null);
+    const panelId = `egpanel-${node.id}`;
+    const tabDomId = (id: number) => `egtab-${node.id}-${id}`;
+    const activate = (id: number) => {
+      setLayout((prev) => setActiveTab(prev, node.id, id));
+      lastActiveLeafRef.current = node.id;
+      selectRef.current(id);
+    };
+    // Roving-focus keyboard nav across the group's tab strip (ARIA tabs).
+    const onStripKeyDown = (
+      e: ReactKeyboardEvent<HTMLDivElement>,
+      id: number,
+    ) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        activate(id);
+        return;
+      }
+      if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(e.key)) return;
+      e.preventDefault();
+      const i = tabIds.indexOf(id);
+      const nextIdx =
+        e.key === "Home"
+          ? 0
+          : e.key === "End"
+            ? tabIds.length - 1
+            : (i + (e.key === "ArrowRight" ? 1 : -1) + tabIds.length) %
+              tabIds.length;
+      const nextId = tabIds[nextIdx];
+      activate(nextId);
+      e.currentTarget.parentElement
+        ?.querySelector<HTMLElement>(`[data-editor-drag-tab="${nextId}"]`)
+        ?.focus();
+    };
     return (
       <div className="flex h-full min-h-0 flex-col">
         {showStrips && (
-          <div className="flex h-7 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/40 px-1">
+          <div
+            role="tablist"
+            aria-orientation="horizontal"
+            aria-label="Editor group tabs"
+            className="flex h-7 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/40 px-1"
+          >
             {tabIds.map((id) => {
               const t = editorById.get(id)!;
+              const selected = id === activeTabId;
               return (
                 <div
                   key={id}
+                  id={tabDomId(id)}
                   role="tab"
-                  tabIndex={0}
-                  aria-selected={id === activeTabId}
+                  aria-selected={selected}
+                  aria-controls={panelId}
+                  tabIndex={selected ? 0 : -1}
                   draggable
                   data-editor-drag-tab={id}
                   onDragStart={(e) =>
                     e.dataTransfer.setData(DRAG_MIME, String(id))
                   }
-                  onClick={() => {
-                    setLayout((prev) => setActiveTab(prev, node.id, id));
-                    lastActiveLeafRef.current = node.id;
-                    selectRef.current(id);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setLayout((prev) => setActiveTab(prev, node.id, id));
-                      lastActiveLeafRef.current = node.id;
-                      selectRef.current(id);
-                    }
-                  }}
+                  onClick={() => activate(id)}
+                  onKeyDown={(e) => onStripKeyDown(e, id)}
                   className={cn(
                     "group/etab flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-colors",
-                    id === activeTabId
+                    selected
                       ? "bg-accent text-foreground"
                       : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                   )}
@@ -372,7 +418,7 @@ export function EditorStack({
                       e.stopPropagation();
                       closeRef.current(id);
                     }}
-                    aria-label="Close editor"
+                    aria-label={`Close ${basename(t.path)}`}
                     className="rounded px-0.5 text-muted-foreground/60 opacity-0 hover:text-foreground focus-visible:opacity-100 group-hover/etab:opacity-100"
                   >
                     ✕
@@ -383,6 +429,11 @@ export function EditorStack({
           </div>
         )}
         <div
+          id={panelId}
+          role={showStrips ? "tabpanel" : undefined}
+          aria-labelledby={
+            showStrips && activeTabId != null ? tabDomId(activeTabId) : undefined
+          }
           className="relative min-h-0 flex-1"
           onMouseDownCapture={() => {
             if (activeTabId != null && activeTabId !== activeId) {
@@ -395,7 +446,8 @@ export function EditorStack({
           {draggingTabId != null && (
             <LeafDropZones
               onDrop={(edge) => {
-                if (draggingTabId != null) handleDrop(node.id, edge, draggingTabId);
+                if (draggingTabId != null)
+                  handleDrop(node.id, edge, draggingTabId);
               }}
             />
           )}
@@ -413,6 +465,8 @@ function LeafDropZones({ onDrop }: { onDrop: (edge: SplitEdge) => void }) {
     <div
       className={cn("group/zone absolute", className)}
       onDragOver={(e) => {
+        // Only accept our own tab drags — reject OS file drops etc.
+        if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
       }}

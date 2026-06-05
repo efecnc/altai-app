@@ -106,11 +106,9 @@ export function removeTab(
         : l.activeTabId;
     return { ...l, tabIds, activeTabId };
   });
-  const collapsed = collapse(next);
-  // Never collapse to nothing — keep at least one (empty) leaf.
-  return collapsed.kind === "split" || collapsed.kind === "leaf"
-    ? collapsed
-    : emptyLeaf(node.kind === "leaf" ? node.id : node.id);
+  // collapse() always returns a leaf or split (an emptied split becomes
+  // emptyLeaf), so the tree never collapses to nothing.
+  return collapse(next);
 }
 
 /**
@@ -123,12 +121,17 @@ export function splitLeafWithTab(
   tabId: number,
   edge: SplitEdge,
   newLeafId: number,
+  newSplitId: number,
 ): EditorGroupNode {
-  // Always detach the tab from its current home first.
-  const detached = removeTab(node, tabId);
+  // Center = drop into the target group (no split). No-op when the tab already
+  // lives there, so it doesn't pointlessly detach + re-append (which would
+  // reorder the strip and flip the active tab).
   if (edge === "center") {
-    return addTabToLeaf(detached, targetLeafId, tabId);
+    if (leafContainingTab(node, tabId)?.id === targetLeafId) return node;
+    return addTabToLeaf(removeTab(node, tabId), targetLeafId, tabId);
   }
+  // Detach the tab from its current home first, then wrap the target leaf.
+  const detached = removeTab(node, tabId);
   const dir: "row" | "col" =
     edge === "left" || edge === "right" ? "row" : "col";
   const before = edge === "left" || edge === "top";
@@ -143,7 +146,7 @@ export function splitLeafWithTab(
       if (n.id !== targetLeafId) return n;
       const split: EditorGroupSplit = {
         kind: "split",
-        id: newLeafId + 1_000_000, // unique-ish; ids only need to be stable keys
+        id: newSplitId,
         dir,
         children: before ? [newLeaf, n] : [n, newLeaf],
       };
@@ -151,7 +154,10 @@ export function splitLeafWithTab(
     }
     return { ...n, children: n.children.map(replace) };
   };
-  return replace(detached);
+  // collapse() cleans up the degenerate case where detaching emptied the
+  // target leaf (e.g. dropping a leaf's only tab onto its own edge) — that
+  // leaf is dropped and the split with a single child unwraps.
+  return collapse(replace(detached));
 }
 
 /**
