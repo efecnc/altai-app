@@ -23,6 +23,13 @@ import {
   SelectionAskAi,
   useChatStore,
 } from "@/modules/ai";
+import {
+  DEFAULT_AUTOCOMPLETE_MODEL,
+  MODELS,
+  pickAutocompleteProvider,
+  pickDefaultModel,
+  type ProviderId,
+} from "@/modules/ai/config";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { redactSensitive } from "@/modules/ai/lib/redact";
 import { native } from "@/modules/ai/lib/native";
@@ -69,7 +76,11 @@ import {
 } from "@/modules/terminal/runInTerminal";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useApplyA11yClasses } from "@/modules/settings/applyA11yClasses";
-import { onKeysChanged } from "@/modules/settings/store";
+import {
+  onKeysChanged,
+  setAutocompleteModelId,
+  setAutocompleteProvider,
+} from "@/modules/settings/store";
 import {
   ShortcutsDialog,
   useGlobalShortcuts,
@@ -504,14 +515,91 @@ export default function App() {
   // into chatStore so the dropdown reflects what the user picked in Settings.
   const initPrefs = usePreferencesStore((s) => s.init);
   const prefDefaultModel = usePreferencesStore((s) => s.defaultModelId);
+  const autocompleteProvider = usePreferencesStore((s) => s.autocompleteProvider);
   const prefsHydrated = usePreferencesStore((s) => s.hydrated);
   useEffect(() => {
     void initPrefs();
   }, [initPrefs]);
+  // A provider counts as usable when it has a key, or — for the key-optional
+  // local providers — when a base URL + model id are configured.
+  const isProviderConfigured = useCallback(
+    (provider: ProviderId): boolean => {
+      if (provider === "lmstudio")
+        return (
+          lmstudioBaseURL.trim().length > 0 &&
+          lmstudioModelId.trim().length > 0
+        );
+      if (provider === "mlx")
+        return mlxBaseURL.trim().length > 0 && mlxModelId.trim().length > 0;
+      if (provider === "openai-compatible")
+        return (
+          openaiCompatibleBaseURL.trim().length > 0 &&
+          openaiCompatibleModelId.trim().length > 0
+        );
+      return !!apiKeys[provider];
+    },
+    [
+      apiKeys,
+      lmstudioBaseURL,
+      lmstudioModelId,
+      mlxBaseURL,
+      mlxModelId,
+      openaiCompatibleBaseURL,
+      openaiCompatibleModelId,
+    ],
+  );
+
+  // Default chat model follows the configured providers: keep the persisted
+  // choice when its provider has a key, otherwise fall back to a model from a
+  // provider the user actually set up (#71).
   useEffect(() => {
-    if (!prefsHydrated) return;
-    setSelectedModelId(prefDefaultModel);
-  }, [prefsHydrated, prefDefaultModel, setSelectedModelId]);
+    if (!prefsHydrated || !keysLoaded) return;
+    const storedProvider = MODELS.find(
+      (m) => m.id === prefDefaultModel,
+    )?.provider;
+    if (storedProvider && isProviderConfigured(storedProvider)) {
+      setSelectedModelId(prefDefaultModel);
+      return;
+    }
+    const fallback = pickDefaultModel(isProviderConfigured);
+    setSelectedModelId(fallback ?? prefDefaultModel);
+  }, [
+    prefsHydrated,
+    keysLoaded,
+    prefDefaultModel,
+    isProviderConfigured,
+    setSelectedModelId,
+  ]);
+
+  // Same idea for inline autocomplete: if its provider isn't configured, move
+  // to a configured one instead of demanding a key for an unused provider (#71).
+  useEffect(() => {
+    if (!prefsHydrated || !keysLoaded) return;
+    if (isProviderConfigured(autocompleteProvider)) return;
+    const fallback = pickAutocompleteProvider(isProviderConfigured);
+    if (!fallback || fallback === autocompleteProvider) return;
+    void setAutocompleteProvider(fallback);
+    // Cloud providers have a fixed fast default; the key-optional local
+    // providers use the user's configured local model id.
+    const model =
+      DEFAULT_AUTOCOMPLETE_MODEL[fallback] ||
+      (fallback === "lmstudio"
+        ? lmstudioModelId
+        : fallback === "mlx"
+          ? mlxModelId
+          : fallback === "openai-compatible"
+            ? openaiCompatibleModelId
+            : "");
+    if (model) void setAutocompleteModelId(model);
+  }, [
+    prefsHydrated,
+    keysLoaded,
+    isProviderConfigured,
+    autocompleteProvider,
+    lmstudioModelId,
+    mlxModelId,
+    openaiCompatibleModelId,
+  ]);
 
   const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   useEffect(() => {
