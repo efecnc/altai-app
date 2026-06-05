@@ -13,7 +13,8 @@ use crate::modules::git::types::{
     TextSource, DEFAULT_TIMEOUT_SECS, NETWORK_TIMEOUT_SECS,
 };
 use crate::modules::git::utils::{
-    authorized_repo_root, canonical_dir, resolve_within_repo, split_upstream, ResolvedGitDirectory,
+    authorized_repo_root, canonical_dir, github_auth_config_args, resolve_within_repo,
+    split_upstream, ResolvedGitDirectory,
 };
 use crate::modules::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
@@ -454,6 +455,74 @@ pub fn push(
     Ok(GitPushResult {
         remote,
         branch,
+        pushed: true,
+    })
+}
+
+/// Create `origin` (or repoint it) to `remote_url`, then `push -u origin
+/// <branch>` with token auth. Used by the "Publish to GitHub" flow.
+pub fn publish(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    remote_url: &str,
+    workspace: &WorkspaceEnv,
+    token: Option<&str>,
+) -> Result<GitPushResult> {
+    let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
+    ensure_git_available(&repo_root.workspace)?;
+
+    let remote_url = remote_url.trim();
+    if remote_url.is_empty() || remote_url.starts_with('-') {
+        return Err(GitError::command("git publish", "invalid remote URL"));
+    }
+
+    let branch = git_stdout_line_opt(
+        &repo_root.workspace,
+        &repo_root.git_path,
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+    )?
+    .filter(|b| b != "HEAD")
+    .ok_or_else(|| GitError::command("git publish", "no commits yet — make a commit first"))?;
+
+    let existing = git_stdout_line_opt(
+        &repo_root.workspace,
+        &repo_root.git_path,
+        ["remote", "get-url", "origin"],
+    )?;
+    let verb = if existing.is_some() { "set-url" } else { "add" };
+    let setup = run_git(
+        &repo_root.workspace,
+        Some(&repo_root.git_path),
+        [
+            OsStr::new("remote"),
+            OsStr::new(verb),
+            OsStr::new("origin"),
+            OsStr::new(remote_url),
+        ],
+        DEFAULT_TIMEOUT_SECS,
+    )?;
+    ensure_success(&setup, "git remote setup failed")?;
+
+    let mut args: Vec<OsString> = github_auth_config_args(Some(remote_url), token)
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+    args.push(OsString::from("push"));
+    args.push(OsString::from("-u"));
+    args.push(OsString::from("origin"));
+    args.push(OsString::from(&branch));
+
+    let output = run_git(
+        &repo_root.workspace,
+        Some(&repo_root.git_path),
+        args,
+        NETWORK_TIMEOUT_SECS,
+    )?;
+    ensure_success(&output, "git push failed")?;
+
+    Ok(GitPushResult {
+        remote: Some("origin".to_string()),
+        branch: Some(branch),
         pushed: true,
     })
 }

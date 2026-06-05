@@ -103,9 +103,88 @@ fn canonicalize_parent(repo_root: &Path, joined: &Path, rel: &str) -> Result<Pat
     Ok(canonical_parent.join(file_name))
 }
 
+/// Standard base64 (with `=` padding). Small self-contained encoder so we
+/// don't pull in a crate just for HTTP basic-auth header construction.
+pub fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// True for `https://github.com/...` remotes — the only host we inject a token
+/// header for. SSH and other hosts keep using the user's existing credentials.
+pub fn is_github_https(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.starts_with("https://github.com/") || lower.starts_with("https://www.github.com/")
+}
+
+/// `-c http.<base>.extraHeader=...` git args that authenticate GitHub HTTPS
+/// requests with `token`. Empty when there's no token or the remote isn't a
+/// GitHub HTTPS URL. Scoped to github.com so the header never leaks to other
+/// remotes. Note: the value is visible in the process arg list — an accepted
+/// trade-off for a single-user desktop app (see plan for the env-config
+/// hardening path once the minimum git version allows it).
+pub fn github_auth_config_args(remote_url: Option<&str>, token: Option<&str>) -> Vec<String> {
+    match (remote_url, token) {
+        (Some(url), Some(token)) if is_github_https(url) && !token.is_empty() => {
+            let basic = base64_encode(format!("x-access-token:{token}").as_bytes());
+            vec![
+                "-c".to_string(),
+                format!("http.https://github.com/.extraHeader=AUTHORIZATION: basic {basic}"),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_matches_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn github_https_detection() {
+        assert!(is_github_https("https://github.com/owner/repo.git"));
+        assert!(is_github_https("HTTPS://GitHub.com/owner/repo"));
+        assert!(!is_github_https("git@github.com:owner/repo.git"));
+        assert!(!is_github_https("https://gitlab.com/owner/repo.git"));
+    }
+
+    #[test]
+    fn auth_args_only_for_github_https_with_token() {
+        assert!(github_auth_config_args(Some("https://github.com/a/b.git"), Some("tok")).len() == 2);
+        assert!(github_auth_config_args(Some("git@github.com:a/b.git"), Some("tok")).is_empty());
+        assert!(github_auth_config_args(Some("https://github.com/a/b.git"), None).is_empty());
+        assert!(github_auth_config_args(None, Some("tok")).is_empty());
+    }
 
     #[test]
     fn safe_pathspec_accepts_normal_paths() {

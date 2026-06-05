@@ -1,6 +1,8 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { plural } from "@/lib/utils";
 import { useChatStore } from "../store/chatStore";
+import { useAgentRunsStore } from "../store/agentRunsStore";
+import { appendBackgroundMessage } from "./backgroundTranscript";
 
 /**
  * Agent event types emitted by the Rust runtime via `agent://event`.
@@ -84,6 +86,25 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
   return listen<AgentEvent & { chat_id?: string }>("agent://event", (event) => {
     const payload = event.payload;
     const store = useChatStore.getState();
+    // Feed the per-chat_id run registry FIRST, before the active-session drop
+    // below — this is the only sink that sees background (non-focused) runs, so
+    // a project board can track every dispatched agent. Must stay above the
+    // filter; the filter itself must remain so background content never leaks
+    // into the focused chat's transcript/meter.
+    if (payload.chat_id) {
+      useAgentRunsStore.getState().ingest(payload.chat_id, payload);
+    }
+    // Persist a BACKGROUND run's assistant messages to its own thread so "Open
+    // transcript" replays the result, not just the seed. The focused chat
+    // persists itself via nativeMessages, so skip it here.
+    if (
+      payload.type === "agent_message" &&
+      payload.role === "assistant" &&
+      payload.chat_id &&
+      payload.chat_id !== store.activeSessionId
+    ) {
+      appendBackgroundMessage(payload.chat_id, "assistant", payload.content);
+    }
     // Per-session isolation: every event is tagged with the chat_id (= ALTAI
     // session id) it belongs to. Drop anything that isn't for the chat tab on
     // screen, so a still-streaming or autonomous turn from another chat (and

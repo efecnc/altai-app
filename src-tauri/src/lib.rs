@@ -2,7 +2,7 @@ mod modules;
 mod altai;
 
 use modules::{
-    fs, git, lsp_install, net, notebook, proc, pty, secrets, shell, webview, workspace,
+    fs, git, github, lsp_install, net, notebook, proc, pty, secrets, shell, webview, workspace,
 };
 use altai::agent::commands as agent_commands;
 use std::sync::Mutex;
@@ -163,11 +163,19 @@ pub fn run() {
             git::commands::git_fetch,
             git::commands::git_pull_ff_only,
             git::commands::git_push,
+            git::commands::git_publish,
             git::commands::git_log,
             git::commands::git_show_commit,
             git::commands::git_commit_files,
             git::commands::git_commit_file_diff,
             git::commands::git_remote_url,
+            // ALTAI — GitHub connect / identity / API proxy
+            github::commands::github_device_start,
+            github::commands::github_poll_token,
+            github::commands::github_status,
+            github::commands::github_disconnect,
+            github::commands::github_api_request,
+            github::commands::github_create_repo,
             shell::shell_run_command,
             shell::shell_session_open,
             shell::shell_session_run,

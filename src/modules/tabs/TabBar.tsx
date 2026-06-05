@@ -16,8 +16,10 @@ import {
   ComputerTerminal02Icon,
   GitBranchIcon,
   GitCompareIcon,
+  GithubIcon,
   Globe02Icon,
   IncognitoIcon,
+  KanbanIcon,
   PencilEdit02Icon,
   PlusSignIcon,
   Settings01Icon,
@@ -297,6 +299,26 @@ function TabIcon({ tab }: { tab: Tab }) {
       />
     );
   }
+  if (tab.kind === "github-items") {
+    return (
+      <HugeiconsIcon
+        icon={GithubIcon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0"
+      />
+    );
+  }
+  if (tab.kind === "project-board") {
+    return (
+      <HugeiconsIcon
+        icon={KanbanIcon}
+        size={14}
+        strokeWidth={2}
+        className="shrink-0"
+      />
+    );
+  }
   if (tab.kind === "settings") {
     return (
       <HugeiconsIcon
@@ -325,6 +347,8 @@ function labelFor(t: Tab): string {
   if (t.kind === "ai-diff") return t.title;
   if (t.kind === "git-diff") return t.title;
   if (t.kind === "git-history") return t.title;
+  if (t.kind === "github-items") return t.title;
+  if (t.kind === "project-board") return t.title;
   if (t.kind === "git-commit-file") return t.title;
   if (t.kind === "settings") return t.title;
   if (t.kind === "notebook") return t.title;

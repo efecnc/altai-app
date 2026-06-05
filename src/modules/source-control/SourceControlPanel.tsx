@@ -32,6 +32,8 @@ import {
   FolderCloudIcon,
   FolderGitTwoIcon,
   GitBranchIcon,
+  GithubIcon,
+  KanbanIcon,
   Refresh01Icon,
   RemoveSquareIcon,
 } from "@hugeicons/core-free-icons";
@@ -58,6 +60,8 @@ type Props = {
   open: boolean;
   sourceControl: SourceControlSummary;
   onOpenGitGraph?: () => void;
+  onOpenGitHubItems?: () => void;
+  onOpenProjects?: () => void;
   onOpenDiff: (input: {
     path: string;
     repoRoot: string;
@@ -130,6 +134,8 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   open,
   sourceControl,
   onOpenGitGraph,
+  onOpenGitHubItems,
+  onOpenProjects,
   onOpenDiff,
 }: Props) {
   const scm = useSourceControlPanel(open, sourceControl, onOpenDiff);
@@ -516,6 +522,52 @@ export const SourceControlPanel = memo(function SourceControlPanel({
               className="shrink-0"
             />
             <span className="flex-1 text-[12px] font-medium">Commit Graph</span>
+            <HugeiconsIcon
+              icon={ArrowRight01Icon}
+              size={12}
+              strokeWidth={2}
+              className="shrink-0 opacity-50 transition-transform group-hover:translate-x-0.5"
+            />
+          </button>
+        ) : null}
+
+        {onOpenGitHubItems && scm.status ? (
+          <button
+            type="button"
+            onClick={() => onOpenGitHubItems()}
+            className="group flex shrink-0 cursor-pointer items-center gap-2 border-b border-border/40 px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-foreground/[0.04] hover:text-foreground"
+          >
+            <HugeiconsIcon
+              icon={GithubIcon}
+              size={13}
+              strokeWidth={1.85}
+              className="shrink-0"
+            />
+            <span className="flex-1 text-[12px] font-medium">
+              Pull Requests &amp; Issues
+            </span>
+            <HugeiconsIcon
+              icon={ArrowRight01Icon}
+              size={12}
+              strokeWidth={2}
+              className="shrink-0 opacity-50 transition-transform group-hover:translate-x-0.5"
+            />
+          </button>
+        ) : null}
+
+        {onOpenProjects && scm.status ? (
+          <button
+            type="button"
+            onClick={() => onOpenProjects()}
+            className="group flex shrink-0 cursor-pointer items-center gap-2 border-b border-border/40 px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-foreground/[0.04] hover:text-foreground"
+          >
+            <HugeiconsIcon
+              icon={KanbanIcon}
+              size={13}
+              strokeWidth={1.85}
+              className="shrink-0"
+            />
+            <span className="flex-1 text-[12px] font-medium">Project Board</span>
             <HugeiconsIcon
               icon={ArrowRight01Icon}
               size={12}

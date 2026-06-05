@@ -27,6 +27,7 @@ import {
   type SessionMeta,
 } from "../lib/sessions";
 import { pushRecentModel } from "../lib/modelPrefs";
+import { appendBackgroundMessage } from "../lib/backgroundTranscript";
 import { effectivePermissionMode, setDefaultModel } from "@/modules/settings/store";
 
 type Live = {
@@ -191,6 +192,9 @@ type StoreState = {
   activeSessionId: string | null;
   hydrateSessions: () => Promise<void>;
   newSession: () => string;
+  /** Create a titled session WITHOUT focusing it (no active-session change,
+   *  no transcript reset) — for background agent dispatch from the board. */
+  createBackgroundSession: (title: string) => string;
   switchSession: (id: string) => void;
   deleteSession: (id: string) => void;
   renameSession: (id: string, title: string) => void;
@@ -592,6 +596,20 @@ export const useChatStore = create<StoreState>((set, get) => ({
     return id;
   },
 
+  createBackgroundSession: (title) => {
+    const id = newSessionId();
+    const meta: SessionMeta = {
+      id,
+      title,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const next = [...get().sessions, meta];
+    set({ sessions: next });
+    void saveSessionsList(next);
+    return id;
+  },
+
   switchSession: (id) => {
     const prevId = get().activeSessionId;
     if (prevId === id) return;
@@ -861,6 +879,57 @@ async function sendViaIsanAgent(
       error: e instanceof Error ? e.message : String(e),
       step: null,
     });
+    return false;
+  }
+}
+
+export async function dispatchToSession(
+  text: string,
+  chatId: string,
+): Promise<boolean> {
+  const store = useChatStore.getState();
+  const prefs = usePreferencesStore.getState();
+  const resolution = resolveIsanAgentTarget(store.selectedModelId, store.apiKeys, {
+    lmstudioBaseURL: prefs.lmstudioBaseURL,
+    lmstudioModelId: prefs.lmstudioModelId,
+    mlxBaseURL: prefs.mlxBaseURL,
+    mlxModelId: prefs.mlxModelId,
+    openaiCompatibleBaseURL: prefs.openaiCompatibleBaseURL,
+    openaiCompatibleModelId: prefs.openaiCompatibleModelId,
+  });
+  if (!resolution.ok) return false;
+  const { providerName, apiKey, modelName, baseUrl } = resolution.target;
+
+  const agentsState = useAgentsStore.getState();
+  const activeAgent = agentsState.all().find((a) => a.id === agentsState.activeId);
+  const instructions = activeAgent?.instructions?.trim() || undefined;
+  const workspacePath = currentWorkspaceFolder() ?? undefined;
+
+  // The config routes this chat to its own runtime instance — so this
+  // background run can be on a different model than the focused chat (or other
+  // assignments) and run concurrently without tearing anything down.
+  const config = {
+    providerName,
+    apiKey,
+    modelName,
+    instructions,
+    baseUrl,
+    workspacePath,
+  };
+
+  // Persist the seed as the session's opening message (so "Open transcript"
+  // shows context) without routing it through the focused chat's thread.
+  // Route it through the SAME per-chat queue as later background appends so the
+  // seed serializes with them — a fire-and-forget write here could race the
+  // first background append and get clobbered.
+  appendBackgroundMessage(chatId, "user", text);
+
+  const envBlock = buildEnvBlock(store.live);
+  const payload = envBlock ? `${envBlock}\n\n${text}` : text;
+  try {
+    await native.agentSend(payload, undefined, chatId, config);
+    return true;
+  } catch {
     return false;
   }
 }

@@ -123,6 +123,34 @@ export type GitDiscardEntry = {
   untracked: boolean;
 };
 
+export type GitHubUser = {
+  login: string;
+  name: string | null;
+  avatarUrl: string;
+};
+
+export type GitHubDeviceCode = {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  interval: number;
+  expiresIn: number;
+};
+
+export type GitHubCreatedRepo = {
+  fullName: string;
+  cloneUrl: string;
+  sshUrl: string;
+  htmlUrl: string;
+  defaultBranch: string;
+};
+
+export type GitHubRawHttpResponse = {
+  status: number;
+  headers: Record<string, string>;
+  body: number[];
+};
+
 /** A pre-edit checkpoint of a file the agent mutated, for one-step undo. */
 export type CheckpointInfo = {
   id: string;
@@ -426,4 +454,33 @@ export const native = {
     invoke<string[]>("agent_install_skill", { workspacePath, repoUrl, skill }),
   gitClone: (url: string, destParent: string) =>
     invoke<string>("git_clone", { url, destParent }),
+  githubDeviceStart: () => invoke<GitHubDeviceCode>("github_device_start"),
+  githubPollToken: (deviceCode: string, interval: number, expiresIn: number) =>
+    invoke<GitHubUser>("github_poll_token", { deviceCode, interval, expiresIn }),
+  githubStatus: () => invoke<GitHubUser | null>("github_status"),
+  githubDisconnect: () => invoke<void>("github_disconnect"),
+  githubCreateRepo: (args: {
+    name: string;
+    private: boolean;
+    org?: string | null;
+    description?: string | null;
+  }) =>
+    invoke<GitHubCreatedRepo>("github_create_repo", {
+      name: args.name,
+      private: args.private,
+      org: args.org ?? null,
+      description: args.description ?? null,
+    }),
+  gitPublish: (repoRoot: string, remoteUrl: string) =>
+    invoke<GitPushResult>("git_publish", {
+      repoRoot,
+      remoteUrl,
+      workspace: currentWorkspaceEnv(),
+    }),
+  githubApiRequest: (method: string, path: string, body: number[] | null) =>
+    invoke<GitHubRawHttpResponse>("github_api_request", {
+      method,
+      path,
+      body,
+    }),
 };
