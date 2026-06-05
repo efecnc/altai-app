@@ -30,6 +30,9 @@ export function buildSharedExtensions(): Extension[] {
         fontFamily: detectMonoFontFamily(),
         fontSize: "13px",
         lineHeight: "1.55",
+        // Kill the elastic horizontal rubber-banding that let users scroll past
+        // the left text margin into empty space, which felt buggy (#68).
+        overscrollBehaviorX: "none",
       },
       ".cm-gutter-lint": {
         width: "0px",
