@@ -19,15 +19,18 @@ import type { GitLogEntry } from "@/modules/ai/lib/native";
 
 export type LaneColor = string;
 
+// Desaturated, evenly-spaced hues that stay distinguishable across lanes while
+// reading as calm tones alongside the app's near-monochrome slate theme
+// (rather than the neon tailwind-400 palette).
 export const LANE_COLORS: LaneColor[] = [
-  "#60a5fa", // blue-400
-  "#c084fc", // purple-400
-  "#34d399", // emerald-400
-  "#fbbf24", // amber-400
-  "#f472b6", // pink-400
-  "#22d3ee", // cyan-400
-  "#fb923c", // orange-400
-  "#a3e635", // lime-400
+  "#6b8bc4", // muted blue
+  "#9a86c4", // muted violet
+  "#79ab86", // muted green
+  "#c2a062", // muted amber
+  "#c089a6", // muted rose
+  "#6fadb4", // muted teal
+  "#c0926a", // muted orange
+  "#9aac72", // muted olive
 ];
 
 export function laneColor(index: number): LaneColor {

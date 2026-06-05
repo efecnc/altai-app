@@ -14,8 +14,10 @@ import {
 } from "@/modules/ai/lib/native";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
 import {
+  ArrowReloadHorizontalIcon,
   Copy01Icon,
   File02Icon,
+  GitBranchIcon,
   LinkSquare02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -51,8 +53,8 @@ const RAIL_RESERVED_PX = railWidth(MAX_VISIBLE_LANES);
 const GRID_TEMPLATE = `${RAIL_RESERVED_PX + 4}px 60px minmax(0, 560px) minmax(12px, 1fr) minmax(140px, max-content) 96px 116px`;
 
 const PAGE_SIZE = 30;
-const ROW_HEIGHT = 32;
-const TABLE_HEADER_HEIGHT = 24;
+const ROW_HEIGHT = 34;
+const TABLE_HEADER_HEIGHT = 26;
 const NEAR_BOTTOM_PX = 240;
 const FILES_CACHE_LIMIT = 16;
 
@@ -124,25 +126,6 @@ function authorInitials(name: string): string {
   return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
 }
 
-const AUTHOR_TINTS = [
-  "#7aa2f7", // soft blue
-  "#bb9af7", // soft purple
-  "#9ece6a", // soft green
-  "#e0af68", // soft amber
-  "#f7768e", // soft rose
-  "#73daca", // soft teal
-  "#ff9e64", // soft orange
-  "#b4f9f8", // pale cyan
-];
-
-function authorTint(key: string): string {
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    hash = (hash * 31 + key.charCodeAt(i)) | 0;
-  }
-  return AUTHOR_TINTS[Math.abs(hash) % AUTHOR_TINTS.length];
-}
-
 function compactDate(secs: number): string {
   if (!secs) return "";
   const d = new Date(secs * 1000);
@@ -158,17 +141,19 @@ function compactDate(secs: number): string {
   return `${month} ${day} ${d.getFullYear()}`;
 }
 
+// Diff/status accents stay semantic (add/modify/delete) but lean on the theme's
+// muted-foreground for neutral cases so rows read calmly.
 function statusTone(code: string): string {
   switch (code.toUpperCase()) {
     case "A":
-      return "text-emerald-600 dark:text-emerald-400";
+      return "text-emerald-500";
     case "M":
-      return "text-amber-600 dark:text-amber-300";
+      return "text-amber-500";
     case "D":
-      return "text-rose-600 dark:text-rose-400";
+      return "text-rose-500";
     case "R":
     case "C":
-      return "text-sky-600 dark:text-sky-300";
+      return "text-sky-500";
     default:
       return "text-muted-foreground";
   }
@@ -181,7 +166,7 @@ function highlight(text: string, query: string): ReactNode {
   return (
     <>
       {text.slice(0, idx)}
-      <mark className="rounded-sm bg-primary/25 px-0.5 text-foreground">
+      <mark className="rounded-sm bg-primary/20 px-0.5 text-foreground">
         {text.slice(idx, idx + query.length)}
       </mark>
       {text.slice(idx + query.length)}
@@ -399,7 +384,6 @@ export function GitHistoryPane({
 
   // Auto-fill: if the list doesn't fill the viewport (no scroll possible)
   // after a load, keep pulling pages until it does or the end is reached.
-  // Scheduled async so we don't fight ongoing state transitions.
   useEffect(() => {
     if (loadStatus !== "idle") return;
     if (endReached) return;
@@ -456,8 +440,6 @@ export function GitHistoryPane({
         setOpenAnchor(null);
         return;
       }
-      // Anchor at the cursor so the popover opens where the user clicked,
-      // but clamp X so it never gets pushed off-screen on the right.
       const POPOVER_WIDTH = 420;
       const PADDING = 16;
       const maxLeft = window.innerWidth - POPOVER_WIDTH - PADDING;
@@ -504,9 +486,46 @@ export function GitHistoryPane({
     }
   }, []);
 
+  const hasCommits = commits.length > 0;
+
   return (
     <TooltipProvider delayDuration={500} skipDelayDuration={200}>
       <div className="flex h-full min-h-0 flex-col bg-background [contain:layout_style]">
+        {/* Toolbar */}
+        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/50 bg-card/40 px-3">
+          <HugeiconsIcon
+            icon={GitBranchIcon}
+            size={13}
+            strokeWidth={1.85}
+            className="shrink-0 text-muted-foreground"
+          />
+          <span className="text-[12px] font-medium text-foreground">
+            Commit Graph
+          </span>
+          {hasCommits ? (
+            <span className="rounded-full bg-foreground/[0.06] px-1.5 py-px text-[10px] font-medium tabular-nums text-muted-foreground">
+              {activeSearch ? `${filtered.length} / ` : ""}
+              {commits.length}
+              {!endReached ? "+" : ""}
+            </span>
+          ) : null}
+          <Button
+            size="xs"
+            variant="ghost"
+            className="ml-auto h-7 gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={handleRefresh}
+            disabled={loadStatus === "initial"}
+          >
+            <HugeiconsIcon
+              icon={ArrowReloadHorizontalIcon}
+              size={12}
+              strokeWidth={2}
+              className={cn(loadStatus === "initial" && "animate-spin")}
+            />
+            Refresh
+          </Button>
+        </div>
+
         {loadStatus === "initial" && commits.length === 0 ? (
           <CenterPlaceholder>
             <Spinner className="size-4" />
@@ -516,9 +535,7 @@ export function GitHistoryPane({
           </CenterPlaceholder>
         ) : loadStatus === "error" && commits.length === 0 ? (
           <CenterPlaceholder>
-            <div className="text-[13px] font-medium">
-              Could not load history
-            </div>
+            <div className="text-[13px] font-medium">Could not load history</div>
             <div className="max-w-md text-[11px] leading-relaxed text-muted-foreground">
               {error ?? "Unknown error"}
             </div>
@@ -536,7 +553,7 @@ export function GitHistoryPane({
         ) : (
           <>
             <div
-              className="grid shrink-0 items-center gap-3 border-b border-border/40 bg-card/55 pr-3 text-[9.5px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70"
+              className="grid shrink-0 items-center gap-3 border-b border-border/50 bg-card/40 pr-3 text-[9.5px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/65"
               style={{
                 height: TABLE_HEADER_HEIGHT,
                 gridTemplateColumns: gridTemplate,
@@ -598,7 +615,7 @@ export function GitHistoryPane({
                 </div>
               ) : null}
               {endReached && !activeSearch ? (
-                <div className="py-3 text-center text-[10.5px] text-muted-foreground/65">
+                <div className="py-3 text-center text-[10.5px] text-muted-foreground/60">
                   End of history
                 </div>
               ) : null}
@@ -651,7 +668,7 @@ export function GitHistoryPane({
             collisionPadding={16}
             avoidCollisions
             onOpenAutoFocus={(e) => e.preventDefault()}
-            className="flex w-[420px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden rounded-xl p-0 shadow-xl"
+            className="flex w-[420px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden rounded-xl border-border/60 p-0 shadow-xl"
           >
             {openAnchor
               ? (() => {
@@ -712,7 +729,9 @@ const CommitRow = memo(function CommitRow({
       onClick={(event) => onClick(commit.sha, event)}
       className={cn(
         "group relative grid h-full w-full cursor-pointer items-center gap-3 border-l-2 border-transparent pr-3 text-left transition-colors",
-        active ? "border-l-primary/70 bg-accent/45" : "hover:bg-accent/25",
+        active
+          ? "border-l-primary bg-accent"
+          : "hover:bg-accent/50",
       )}
       style={{ gridTemplateColumns: gridTemplate }}
     >
@@ -734,7 +753,7 @@ const CommitRow = memo(function CommitRow({
           "min-w-0 truncate text-[12px] leading-tight",
           active
             ? "font-semibold text-foreground"
-            : "font-medium text-foreground/95",
+            : "font-medium text-foreground/90",
         )}
       >
         {commit.subject ? (
@@ -745,28 +764,23 @@ const CommitRow = memo(function CommitRow({
       </span>
       <span aria-hidden />
       <span
-        className="ml-2 inline-flex h-[18px] max-w-full min-w-0 items-center gap-1.5 justify-self-start self-center overflow-hidden rounded-md bg-foreground/6 pl-1 pr-1.5 text-[10.5px] font-medium text-foreground/85"
+        className="ml-2 inline-flex min-w-0 max-w-full items-center gap-1.5 justify-self-start self-center text-[11px] text-muted-foreground"
         title={commit.authorEmail || commit.author}
       >
-        <span
-          className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-[3px] font-mono text-[8.5px] font-bold uppercase tabular-nums text-background"
-          style={{
-            backgroundColor: authorTint(commit.authorEmail || commit.author),
-          }}
-        >
+        <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-muted text-[8px] font-semibold uppercase tabular-nums text-muted-foreground">
           {initials}
         </span>
-        <span className="min-w-0 truncate">
+        <span className="min-w-0 truncate text-foreground/80">
           {commit.author ? highlight(commit.author, query) : "Unknown"}
         </span>
       </span>
-      <span className="text-right font-mono text-[10.5px] tabular-nums text-muted-foreground/75">
+      <span className="text-right font-mono text-[10.5px] tabular-nums text-muted-foreground/70">
         {date}
       </span>
       <span className="flex min-w-0 items-center justify-end gap-1.5 font-mono text-[10px] tabular-nums">
         {commit.filesChanged > 0 ? (
           <span
-            className="inline-flex items-center gap-1 text-muted-foreground/75"
+            className="inline-flex items-center gap-1 text-muted-foreground/70"
             title={`${commit.filesChanged} ${commit.filesChanged === 1 ? "file" : "files"} changed`}
           >
             <HugeiconsIcon
@@ -787,12 +801,12 @@ const CommitRow = memo(function CommitRow({
         {totalStat > 0 ? (
           <span className="inline-flex items-center gap-1">
             {commit.insertions > 0 ? (
-              <span className="font-semibold text-emerald-600/85 dark:text-emerald-400/85">
+              <span className="font-semibold text-emerald-500/90">
                 +{commit.insertions}
               </span>
             ) : null}
             {commit.deletions > 0 ? (
-              <span className="font-semibold text-rose-600/85 dark:text-rose-400/85">
+              <span className="font-semibold text-rose-500/90">
                 −{commit.deletions}
               </span>
             ) : null}
@@ -837,9 +851,9 @@ function CommitDetail({
 
   return (
     <div className="flex max-h-[60vh] min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border/45 p-3">
+      <div className="shrink-0 border-b border-border/50 bg-card/40 p-3">
         <div className="flex items-start gap-2">
-          <span className="mt-px shrink-0 rounded bg-muted/65 px-1.5 py-0.5 font-mono text-[10.5px] leading-none tabular-nums text-muted-foreground">
+          <span className="mt-px shrink-0 rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10.5px] leading-none tabular-nums text-muted-foreground">
             {commit.shortSha}
           </span>
           <div className="min-w-0 flex-1 text-[12.5px] font-semibold leading-snug text-foreground">
@@ -849,7 +863,12 @@ function CommitDetail({
           </div>
         </div>
         <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10.5px] text-muted-foreground">
-          <span className="truncate">{commit.author || "Unknown"}</span>
+          <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-muted text-[8px] font-semibold uppercase text-muted-foreground">
+            {authorInitials(commit.author)}
+          </span>
+          <span className="truncate text-foreground/80">
+            {commit.author || "Unknown"}
+          </span>
           {commit.authorEmail ? (
             <>
               <span className="text-muted-foreground/45">·</span>
@@ -951,9 +970,9 @@ function CommitFiles({
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-between px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/85">
+      <div className="flex shrink-0 items-center justify-between px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/80">
         <span>Files</span>
-        <span className="rounded-sm bg-muted/55 px-1 py-px text-[9.5px] tabular-nums text-muted-foreground/85 normal-case tracking-normal">
+        <span className="rounded-sm bg-muted px-1 py-px text-[9.5px] normal-case tabular-nums tracking-normal text-muted-foreground">
           {filesEntry.files.length}
         </span>
       </div>
@@ -987,7 +1006,7 @@ const FileRow = memo(function FileRow({
     <button
       type="button"
       onClick={onOpen}
-      className="group flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-accent/40"
+      className="group flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-accent/60"
     >
       {iconUrl ? (
         <img src={iconUrl} alt="" className="size-3.5 shrink-0" />
@@ -999,7 +1018,7 @@ const FileRow = memo(function FileRow({
           {fileName}
         </span>
         {dir ? (
-          <span className="min-w-0 flex-1 truncate text-[10px] leading-tight text-muted-foreground/80">
+          <span className="min-w-0 flex-1 truncate text-[10px] leading-tight text-muted-foreground/75">
             {dir}
           </span>
         ) : null}
@@ -1010,14 +1029,10 @@ const FileRow = memo(function FileRow({
         ) : (
           <>
             {file.added > 0 ? (
-              <span className="text-emerald-600 dark:text-emerald-400">
-                +{file.added}
-              </span>
+              <span className="text-emerald-500">+{file.added}</span>
             ) : null}
             {file.removed > 0 ? (
-              <span className="text-rose-600 dark:text-rose-400">
-                −{file.removed}
-              </span>
+              <span className="text-rose-500">−{file.removed}</span>
             ) : null}
           </>
         )}
