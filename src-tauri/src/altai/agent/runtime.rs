@@ -226,9 +226,6 @@ pub struct AgentRuntime {
     /// serializes DB access (no contention).
     memory_by_workspace:
         tokio::sync::Mutex<HashMap<String, NodeHandle<isanagent::memory::MemoryMessage>>>,
-    /// Which instance (by config) owns a given chat_id, so `send`/`cancel`
-    /// route to the right instance.
-    chat_owner: tokio::sync::Mutex<HashMap<String, RuntimeFingerprint>>,
 }
 
 pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -236,7 +233,6 @@ pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         app: app.clone(),
         instances: tokio::sync::Mutex::new(HashMap::new()),
         memory_by_workspace: tokio::sync::Mutex::new(HashMap::new()),
-        chat_owner: tokio::sync::Mutex::new(HashMap::new()),
     });
 
     Ok(())
@@ -325,6 +321,13 @@ async fn ensure_instance(
     );
     let workspace_root = fp.workspace_root.clone();
 
+    // The lock is intentionally held across `build_instance().await` below: the
+    // UI drives one config-switch at a time, so serializing the rare
+    // build-a-new-instance path keeps this simple and is not a deadlock risk
+    // (`build_instance` never re-enters `AgentRuntime`). Note: within a single
+    // workspace, distinct configs accrete instances for the session (only
+    // other-workspace instances are torn down) — acceptable given typical
+    // config churn; revisit with idle-eviction if that proves heavy.
     let mut instances = runtime.instances.lock().await;
 
     // Tear down instances of other workspaces (the UI uses one at a time).
@@ -376,8 +379,7 @@ async fn ensure_instance(
     Ok(channel)
 }
 
-/// Route a user message to the instance for `config`, recording the chat→config
-/// ownership so cancel can find it later.
+/// Route a user message to the instance for `config` (built or reused).
 #[allow(clippy::too_many_arguments)]
 pub async fn route_send(
     runtime: &AgentRuntime,
@@ -403,35 +405,21 @@ pub async fn route_send(
         permission_mode,
     )
     .await?;
-    let fp = make_fingerprint(
-        provider_name,
-        api_key,
-        model_name,
-        persona_instructions,
-        base_url_override,
-        workspace_path,
-        permission_mode,
-    );
-    runtime
-        .chat_owner
-        .lock()
-        .await
-        .insert(chat_id.clone(), fp);
     channel.inject_user_message(message, images, chat_id).await
 }
 
-/// Cancel a chat's run by routing to the instance that owns it.
+/// Cancel a chat's run. Fan out to every live instance rather than tracking a
+/// chat→instance owner: cancellation is `chat_id`-scoped and idempotent inside
+/// IsanAgent, so a stray cancel to an instance that doesn't own the chat is a
+/// harmless no-op. Targeted ownership would be stale after a mid-session
+/// model/persona switch (the chat's old instance still draining), silently
+/// dropping the cancel — fanning out can't.
 pub async fn route_cancel(runtime: &AgentRuntime, chat_id: String) -> Result<(), String> {
-    let fp = runtime.chat_owner.lock().await.get(&chat_id).cloned();
-    let Some(fp) = fp else {
-        return Ok(());
-    };
     let instances = runtime.instances.lock().await;
-    if let Some(inst) = instances.get(&fp) {
-        inst.channel.cancel(chat_id).await
-    } else {
-        Ok(())
+    for inst in instances.values() {
+        let _ = inst.channel.cancel(chat_id.clone()).await;
     }
+    Ok(())
 }
 
 /// Warm up (or ensure) the instance for a config. Kept for the `agent_start`
