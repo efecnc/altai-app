@@ -70,6 +70,11 @@ function basename(path: string): string {
   return parts.length ? parts[parts.length - 1] : path;
 }
 
+/** Stable DOM id for a tree row so the tree can point aria-activedescendant at it. */
+function treeItemDomId(path: string): string {
+  return `tree-item-${path}`;
+}
+
 function buildRows(
   rootPath: string,
   tree: ReturnType<typeof useFileTree>,
@@ -162,6 +167,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
     const [isSearchActive, setIsSearchActive] = useState(false);
     const searchRef = useRef<ExplorerSearchHandle>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const treeRef = useRef<HTMLDivElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
 
     const { rows, entryIndexByPath } = useMemo(() => {
@@ -202,7 +208,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
       ref,
       () => ({
         focus: () => {
-          containerRef.current?.focus();
+          (treeRef.current ?? containerRef.current)?.focus();
           if (!selectedPath && entryPaths.length > 0) {
             const first = entryPaths[0];
             setSelectedPath(first);
@@ -330,6 +336,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
           return (
             <EntryRow
               path={row.path}
+              rowId={treeItemDomId(row.path)}
               name={row.name}
               isDir={row.isDir}
               isExpanded={row.kind === "entry" ? row.isExpanded : false}
@@ -363,12 +370,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
     };
 
     return (
-      <div
-        ref={containerRef}
-        className="flex h-full flex-col outline-none"
-        tabIndex={0}
-        onKeyDown={handleKeyDown}
-      >
+      <div ref={containerRef} className="flex h-full flex-col">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
           <span
             className="flex flex-1 items-center truncate text-xs font-medium text-foreground/80"
@@ -442,12 +444,28 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
           <ContextMenu>
             <ContextMenuTrigger asChild>
               <div
-                ref={scrollRef}
+                ref={treeRef}
                 role="tree"
+                tabIndex={0}
                 aria-label="File explorer"
                 aria-multiselectable={false}
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
+                aria-activedescendant={
+                  selectedPath ? treeItemDomId(selectedPath) : undefined
+                }
+                onFocus={() => {
+                  if (!selectedPath && entryPaths.length > 0) {
+                    const first = entryPaths[0];
+                    setSelectedPath(first);
+                    requestAnimationFrame(() => scrollEntryIntoView(first));
+                  }
+                }}
+                onKeyDown={handleKeyDown}
+                className="min-h-0 min-w-0 flex-1 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/30"
               >
+                <div
+                  ref={scrollRef}
+                  className="h-full overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
+                >
                 {pendingAtRoot ? (
                   <div
                     className="flex h-6 w-full min-w-0 items-center gap-2 px-1.5 text-[13px]"
@@ -513,6 +531,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
                     })}
                   </div>
                 ) : null}
+                </div>
               </div>
             </ContextMenuTrigger>
             <ContextMenuContent

@@ -23,6 +23,8 @@ type Tree = ReturnType<typeof useFileTree>;
 
 export type EntryRowProps = {
   path: string;
+  /** Stable DOM id so the tree's aria-activedescendant can target this row. */
+  rowId: string;
   name: string;
   isDir: boolean;
   isExpanded: boolean;
@@ -45,6 +47,7 @@ function isMarkdownPath(path: string): boolean {
 function EntryRowImpl(props: EntryRowProps) {
   const {
     path,
+    rowId,
     name,
     isDir,
     isExpanded,
@@ -95,7 +98,9 @@ function EntryRowImpl(props: EntryRowProps) {
         ) : (
           <button
             type="button"
+            id={rowId}
             role="treeitem"
+            tabIndex={-1}
             aria-level={depth + 1}
             aria-selected={isSelected}
             aria-expanded={isDir ? isExpanded : undefined}

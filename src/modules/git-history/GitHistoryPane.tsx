@@ -98,6 +98,26 @@ function dirname(path: string): string {
   return normalized.slice(0, index);
 }
 
+/** Stable DOM id so the listbox can point aria-activedescendant at a commit row. */
+function commitRowDomId(sha: string): string {
+  return `commit-row-${sha}`;
+}
+
+/** A flat, spoken-friendly summary of a commit for screen readers. */
+function commitAriaLabel(commit: GitLogEntry): string {
+  const parts = [
+    commit.subject || "(no subject)",
+    `by ${commit.author || "Unknown"}`,
+    `commit ${commit.shortSha}`,
+  ];
+  if (commit.filesChanged > 0) {
+    parts.push(
+      `${commit.filesChanged} ${commit.filesChanged === 1 ? "file" : "files"} changed`,
+    );
+  }
+  return parts.join(", ");
+}
+
 function normalizeError(error: unknown): string {
   if (typeof error === "string") return error;
   if (error && typeof error === "object" && "message" in error) {
@@ -204,6 +224,8 @@ export function GitHistoryPane({
     height: number;
   } | null>(null);
   const [remoteWeb, setRemoteWeb] = useState<RemoteWebInfo | null>(null);
+  // Keyboard cursor for the commit listbox (drives aria-activedescendant).
+  const [activeSha, setActiveSha] = useState<string | null>(null);
   const filesCacheRef = useRef(new Map<string, FilesEntry>());
   const [filesTick, setFilesTick] = useState(0);
   const bumpFiles = useCallback(() => setFilesTick((n) => n + 1), []);
@@ -434,8 +456,8 @@ export function GitHistoryPane({
     [repoRoot],
   );
 
-  const handleRowClick = useCallback(
-    (sha: string, event: React.MouseEvent<HTMLElement>) => {
+  const openCommitPopover = useCallback(
+    (sha: string, clientX: number, clientY: number) => {
       if (openAnchor?.sha === sha) {
         setOpenAnchor(null);
         return;
@@ -443,10 +465,10 @@ export function GitHistoryPane({
       const POPOVER_WIDTH = 420;
       const PADDING = 16;
       const maxLeft = window.innerWidth - POPOVER_WIDTH - PADDING;
-      const left = Math.max(PADDING, Math.min(event.clientX, maxLeft));
+      const left = Math.max(PADDING, Math.min(clientX, maxLeft));
       setOpenAnchor({
         sha,
-        top: event.clientY,
+        top: clientY,
         left,
         width: 1,
         height: 1,
@@ -455,6 +477,108 @@ export function GitHistoryPane({
     },
     [fetchFiles, openAnchor?.sha],
   );
+
+  const handleRowClick = useCallback(
+    (sha: string, event: React.MouseEvent<HTMLElement>) => {
+      setActiveSha(sha);
+      openCommitPopover(sha, event.clientX, event.clientY);
+    },
+    [openCommitPopover],
+  );
+
+  // Keyboard activation: anchor the detail popover to the active row's rect
+  // since there are no pointer coordinates.
+  const openCommitForRow = useCallback(
+    (sha: string) => {
+      const rect = document
+        .getElementById(commitRowDomId(sha))
+        ?.getBoundingClientRect();
+      const clientX = rect ? rect.left + 32 : window.innerWidth / 2;
+      const clientY = rect ? rect.bottom : window.innerHeight / 2;
+      openCommitPopover(sha, clientX, clientY);
+    },
+    [openCommitPopover],
+  );
+
+  const moveActive = useCallback(
+    (direction: 1 | -1) => {
+      if (filtered.length === 0) return;
+      const currentIndex = activeSha
+        ? filtered.findIndex((c) => c.sha === activeSha)
+        : -1;
+      let next =
+        currentIndex === -1
+          ? direction > 0
+            ? 0
+            : filtered.length - 1
+          : currentIndex + direction;
+      next = Math.max(0, Math.min(filtered.length - 1, next));
+      const target = filtered[next];
+      if (!target) return;
+      setActiveSha(target.sha);
+      virtualizer.scrollToIndex(next, { align: "auto" });
+    },
+    [activeSha, filtered, virtualizer],
+  );
+
+  const handleListKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA")
+      ) {
+        return;
+      }
+      switch (event.key) {
+        case "ArrowDown":
+          event.preventDefault();
+          moveActive(1);
+          break;
+        case "ArrowUp":
+          event.preventDefault();
+          moveActive(-1);
+          break;
+        case "Home":
+          if (filtered[0]) {
+            event.preventDefault();
+            setActiveSha(filtered[0].sha);
+            virtualizer.scrollToIndex(0, { align: "auto" });
+          }
+          break;
+        case "End":
+          if (filtered.length > 0) {
+            event.preventDefault();
+            const last = filtered.length - 1;
+            setActiveSha(filtered[last].sha);
+            virtualizer.scrollToIndex(last, { align: "auto" });
+          }
+          break;
+        case "Enter":
+        case " ":
+          if (activeSha) {
+            event.preventDefault();
+            openCommitForRow(activeSha);
+          }
+          break;
+      }
+    },
+    [activeSha, filtered, moveActive, openCommitForRow, virtualizer],
+  );
+
+  const handleListFocus = useCallback(() => {
+    if (activeSha === null && filtered.length > 0) {
+      setActiveSha(filtered[0].sha);
+    }
+  }, [activeSha, filtered]);
+
+  // If the active commit scrolls out of the filtered set (e.g. search), drop the
+  // cursor so a stale highlight / aria-activedescendant doesn't linger.
+  useEffect(() => {
+    if (activeSha && !filtered.some((c) => c.sha === activeSha)) {
+      setActiveSha(null);
+    }
+  }, [activeSha, filtered]);
 
   const closePopover = useCallback(() => setOpenAnchor(null), []);
 
@@ -569,8 +693,16 @@ export function GitHistoryPane({
             </div>
             <div
               ref={scrollRef}
+              role="listbox"
+              tabIndex={0}
+              aria-label="Commit history"
+              aria-activedescendant={
+                activeSha ? commitRowDomId(activeSha) : undefined
+              }
               onScroll={handleScroll}
-              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]"
+              onKeyDown={handleListKeyDown}
+              onFocus={handleListFocus}
+              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/30 [scrollbar-gutter:stable]"
             >
               <div
                 style={{
@@ -598,6 +730,9 @@ export function GitHistoryPane({
                         commit={commit}
                         query={activeSearch}
                         active={openAnchor?.sha === commit.sha}
+                        focused={activeSha === commit.sha}
+                        posInSet={virtualRow.index + 1}
+                        setSize={filtered.length}
                         graphRow={graphByCommit.get(commit.sha) ?? null}
                         maxLaneCount={maxLaneCount}
                         gridTemplate={gridTemplate}
@@ -705,6 +840,10 @@ type CommitRowProps = {
   commit: GitLogEntry;
   query: string;
   active: boolean;
+  focused: boolean;
+  /** 1-based position within the (virtualized) list, for screen-reader "X of Y". */
+  posInSet: number;
+  setSize: number;
   graphRow: GraphRow | null;
   maxLaneCount: number;
   gridTemplate: string;
@@ -715,6 +854,9 @@ const CommitRow = memo(function CommitRow({
   commit,
   query,
   active,
+  focused,
+  posInSet,
+  setSize,
   graphRow,
   maxLaneCount,
   gridTemplate,
@@ -726,12 +868,21 @@ const CommitRow = memo(function CommitRow({
   return (
     <button
       type="button"
+      id={commitRowDomId(commit.sha)}
+      role="option"
+      aria-selected={focused}
+      aria-setsize={setSize}
+      aria-posinset={posInSet}
+      tabIndex={-1}
+      aria-label={commitAriaLabel(commit)}
       onClick={(event) => onClick(commit.sha, event)}
       className={cn(
         "group relative grid h-full w-full cursor-pointer items-center gap-3 border-l-2 border-transparent pr-3 text-left transition-colors",
         active
           ? "border-l-primary bg-accent"
-          : "hover:bg-accent/50",
+          : focused
+            ? "bg-accent/60"
+            : "hover:bg-accent/50",
       )}
       style={{ gridTemplateColumns: gridTemplate }}
     >

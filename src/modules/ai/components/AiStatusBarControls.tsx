@@ -1,10 +1,9 @@
 import { Button } from "@/components/ui/button";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
 import { fmtShortcut, MOD_KEY } from "@/lib/platform";
@@ -42,7 +41,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion } from "motion/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getModel,
   MODELS,
@@ -214,6 +213,11 @@ export function AiStatusBarControls() {
 
 type Tab = "all" | "favorites" | "recent";
 
+// Single popover is mounted at a time, so a static listbox id is safe and lets
+// the combobox input reference it via aria-controls / aria-activedescendant.
+const MODEL_LISTBOX_ID = "model-switcher-listbox";
+const modelOptionDomId = (id: string): string => `model-option-${id}`;
+
 export function ModelDropdown() {
   const selected = useChatStore((s) => s.selectedModelId);
   const apiKeys = useChatStore((s) => s.apiKeys);
@@ -224,6 +228,8 @@ export function ModelDropdown() {
   const [search, setSearch] = useState("");
   const [activeProvider, setActiveProvider] = useState<ProviderId | null>(null);
   const [tab, setTab] = useState<Tab>("all");
+  // Keyboard cursor over the filtered list (drives aria-activedescendant).
+  const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const currentProviderHasKey = providerNeedsKey(current.provider)
     ? !!apiKeys[current.provider]
@@ -272,9 +278,60 @@ export function ModelDropdown() {
 
   const ProviderIcon = PROVIDER_ICON[current.provider] ?? ChatGptIcon;
 
+  // Reset the highlight to the top whenever the result set changes.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [filtered]);
+
+  // Keep the highlighted option scrolled into view as the cursor moves.
+  useEffect(() => {
+    const id = filtered[activeIndex]?.id;
+    if (!id) return;
+    document
+      .getElementById(modelOptionDomId(id))
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, filtered]);
+
+  const pickModel = (m: ModelInfo) => {
+    if (!hasKeyFor(m.provider)) {
+      void openSettingsWindow("models");
+      return;
+    }
+    setSelected(m.id as ModelId);
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        setActiveIndex((i) => Math.min(filtered.length - 1, i + 1));
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        setActiveIndex((i) => Math.max(0, i - 1));
+        break;
+      case "Home":
+        e.preventDefault();
+        setActiveIndex(0);
+        break;
+      case "End":
+        e.preventDefault();
+        setActiveIndex(filtered.length - 1);
+        break;
+      case "Enter": {
+        const m = filtered[activeIndex];
+        if (m) {
+          e.preventDefault();
+          pickModel(m);
+        }
+        break;
+      }
+    }
+  };
+
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
+    <Popover>
+      <PopoverTrigger asChild>
         <Button
           type="button"
           variant="ghost"
@@ -306,19 +363,20 @@ export function ModelDropdown() {
             className="shrink-0 opacity-60 transition-opacity group-hover:opacity-90"
           />
         </Button>
-      </DropdownMenuTrigger>
+      </PopoverTrigger>
 
-      <DropdownMenuContent
+      <PopoverContent
         side="top"
         align="end"
         sideOffset={6}
         collisionPadding={8}
-        className="w-[min(22rem,calc(100vw-1rem))] p-0 overflow-hidden rounded-xl border border-border/70 shadow-xl"
-        onFocusCapture={(e) => {
-          if (e.target !== inputRef.current) inputRef.current?.focus();
+        className="flex w-[min(22rem,calc(100vw-1rem))] flex-col gap-0 overflow-hidden rounded-xl border border-border/70 p-0 shadow-xl"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          inputRef.current?.focus();
         }}
       >
-        {/* Search */}
+        {/* Search — acts as the combobox; arrow keys drive the listbox below. */}
         <div className="flex items-center gap-2.5 border-b border-border/70 px-3 py-2.5">
           <HugeiconsIcon
             icon={Search01Icon}
@@ -328,10 +386,19 @@ export function ModelDropdown() {
           />
           <input
             ref={inputRef}
+            role="combobox"
+            aria-expanded
+            aria-controls={MODEL_LISTBOX_ID}
+            aria-autocomplete="list"
+            aria-activedescendant={
+              filtered[activeIndex]
+                ? modelOptionDomId(filtered[activeIndex].id)
+                : undefined
+            }
             aria-label="Search models"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={(e) => e.stopPropagation()}
+            onKeyDown={handleInputKeyDown}
             placeholder="Search models, providers, capabilities…"
             className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/60"
           />
@@ -396,38 +463,35 @@ export function ModelDropdown() {
             {activeProvider !== null && !hasKeyFor(activeProvider) ? (
               <ProviderConfigureCTA providerId={activeProvider} />
             ) : null}
-            {filtered.length === 0 ? (
-              <div className="flex items-center justify-center px-4 py-10 text-xs text-muted-foreground/70">
-                {tab === "favorites"
-                  ? "No favorites yet — star a model to pin it here."
-                  : tab === "recent"
-                    ? "No recently-used models."
-                    : "No models match."}
-              </div>
-            ) : (
-              filtered.map((m) => (
-                <ModelRow
-                  key={m.id}
-                  model={m}
-                  selected={m.id === selected}
-                  hasKey={hasKeyFor(m.provider)}
-                  favorite={favoriteIds.includes(m.id)}
-                  showProviderIcon={activeProvider === null}
-                  onPick={() => {
-                    if (!hasKeyFor(m.provider)) {
-                      void openSettingsWindow("models");
-                      return;
-                    }
-                    setSelected(m.id as ModelId);
-                  }}
-                  onToggleFavorite={() => void toggleFavoriteModel(m.id)}
-                />
-              ))
-            )}
+            <div id={MODEL_LISTBOX_ID} role="listbox" aria-label="Models">
+              {filtered.length === 0 ? (
+                <div className="flex items-center justify-center px-4 py-10 text-xs text-muted-foreground/70">
+                  {tab === "favorites"
+                    ? "No favorites yet — star a model to pin it here."
+                    : tab === "recent"
+                      ? "No recently-used models."
+                      : "No models match."}
+                </div>
+              ) : (
+                filtered.map((m, i) => (
+                  <ModelRow
+                    key={m.id}
+                    model={m}
+                    selected={m.id === selected}
+                    active={i === activeIndex}
+                    hasKey={hasKeyFor(m.provider)}
+                    favorite={favoriteIds.includes(m.id)}
+                    showProviderIcon={activeProvider === null}
+                    onPick={() => pickModel(m)}
+                    onToggleFavorite={() => void toggleFavoriteModel(m.id)}
+                  />
+                ))
+              )}
+            </div>
           </div>
         </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -536,6 +600,7 @@ function ProviderConfigureCTA({ providerId }: { providerId: ProviderId }) {
 function ModelRow({
   model,
   selected,
+  active,
   hasKey,
   favorite,
   showProviderIcon,
@@ -544,21 +609,30 @@ function ModelRow({
 }: {
   model: ModelInfo;
   selected: boolean;
+  active: boolean;
   hasKey: boolean;
   favorite: boolean;
   showProviderIcon: boolean;
   onPick: () => void;
   onToggleFavorite: () => void;
 }) {
+  // role="option" container is focus-managed by the combobox via
+  // aria-activedescendant (tabIndex={-1}); the inner button carries the
+  // click/keyboard activation so the favorite toggle can stay a sibling button.
   return (
-    <DropdownMenuItem
-      onSelect={(e) => {
-        e.preventDefault();
-        onPick();
-      }}
+    <div
+      id={modelOptionDomId(model.id)}
+      role="option"
+      aria-selected={selected}
+      data-active={active || undefined}
+      tabIndex={-1}
       className={cn(
-        "group mx-1 my-0.5 flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5",
-        selected ? "bg-accent/60 text-foreground" : "text-foreground/85",
+        "group mx-1 my-0.5 flex items-center gap-2 rounded-md px-2 py-1.5",
+        selected
+          ? "bg-accent/60 text-foreground"
+          : active
+            ? "bg-accent/40 text-foreground"
+            : "text-foreground/85 hover:bg-accent/40 hover:text-foreground",
         !hasKey && "opacity-60",
       )}
     >
@@ -585,35 +659,41 @@ function ModelRow({
         />
       </button>
 
-      {showProviderIcon ? (
-        <HugeiconsIcon
-          icon={PROVIDER_ICON[model.provider]}
-          size={13}
-          strokeWidth={1.5}
-          className="shrink-0 text-muted-foreground/70"
-        />
-      ) : null}
+      <button
+        type="button"
+        onClick={onPick}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+      >
+        {showProviderIcon ? (
+          <HugeiconsIcon
+            icon={PROVIDER_ICON[model.provider]}
+            size={13}
+            strokeWidth={1.5}
+            className="shrink-0 text-muted-foreground/70"
+          />
+        ) : null}
 
-      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        <span className="shrink-0 text-[12px] font-medium leading-none">
-          {model.label}
-        </span>
-        <span className="truncate text-[10.5px] leading-none text-muted-foreground">
-          {model.description}
-        </span>
-      </div>
+        <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+          <span className="shrink-0 text-[12px] font-medium leading-none">
+            {model.label}
+          </span>
+          <span className="truncate text-[10.5px] leading-none text-muted-foreground">
+            {model.description}
+          </span>
+        </div>
 
-      <CapabilityBars caps={model.capabilities} />
+        <CapabilityBars caps={model.capabilities} />
 
-      {selected ? (
-        <HugeiconsIcon
-          icon={Tick01Icon}
-          size={13}
-          strokeWidth={2}
-          className="shrink-0 text-foreground"
-        />
-      ) : null}
-    </DropdownMenuItem>
+        {selected ? (
+          <HugeiconsIcon
+            icon={Tick01Icon}
+            size={13}
+            strokeWidth={2}
+            className="shrink-0 text-foreground"
+          />
+        ) : null}
+      </button>
+    </div>
   );
 }
 
