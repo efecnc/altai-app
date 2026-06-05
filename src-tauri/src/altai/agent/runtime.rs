@@ -712,42 +712,10 @@ async fn build_instance(
             harness: harness.clone(),
         }));
 
-        // Colab MCP tool-call proxy — registered only when colab_mcp is the
-        // default provider, the feature is enabled, and a non-empty allowlist
-        // compiles. Mirrors the gating in the isanagent reference binary.
-        if workspace.config.execution_default_provider() == "colab_mcp"
-            && workspace
-                .config
-                .execution_colab_mcp_extra_mcp_tool_call_enabled()
-        {
-            let patterns = workspace
-                .config
-                .execution_colab_mcp_extra_mcp_tool_allowlist();
-            if patterns.is_empty() {
-                log::warn!(
-                    "colab_mcp extra_mcp_tool_call enabled but allowlist empty; skipping colab_mcp_tool_call registration."
-                );
-            } else {
-                match isanagent::tools::execution::compile_colab_mcp_tool_allowlist(&patterns) {
-                    Ok(gs) => {
-                        let max_chars =
-                            workspace.config.execution_max_output_bytes().min(512 * 1024);
-                        tools.register(Box::new(
-                            isanagent::tools::execution::ColabMcpToolCallTool {
-                                harness: harness.clone(),
-                                allowlist: gs,
-                                max_result_chars: max_chars,
-                                jobs: Some(execution_jobs.clone()),
-                                inflight: Some(inflight_sync.clone()),
-                            },
-                        ));
-                    }
-                    Err(e) => log::warn!(
-                        "invalid colab_mcp extra_mcp_tool_allowlist: {e}; skipping colab_mcp_tool_call"
-                    ),
-                }
-            }
-        }
+        // (The colab_mcp extra-tool-call proxy was removed upstream in
+        // isanagent #47 "Colab CLI" — ColabMcpToolCallTool /
+        // compile_colab_mcp_tool_allowlist and the related config accessors no
+        // longer exist, so there's nothing to register here.)
     }
 
     // Provider — `base_url_override` (from the JS side, derived from the
