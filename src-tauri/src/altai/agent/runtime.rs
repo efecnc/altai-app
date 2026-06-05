@@ -321,37 +321,48 @@ async fn ensure_instance(
     );
     let workspace_root = fp.workspace_root.clone();
 
-    // The lock is intentionally held across `build_instance().await` below: the
-    // UI drives one config-switch at a time, so serializing the rare
-    // build-a-new-instance path keeps this simple and is not a deadlock risk
-    // (`build_instance` never re-enters `AgentRuntime`). Note: within a single
+    // Fine-grained locking: the `instances` lock is only ever held for cheap
+    // map ops, never across the heavy `build_instance().await` or any channel
+    // teardown — so a build/cancel on one config can't block sends/cancels on
+    // another (the whole point of concurrent instances). Note: within a single
     // workspace, distinct configs accrete instances for the session (only
     // other-workspace instances are torn down) — acceptable given typical
     // config churn; revisit with idle-eviction if that proves heavy.
-    let mut instances = runtime.instances.lock().await;
 
-    // Tear down instances of other workspaces (the UI uses one at a time).
-    let stale: Vec<RuntimeFingerprint> = instances
-        .keys()
-        .filter(|k| k.workspace_root != workspace_root)
-        .cloned()
-        .collect();
-    for key in stale {
-        if let Some(inst) = instances.remove(&key) {
-            let _ = inst.channel.cancel(String::new()).await;
-            let _ = inst.channel.stop().await;
+    // Fast path: instance already built for this exact config.
+    {
+        let instances = runtime.instances.lock().await;
+        if let Some(inst) = instances.get(&fp) {
+            return Ok(inst.channel.clone());
         }
     }
+
+    // Tear down instances of other workspaces (the UI uses one at a time).
+    // Remove them under the lock, but defer the async cancel/stop until the
+    // lock is released.
+    let stale_channels: Vec<Arc<TauriChannel>> = {
+        let mut instances = runtime.instances.lock().await;
+        let stale: Vec<RuntimeFingerprint> = instances
+            .keys()
+            .filter(|k| k.workspace_root != workspace_root)
+            .cloned()
+            .collect();
+        stale
+            .into_iter()
+            .filter_map(|k| instances.remove(&k).map(|inst| inst.channel))
+            .collect()
+    };
     runtime
         .memory_by_workspace
         .lock()
         .await
         .retain(|k, _| k == &workspace_root);
-
-    if let Some(inst) = instances.get(&fp) {
-        return Ok(inst.channel.clone());
+    for channel in stale_channels {
+        let _ = channel.cancel(String::new()).await;
+        let _ = channel.stop().await;
     }
 
+    // Build the (heavy) instance WITHOUT holding the instances lock.
     let memory_node = ensure_memory(runtime, &workspace_root).await?;
     let workspace_root_opt = if workspace_root.is_empty() {
         None
@@ -370,6 +381,16 @@ async fn ensure_instance(
         permission_mode,
     )
     .await?;
+
+    // Re-acquire to insert. If a concurrent call built the same config while we
+    // were building, keep theirs and tear down our now-duplicate channel.
+    let mut instances = runtime.instances.lock().await;
+    if let Some(inst) = instances.get(&fp) {
+        let winner = inst.channel.clone();
+        drop(instances);
+        let _ = channel.stop().await;
+        return Ok(winner);
+    }
     instances.insert(
         fp,
         Instance {
@@ -415,9 +436,14 @@ pub async fn route_send(
 /// model/persona switch (the chat's old instance still draining), silently
 /// dropping the cancel — fanning out can't.
 pub async fn route_cancel(runtime: &AgentRuntime, chat_id: String) -> Result<(), String> {
-    let instances = runtime.instances.lock().await;
-    for inst in instances.values() {
-        let _ = inst.channel.cancel(chat_id.clone()).await;
+    // Clone the channels under a short-lived lock, then cancel outside it so the
+    // cancel awaits don't block concurrent sends/cancels on the registry.
+    let channels: Vec<Arc<TauriChannel>> = {
+        let instances = runtime.instances.lock().await;
+        instances.values().map(|inst| inst.channel.clone()).collect()
+    };
+    for channel in channels {
+        let _ = channel.cancel(chat_id.clone()).await;
     }
     Ok(())
 }
