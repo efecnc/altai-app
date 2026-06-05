@@ -2,6 +2,8 @@ import { redo, undo } from "@codemirror/commands";
 import {
   findNext,
   findPrevious,
+  getSearchQuery,
+  openSearchPanel,
   SearchQuery,
   setSearchQuery,
 } from "@codemirror/search";
@@ -36,6 +38,8 @@ export type EditorPaneHandle = {
   setQuery: (q: string) => void;
   findNext: () => void;
   findPrevious: () => void;
+  /** Open CodeMirror's native search panel (full find & replace). */
+  openSearch: () => void;
   clearQuery: () => void;
   focus: () => void;
   getSelection: () => string | null;
@@ -212,9 +216,16 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         setQuery: (q: string) => {
           const view = cmRef.current?.view;
           if (!view) return;
+          // Preserve the replacement text so typing in the find field doesn't
+          // wipe a replace value the user already entered.
+          const cur = getSearchQuery(view.state);
           view.dispatch({
             effects: setSearchQuery.of(
-              new SearchQuery({ search: q, caseSensitive: false }),
+              new SearchQuery({
+                search: q,
+                replace: cur.replace,
+                caseSensitive: false,
+              }),
             ),
           });
           if (q) findNext(view);
@@ -226,6 +237,13 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
         findPrevious: () => {
           const view = cmRef.current?.view;
           if (view) findPrevious(view);
+        },
+        openSearch: () => {
+          const view = cmRef.current?.view;
+          if (!view) return;
+          // openSearchPanel focuses the panel's search field; don't pull focus
+          // back to the editor content or the user can't type in the panel.
+          openSearchPanel(view);
         },
         clearQuery: () => {
           const view = cmRef.current?.view;

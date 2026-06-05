@@ -4,7 +4,11 @@ import { KEY_SEP } from "@/lib/platform";
 import type { EditorPaneHandle } from "@/modules/editor";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { getBindingTokens, SHORTCUTS } from "@/modules/shortcuts/shortcuts";
-import { Cancel01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  Cancel01Icon,
+  Search01Icon,
+  SearchReplaceIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { SearchAddon } from "@xterm/addon-search";
 import { AnimatePresence, motion } from "motion/react";
@@ -80,6 +84,9 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
     }, [baseLabel, shortcutText]);
 
     const expanded = !compact || openInCompact;
+    // Replace is editor-only; opens CodeMirror's native find & replace panel,
+    // which is pre-seeded with whatever is in the find field (#67).
+    const editorHandle = target?.kind === "editor" ? target.handle : null;
 
     const focus = useCallback(() => {
       pendingFocusRef.current = true;
@@ -162,7 +169,7 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
                 aria-label={placeholder}
                 value={q}
                 placeholder={placeholder}
-                className="h-7 w-full bg-muted/80 pr-7 pl-7 text-[13px]! placeholder:text-muted-foreground/70 focus-visible:ring-0"
+                className={`h-7 w-full bg-muted/80 ${editorHandle ? "pr-14" : "pr-7"} pl-7 text-[13px]! placeholder:text-muted-foreground/70 focus-visible:ring-0`}
                 onChange={(e) => {
                   const next = e.target.value;
                   setQ(next);
@@ -194,13 +201,28 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
                     clearTarget();
                     inputRef.current?.focus();
                   }}
-                  className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className={`absolute top-1/2 ${editorHandle ? "right-9" : "right-1.5"} -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground`}
                   aria-label="Clear search"
                 >
                   <HugeiconsIcon
                     icon={Cancel01Icon}
                     size={11}
                     strokeWidth={2}
+                  />
+                </button>
+              )}
+              {editorHandle && (
+                <button
+                  type="button"
+                  onClick={() => editorHandle.openSearch()}
+                  className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  aria-label="Find and replace"
+                  title="Find and replace"
+                >
+                  <HugeiconsIcon
+                    icon={SearchReplaceIcon}
+                    size={13}
+                    strokeWidth={1.75}
                   />
                 </button>
               )}
