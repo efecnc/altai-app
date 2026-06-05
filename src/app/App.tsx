@@ -1660,30 +1660,24 @@ export default function App() {
                 maxSize={`${AGENT_SIDEBAR_MAX_WIDTH}px`}
                 collapsible
                 collapsedSize={0}
-                onResize={(size, _id, prev) => {
+                onResize={(size) => {
                   const px = size.inPixels;
-                  // Hard floor: never let drag pull the panel below min.
-                  // Only the imperative close path (closeMini → panel.collapse())
-                  // is allowed to put it at 0, and that runs while miniOpen=false.
+                  // Snap partial drags back up to the min width so the panel
+                  // can't be left in a too-narrow state.
                   if (px > 0 && px < AGENT_SIDEBAR_MIN_WIDTH) {
                     agentSidebarRef.current?.resize(
                       `${AGENT_SIDEBAR_MIN_WIDTH}px`,
                     );
                     return;
                   }
-                  if (px === 0 && miniOpen) {
-                    // Drag-collapse while the chat is meant to be open — revert.
-                    agentSidebarRef.current?.resize(
-                      `${AGENT_SIDEBAR_MIN_WIDTH}px`,
-                    );
-                    return;
-                  }
+                  // Treat the panel's actual size as the source of truth for the
+                  // open state. A viewport shrink can collapse the collapsible
+                  // panel to 0 on its own; mirroring that into the store keeps the
+                  // toggle button in sync instead of stuck "open" (#62).
                   if (px > 0) {
                     persistAgentSidebarWidth(px);
-                    if (!miniOpen && prev && prev.asPercentage <= 0) {
-                      openMini();
-                    }
-                  } else if (miniOpen && prev && prev.asPercentage > 0) {
+                    if (!miniOpen) openMini();
+                  } else if (miniOpen) {
                     closeMini();
                   }
                 }}
