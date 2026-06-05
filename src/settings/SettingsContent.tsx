@@ -4,6 +4,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   AiScanIcon,
   CodeSquareIcon,
+  GithubIcon,
   InformationCircleIcon,
   PuzzleIcon,
   Settings01Icon,
@@ -17,6 +18,7 @@ import { AboutSection } from "./sections/AboutSection";
 import { AccessibilitySection } from "./sections/AccessibilitySection";
 import { AgentsSection } from "./sections/AgentsSection";
 import { GeneralSection } from "./sections/GeneralSection";
+import { GitHubSection } from "./sections/GitHubSection";
 import { LanguageServersSection } from "./sections/LanguageServersSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
@@ -33,6 +35,7 @@ const TABS: {
   { id: "models", label: "Models", icon: AiScanIcon, component: ModelsSection },
   { id: "agents", label: "Agents", icon: UserMultiple02Icon, component: AgentsSection },
   { id: "skills", label: "Skills", icon: PuzzleIcon, component: SkillsSection },
+  { id: "github", label: "GitHub", icon: GithubIcon, component: GitHubSection },
   { id: "language-servers", label: "Languages", icon: CodeSquareIcon, component: LanguageServersSection },
   { id: "accessibility", label: "Accessibility", icon: UniversalAccessIcon, component: AccessibilitySection },
   { id: "about", label: "About", icon: InformationCircleIcon, component: AboutSection },

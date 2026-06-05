@@ -88,6 +88,20 @@ export type GitHistoryTab = {
   repoRoot: string;
 };
 
+export type GitHubItemsTab = {
+  id: number;
+  kind: "github-items";
+  title: string;
+  repoRoot: string;
+};
+
+export type ProjectBoardTab = {
+  id: number;
+  kind: "project-board";
+  title: string;
+  repoRoot: string;
+};
+
 export type GitCommitFileDiffTab = {
   id: number;
   kind: "git-commit-file";
@@ -143,6 +157,8 @@ export type Tab =
   | AiDiffTab
   | GitDiffTab
   | GitHistoryTab
+  | GitHubItemsTab
+  | ProjectBoardTab
   | GitCommitFileDiffTab;
 
 export type TabPatch = Partial<{
@@ -649,6 +665,56 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [],
   );
 
+  const openGitHubItemsTab = useCallback((input: { repoRoot: string }) => {
+    const curr = tabsRef.current;
+    const existing = curr.find(
+      (t) => t.kind === "github-items" && t.repoRoot === input.repoRoot,
+    );
+    if (existing) {
+      setActiveId(existing.id);
+      return existing.id;
+    }
+    const id = nextIdRef.current++;
+    const nextTabs = [
+      ...curr,
+      {
+        id,
+        kind: "github-items",
+        title: "Pull Requests & Issues",
+        repoRoot: input.repoRoot,
+      } satisfies GitHubItemsTab,
+    ];
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
+    setActiveId(id);
+    return id;
+  }, []);
+
+  const openProjectBoardTab = useCallback((input: { repoRoot: string }) => {
+    const curr = tabsRef.current;
+    const existing = curr.find(
+      (t) => t.kind === "project-board" && t.repoRoot === input.repoRoot,
+    );
+    if (existing) {
+      setActiveId(existing.id);
+      return existing.id;
+    }
+    const id = nextIdRef.current++;
+    const nextTabs = [
+      ...curr,
+      {
+        id,
+        kind: "project-board",
+        title: "Project Board",
+        repoRoot: input.repoRoot,
+      } satisfies ProjectBoardTab,
+    ];
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
+    setActiveId(id);
+    return id;
+  }, []);
+
   const openCommitFileDiffTab = useCallback(
     (input: {
       repoRoot: string;
@@ -961,6 +1027,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     openAiDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
+    openGitHubItemsTab,
+    openProjectBoardTab,
     openCommitFileDiffTab,
     setAiDiffStatus,
     closeAiDiffTab,

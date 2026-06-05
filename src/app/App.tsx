@@ -40,6 +40,7 @@ import {
   GitHistoryStack,
   type GitHistorySearchHandle,
 } from "@/modules/git-history";
+import { GitHubItemsStack, ProjectBoardStack } from "@/modules/github";
 import { getLaunchDir } from "@/lib/launchDir";
 import { useZoom } from "@/lib/useZoom";
 import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
@@ -209,6 +210,8 @@ export default function App() {
     closeAiDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
+    openGitHubItemsTab,
+    openProjectBoardTab,
     openCommitFileDiffTab,
     closeTab,
     updateTab,
@@ -544,6 +547,8 @@ export default function App() {
   const isGitDiffTab =
     activeTab?.kind === "git-diff" || activeTab?.kind === "git-commit-file";
   const isGitHistoryTab = activeTab?.kind === "git-history";
+  const isGitHubItemsTab = activeTab?.kind === "github-items";
+  const isProjectBoardTab = activeTab?.kind === "project-board";
 
   // When an AI diff is approved (write_file applied to disk), reload any
   // open editor tabs for that path so the user sees the new content. We
@@ -943,6 +948,8 @@ export default function App() {
     if (activeTab?.kind === "git-diff") return activeTab.repoRoot;
     if (activeTab?.kind === "git-commit-file") return activeTab.repoRoot;
     if (activeTab?.kind === "git-history") return activeTab.repoRoot;
+    if (activeTab?.kind === "github-items") return activeTab.repoRoot;
+    if (activeTab?.kind === "project-board") return activeTab.repoRoot;
     return explorerRoot ?? workspaceFallbackPath;
   })();
   const hasOpenGitTab = useMemo(
@@ -951,6 +958,8 @@ export default function App() {
         (t) =>
           t.kind === "git-diff" ||
           t.kind === "git-history" ||
+          t.kind === "github-items" ||
+          t.kind === "project-board" ||
           t.kind === "git-commit-file",
       ),
     [tabs],
@@ -992,6 +1001,48 @@ export default function App() {
     sourceControl.hasRepo,
     sourceControl.repo,
     sourceControl.status?.branch,
+    sourceControlContextPath,
+  ]);
+
+  const openGitHubItemsFromContext = useCallback(async () => {
+    const known = sourceControl.hasRepo ? sourceControl.repo : null;
+    if (known) {
+      openGitHubItemsTab({ repoRoot: known.repoRoot });
+      return;
+    }
+    if (!sourceControlContextPath) return;
+    try {
+      const repo = await native.gitResolveRepo(sourceControlContextPath);
+      if (!repo) return;
+      openGitHubItemsTab({ repoRoot: repo.repoRoot });
+    } catch {
+      /* noop */
+    }
+  }, [
+    openGitHubItemsTab,
+    sourceControl.hasRepo,
+    sourceControl.repo,
+    sourceControlContextPath,
+  ]);
+
+  const openProjectBoardFromContext = useCallback(async () => {
+    const known = sourceControl.hasRepo ? sourceControl.repo : null;
+    if (known) {
+      openProjectBoardTab({ repoRoot: known.repoRoot });
+      return;
+    }
+    if (!sourceControlContextPath) return;
+    try {
+      const repo = await native.gitResolveRepo(sourceControlContextPath);
+      if (!repo) return;
+      openProjectBoardTab({ repoRoot: repo.repoRoot });
+    } catch {
+      /* noop */
+    }
+  }, [
+    openProjectBoardTab,
+    sourceControl.hasRepo,
+    sourceControl.repo,
     sourceControlContextPath,
   ]);
 
@@ -1431,6 +1482,28 @@ export default function App() {
           onSearchHandle={setGitHistoryHandle}
         />
       </div>
+      <div
+        className={cn(
+          "absolute inset-0",
+          !isGitHubItemsTab && "invisible pointer-events-none",
+        )}
+        aria-hidden={!isGitHubItemsTab}
+      >
+        <GitHubItemsStack
+          tabs={tabs}
+          activeId={activeId}
+          onOpenDiff={openGitDiffTab}
+        />
+      </div>
+      <div
+        className={cn(
+          "absolute inset-0",
+          !isProjectBoardTab && "invisible pointer-events-none",
+        )}
+        aria-hidden={!isProjectBoardTab}
+      >
+        <ProjectBoardStack tabs={tabs} activeId={activeId} />
+      </div>
     </div>
   );
 
@@ -1541,6 +1614,8 @@ export default function App() {
                         sourceControl={sourceControl}
                         onOpenDiff={openGitDiffTab}
                         onOpenGitGraph={openGitGraphFromContext}
+                        onOpenGitHubItems={openGitHubItemsFromContext}
+                        onOpenProjects={openProjectBoardFromContext}
                       />
                     )}
                   </div>
