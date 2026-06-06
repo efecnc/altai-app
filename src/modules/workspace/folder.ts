@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { LazyStore } from "@tauri-apps/plugin-store";
@@ -43,7 +42,7 @@ function isPrimaryWindow(): boolean {
  * is a no-op on Linux and absent outside Tauri.
  */
 function pushRecentFolders(folders: string[]): void {
-  void invoke("set_recent_folders", { folders }).catch(() => {});
+  void native.setRecentFolders(folders).catch(() => {});
 }
 
 type State = {

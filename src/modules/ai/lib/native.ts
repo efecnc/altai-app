@@ -172,6 +172,9 @@ export type CheckpointInfo = {
 
 export const native = {
   workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
+  /** Mirror the recent-folders list into the OS taskbar/Dock menu. */
+  setRecentFolders: (folders: string[]) =>
+    invoke<void>("set_recent_folders", { folders }),
   workspaceAuthorize: (path: string) =>
     invoke<string>("workspace_authorize", {
       path,

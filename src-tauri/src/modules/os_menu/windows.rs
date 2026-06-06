@@ -108,8 +108,12 @@ fn build_jump_list(exe: &str, recents: &[String]) -> windows::core::Result<()> {
                     CoCreateInstance(&EnumerableObjectCollection, None, CLSCTX_INPROC_SERVER)?;
                 let mut added_any = false;
                 for path in recents {
-                    // Quote the path so spaces survive argument parsing.
-                    let args = format!("\"{path}\"");
+                    // Quote the path so spaces survive argument parsing. Per
+                    // CommandLineToArgvW, a run of backslashes immediately before
+                    // the closing quote escapes it (e.g. "C:\" would swallow the
+                    // quote) — double any trailing run so the path stays literal.
+                    let trailing = path.len() - path.trim_end_matches('\\').len();
+                    let args = format!("\"{path}{}\"", "\\".repeat(trailing));
                     if removed_args.iter().any(|a| *a == args) {
                         continue;
                     }
