@@ -28,6 +28,12 @@ import { ExplorerSearch, type ExplorerSearchHandle } from "./ExplorerSearch";
 import { EntryRow, PendingRow, StatusRow } from "./TreeRow";
 import { InlineInput } from "./InlineInput";
 import { copyToClipboard, revealInFinder } from "./lib/contextActions";
+import {
+  EMPTY_GIT_DECORATIONS,
+  gitStatusClass,
+  lookupGitDecoration,
+  type GitDecorationMap,
+} from "./lib/gitDecorations";
 import { fileIconUrl, folderIconUrl } from "./lib/iconResolver";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { useFileTree } from "./lib/useFileTree";
@@ -40,6 +46,8 @@ export type FileExplorerHandle = {
 
 type Props = {
   rootPath: string | null;
+  /** Per-path Git status, used to color file/folder names like VS Code. */
+  gitDecorations?: GitDecorationMap;
   onOpenFile: (path: string, pin?: boolean) => void;
   onPathRenamed?: (from: string, to: string) => void;
   onPathDeleted?: (path: string) => void;
@@ -152,6 +160,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
   function FileExplorer(
     {
       rootPath,
+      gitDecorations = EMPTY_GIT_DECORATIONS,
       onOpenFile,
       onPathRenamed,
       onPathDeleted,
@@ -333,6 +342,11 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
       switch (row.kind) {
         case "entry":
         case "rename": {
+          const gitKind = lookupGitDecoration(
+            gitDecorations,
+            row.path,
+            row.isDir,
+          );
           return (
             <EntryRow
               path={row.path}
@@ -345,6 +359,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
               tree={tree}
               isSelected={selectedPath === row.path}
               isRenaming={row.kind === "rename"}
+              gitClassName={gitKind ? gitStatusClass(gitKind) : undefined}
               onOpenFile={onOpenFile}
               onSelectPath={setSelectedPath}
               onRevealInTerminal={onRevealInTerminal}

@@ -6,23 +6,17 @@ export const SIDEBAR_RAIL_HEIGHT = 36;
 type RailItem = {
   id: SidebarViewId;
   label: string;
-  badge?: number;
 };
 
 type Props = {
   activeView: SidebarViewId;
   onSelectView: (view: SidebarViewId) => void;
-  changedCount: number;
 };
 
-export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
+export function SidebarRail({ activeView, onSelectView }: Props) {
   const items: RailItem[] = [
     { id: "explorer", label: "Files" },
-    {
-      id: "source-control",
-      label: "Source Control",
-      badge: changedCount,
-    },
+    { id: "source-control", label: "Source Control" },
   ];
 
   return (
@@ -33,7 +27,6 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
     >
       {items.map((item) => {
         const isActive = item.id === activeView;
-        const showBadge = !!item.badge && item.badge > 0;
         return (
           <button
             key={item.id}
@@ -50,11 +43,6 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
             )}
           >
             <span>{item.label}</span>
-            {showBadge ? (
-              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-border/60 bg-card px-1 text-[9px] font-semibold leading-none tabular-nums text-muted-foreground/95">
-                {item.badge! > 99 ? "99+" : item.badge}
-              </span>
-            ) : null}
           </button>
         );
       })}

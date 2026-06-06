@@ -33,6 +33,8 @@ export type EntryRowProps = {
   tree: Tree;
   isSelected: boolean;
   isRenaming: boolean;
+  /** Git status text color class (VS Code-style), if the entry has changes. */
+  gitClassName?: string;
   onOpenFile: (path: string, pin?: boolean) => void;
   onSelectPath: (path: string) => void;
   onRevealInTerminal?: (path: string) => void;
@@ -56,6 +58,7 @@ function EntryRowImpl(props: EntryRowProps) {
     tree,
     isSelected,
     isRenaming,
+    gitClassName,
     onOpenFile,
     onSelectPath,
     onRevealInTerminal,
@@ -132,7 +135,9 @@ function EntryRowImpl(props: EntryRowProps) {
             ) : (
               <span className="size-4 shrink-0" />
             )}
-            <span className="min-w-0 flex-1 truncate">{name}</span>
+            <span className={cn("min-w-0 flex-1 truncate", gitClassName)}>
+              {name}
+            </span>
           </button>
         )}
       </ContextMenuTrigger>
