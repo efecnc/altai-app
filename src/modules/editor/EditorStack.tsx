@@ -1,5 +1,4 @@
 import { cn } from "@/lib/utils";
-import { DatabasePane, isDbPath } from "@/modules/database";
 import { MarkdownPreviewPane } from "@/modules/markdown";
 import type { EditorTab, Tab } from "@/modules/tabs";
 import {
@@ -273,9 +272,7 @@ export function EditorStack({
         aria-hidden={!visibleInLeaf}
       >
         <div className="relative h-full overflow-hidden rounded-md border border-border/60 bg-background">
-          {isDbPath(t.path) ? (
-            <DatabasePane path={t.path} />
-          ) : isImagePath(t.path) ? (
+          {isImagePath(t.path) ? (
             <ImagePreviewPane path={t.path} />
           ) : (
             <EditorPane
