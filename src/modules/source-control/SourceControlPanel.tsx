@@ -417,15 +417,6 @@ export const SourceControlPanel = memo(function SourceControlPanel({
       <aside className="flex h-full min-w-0 flex-col bg-card/80 backdrop-blur [contain:layout_style]">
         <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border/50 px-3 pb-2.5 pt-3">
           <div className="flex min-w-0 items-center gap-1.5">
-            <div className="inline-flex min-w-0 items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground transition-colors hover:bg-foreground/10">
-              <HugeiconsIcon
-                icon={FolderGitTwoIcon}
-                size={12}
-                strokeWidth={1.9}
-                className="shrink-0 text-muted-foreground"
-              />
-              <span className="max-w-[120px] truncate">{repoLabel}</span>
-            </div>
             {scm.status ? (
               <BranchSwitcher
                 repoRoot={scm.status.repoRoot}
@@ -435,8 +426,39 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                   if (onBranchSwitched) onBranchSwitched();
                   else void sourceControl.refresh({ remote: "never" });
                 }}
+                trigger={
+                  <button
+                    type="button"
+                    aria-label={`Current branch: ${repoLabel}. Switch branch`}
+                    className="inline-flex min-w-0 items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground transition-colors hover:bg-foreground/10"
+                  >
+                    <HugeiconsIcon
+                      icon={FolderGitTwoIcon}
+                      size={12}
+                      strokeWidth={1.9}
+                      className="shrink-0 text-muted-foreground"
+                    />
+                    <span className="max-w-[120px] truncate">{repoLabel}</span>
+                    <HugeiconsIcon
+                      icon={ArrowDown01Icon}
+                      size={10}
+                      strokeWidth={2.2}
+                      className="shrink-0 opacity-50"
+                    />
+                  </button>
+                }
               />
-            ) : null}
+            ) : (
+              <div className="inline-flex min-w-0 items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground">
+                <HugeiconsIcon
+                  icon={FolderGitTwoIcon}
+                  size={12}
+                  strokeWidth={1.9}
+                  className="shrink-0 text-muted-foreground"
+                />
+                <span className="max-w-[140px] truncate">{repoLabel}</span>
+              </div>
+            )}
             {scm.status && (scm.status.ahead > 0 || scm.status.behind > 0) ? (
               <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-semibold tabular-nums leading-none text-muted-foreground">
                 {scm.status.ahead > 0 ? (

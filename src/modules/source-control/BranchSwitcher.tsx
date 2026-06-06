@@ -14,7 +14,14 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 
 type Props = {
   repoRoot: string;
@@ -23,6 +30,8 @@ type Props = {
   /** Called after a successful checkout/create so the caller can refresh git
    * status and reload open editors. */
   onSwitched: () => void;
+  /** Custom trigger element. Falls back to a built-in branch button. */
+  trigger?: ReactNode;
 };
 
 function normalizeError(e: unknown): string {
@@ -39,6 +48,7 @@ export function BranchSwitcher({
   currentBranch,
   isDetached,
   onSwitched,
+  trigger,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<GitBranch[]>([]);
@@ -161,26 +171,28 @@ export function BranchSwitcher({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={
-            isDetached
-              ? "Detached HEAD. Switch branch"
-              : `Current branch: ${currentBranch}. Switch branch`
-          }
-          className="flex max-w-44 shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <HugeiconsIcon icon={GitBranchIcon} size={12} strokeWidth={2} />
-          <span className="truncate">
-            {isDetached ? "detached" : currentBranch}
-          </span>
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
-            size={11}
-            strokeWidth={2}
-            className="opacity-60"
-          />
-        </button>
+        {trigger ?? (
+          <button
+            type="button"
+            aria-label={
+              isDetached
+                ? "Detached HEAD. Switch branch"
+                : `Current branch: ${currentBranch}. Switch branch`
+            }
+            className="flex max-w-44 shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <HugeiconsIcon icon={GitBranchIcon} size={12} strokeWidth={2} />
+            <span className="truncate">
+              {isDetached ? "detached" : currentBranch}
+            </span>
+            <HugeiconsIcon
+              icon={ArrowDown01Icon}
+              size={11}
+              strokeWidth={2}
+              className="opacity-60"
+            />
+          </button>
+        )}
       </PopoverTrigger>
       <PopoverContent
         align="start"
