@@ -4,12 +4,12 @@
 //! The recents are the same list the welcome screen shows — the frontend
 //! mirrors them here via the `set_recent_folders` command whenever they change.
 //! There is no high-level Tauri API for any of these surfaces, so each platform
-//! drops to native code:
-//!   - macOS:   `[NSApp setDockMenu:]`                       (see `macos`)
-//!   - Windows: a custom Jump List via the Shell COM APIs     (see `windows`)
-//!   - Linux:   a static `.desktop` "New Window" action baked at bundle time
-//!              (a launcher menu cannot list recent folders dynamically — see
-//!              the `desktopTemplate` in tauri.conf.json)
+//! drops to native code (see the platform submodules):
+//!
+//! - macOS: a Dock menu via `[NSApp setDockMenu:]`.
+//! - Windows: a taskbar Jump List via the Shell COM APIs.
+//! - Linux: a static `.desktop` "New Window" action baked at bundle time; a
+//!   launcher menu cannot list recent folders dynamically.
 
 use std::sync::Mutex;
 use tauri::{AppHandle, WebviewUrl, WebviewWindowBuilder};

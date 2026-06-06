@@ -28,16 +28,25 @@ pub fn set_jump_list(_app: &AppHandle, recents: &[String]) {
 }
 
 fn build_jump_list(exe: &str, recents: &[String]) -> windows::core::Result<()> {
-    use windows::core::{w, Interface, HSTRING};
+    use windows::core::{w, Interface, GUID, HSTRING};
+    use windows::Win32::Foundation::PROPERTYKEY;
     use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
         COINIT_APARTMENTTHREADED,
     };
-    use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, PKEY_Title};
+    use windows::Win32::UI::Shell::Common::{IObjectArray, IObjectCollection};
+    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
     use windows::Win32::UI::Shell::{
-        DestinationList, EnumerableObjectCollection, ICustomDestinationList, IObjectArray,
-        IObjectCollection, IShellLinkW, ShellLink,
+        DestinationList, EnumerableObjectCollection, ICustomDestinationList, IShellLinkW, ShellLink,
+    };
+
+    // PKEY_Title (System.Title) — the property that supplies a jump-list item's
+    // visible label. Defined inline to avoid pulling in the whole
+    // Win32_Storage_EnhancedStorage feature just for one constant.
+    const PKEY_TITLE: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0xf29f85e0_4ff9_1068_ab91_08002b27b3d9),
+        pid: 2,
     };
 
     unsafe {
@@ -52,8 +61,8 @@ fn build_jump_list(exe: &str, recents: &[String]) -> windows::core::Result<()> {
                 link.SetPath(&HSTRING::from(exe))?;
                 link.SetArguments(&HSTRING::from(args))?;
                 let store: IPropertyStore = link.cast()?;
-                let value = PROPVARIANT::from(&HSTRING::from(title));
-                store.SetValue(&PKEY_Title, &value)?;
+                let value = PROPVARIANT::from(title);
+                store.SetValue(&PKEY_TITLE, &value)?;
                 store.Commit()?;
                 Ok(link)
             };

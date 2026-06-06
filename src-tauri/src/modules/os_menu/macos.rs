@@ -94,7 +94,7 @@ pub fn set_dock_menu(app: &AppHandle, recents: &[String]) {
                 .get_or_insert_with(|| DockHandler::new(mtm, app.clone()))
                 .clone()
         });
-        let target: &AnyObject = &*handler;
+        let target: &AnyObject = &handler;
 
         let menu = NSMenu::new(mtm);
 
