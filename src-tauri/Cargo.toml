@@ -47,6 +47,9 @@ sha2 = "0.10"
 flate2 = "1"
 hex = "0.4"
 tar = "0.4"
+# Embedded database viewer — SQLite via rusqlite (bundled SQLite, no system dep;
+# unifies with the libsqlite3-sys already pulled transitively by isanagent).
+rusqlite = { version = "0.38", features = ["bundled"] }
 
 # İsanAgent — embedded as Rust crate (direct API, no sidecar)
 # Temporarily pinned to the fork COMMIT carrying the forbid-final nudge bound

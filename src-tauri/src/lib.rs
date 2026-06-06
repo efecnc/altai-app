@@ -2,7 +2,7 @@ mod modules;
 mod altai;
 
 use modules::{
-    fs, git, github, lsp_install, net, notebook, proc, pty, secrets, shell, webview, workspace,
+    db, fs, git, github, lsp_install, net, notebook, proc, pty, secrets, shell, webview, workspace,
 };
 use altai::agent::commands as agent_commands;
 use std::sync::Mutex;
@@ -118,6 +118,7 @@ pub fn run() {
         .manage(shell::ShellState::default())
         .manage(secrets::SecretsState::default())
         .manage(lsp_install::LspInstallState::default())
+        .manage(db::DbState::default())
         .manage(fs::watch::WatcherState::default())
         .manage({
             let registry = workspace::WorkspaceRegistry::default();
@@ -219,6 +220,12 @@ pub fn run() {
             lsp_install::lsp_install_run,
             lsp_install::lsp_install_cancel,
             lsp_install::lsp_install_uninstall,
+            // ALTAI — embedded database viewer
+            db::commands::db_connect,
+            db::commands::db_schema,
+            db::commands::db_table_page,
+            db::commands::db_query,
+            db::commands::db_disconnect,
             // ALTAI — İsanAgent commands
             agent_commands::agent_start,
             agent_commands::agent_send,
