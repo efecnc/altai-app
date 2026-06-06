@@ -56,7 +56,7 @@ import {
   type SourceControlFileEntry,
 } from "./useSourceControlPanel";
 import { useGitHubStore } from "@/modules/github";
-import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
+import { BranchSwitcher } from "./BranchSwitcher";
 
 type Props = {
   open: boolean;
@@ -71,6 +71,8 @@ type Props = {
     originalPath: string | null;
     title?: string;
   }) => void;
+  /** Refresh git status + reload editors after a branch checkout. */
+  onBranchSwitched?: () => void;
 };
 
 const SOURCE_CONTROL_TOOLTIP_CLASS =
@@ -139,9 +141,9 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   onOpenGitHubItems,
   onOpenProjects,
   onOpenDiff,
+  onBranchSwitched,
 }: Props) {
   const scm = useSourceControlPanel(open, sourceControl, onOpenDiff);
-  const githubConnection = useGitHubStore((s) => s.connection);
   const githubRefresh = useGitHubStore((s) => s.refresh);
   // Refresh the GitHub connection status when the panel opens.
   useEffect(() => {
@@ -415,15 +417,48 @@ export const SourceControlPanel = memo(function SourceControlPanel({
       <aside className="flex h-full min-w-0 flex-col bg-card/80 backdrop-blur [contain:layout_style]">
         <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border/50 px-3 pb-2.5 pt-3">
           <div className="flex min-w-0 items-center gap-1.5">
-            <div className="inline-flex min-w-0 items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground transition-colors hover:bg-foreground/10">
-              <HugeiconsIcon
-                icon={FolderGitTwoIcon}
-                size={12}
-                strokeWidth={1.9}
-                className="shrink-0 text-muted-foreground"
+            {scm.status ? (
+              <BranchSwitcher
+                repoRoot={scm.status.repoRoot}
+                currentBranch={scm.status.branch}
+                isDetached={scm.status.isDetached}
+                onSwitched={() => {
+                  if (onBranchSwitched) onBranchSwitched();
+                  else void sourceControl.refresh({ remote: "never" });
+                }}
+                trigger={
+                  <button
+                    type="button"
+                    aria-label={`Current branch: ${repoLabel}. Switch branch`}
+                    className="inline-flex min-w-0 items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground transition-colors hover:bg-foreground/10"
+                  >
+                    <HugeiconsIcon
+                      icon={FolderGitTwoIcon}
+                      size={12}
+                      strokeWidth={1.9}
+                      className="shrink-0 text-muted-foreground"
+                    />
+                    <span className="max-w-[120px] truncate">{repoLabel}</span>
+                    <HugeiconsIcon
+                      icon={ArrowDown01Icon}
+                      size={10}
+                      strokeWidth={2.2}
+                      className="shrink-0 opacity-50"
+                    />
+                  </button>
+                }
               />
-              <span className="max-w-[140px] truncate">{repoLabel}</span>
-            </div>
+            ) : (
+              <div className="inline-flex min-w-0 items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground">
+                <HugeiconsIcon
+                  icon={FolderGitTwoIcon}
+                  size={12}
+                  strokeWidth={1.9}
+                  className="shrink-0 text-muted-foreground"
+                />
+                <span className="max-w-[140px] truncate">{repoLabel}</span>
+              </div>
+            )}
             {scm.status && (scm.status.ahead > 0 || scm.status.behind > 0) ? (
               <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-semibold tabular-nums leading-none text-muted-foreground">
                 {scm.status.ahead > 0 ? (
@@ -530,32 +565,6 @@ export const SourceControlPanel = memo(function SourceControlPanel({
               className="shrink-0"
             />
             <span className="flex-1 text-[12px] font-medium">Commit Graph</span>
-            <HugeiconsIcon
-              icon={ArrowRight01Icon}
-              size={12}
-              strokeWidth={2}
-              className="shrink-0 opacity-50 transition-transform group-hover:translate-x-0.5"
-            />
-          </button>
-        ) : null}
-
-        {scm.status ? (
-          <button
-            type="button"
-            onClick={() => openSettingsWindow("github")}
-            className="group flex shrink-0 cursor-pointer items-center gap-2 border-b border-border/40 px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-foreground/[0.04] hover:text-foreground"
-          >
-            <HugeiconsIcon
-              icon={GithubIcon}
-              size={13}
-              strokeWidth={1.85}
-              className={cn("shrink-0", githubConnection && "text-emerald-500")}
-            />
-            <span className="flex-1 text-[12px] font-medium">
-              {githubConnection
-                ? `GitHub: @${githubConnection.login}`
-                : "Connect to GitHub"}
-            </span>
             <HugeiconsIcon
               icon={ArrowRight01Icon}
               size={12}

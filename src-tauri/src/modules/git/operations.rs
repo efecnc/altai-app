@@ -8,9 +8,9 @@ use crate::modules::git::process::{
     read_text_file, run_git,
 };
 use crate::modules::git::types::{
-    DiscardEntry, GitCommitFileChange, GitCommitResult, GitDiffContentResult, GitDiffResult,
-    GitLogEntry, GitOutput, GitPanelSnapshot, GitPushResult, GitRepoInfo, GitStatusSnapshot,
-    TextSource, DEFAULT_TIMEOUT_SECS, NETWORK_TIMEOUT_SECS,
+    DiscardEntry, GitBranch, GitCommitFileChange, GitCommitResult, GitDiffContentResult,
+    GitDiffResult, GitLogEntry, GitOutput, GitPanelSnapshot, GitPushResult, GitRepoInfo,
+    GitStatusSnapshot, TextSource, DEFAULT_TIMEOUT_SECS, NETWORK_TIMEOUT_SECS,
 };
 use crate::modules::git::utils::{
     authorized_repo_root, canonical_dir, github_auth_config_args, resolve_within_repo,
@@ -1007,6 +1007,113 @@ pub fn pull_ff_only(
         NETWORK_TIMEOUT_SECS,
     )?;
     ensure_success(&output, "git pull --ff-only failed")
+}
+
+/// List local branches, most-recently-committed first, with the current
+/// branch flagged and its upstream (if any). `for-each-ref` gives stable,
+/// parse-friendly output (tab-separated; one ref per line).
+pub fn branches(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<Vec<GitBranch>> {
+    let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
+    ensure_git_available(&repo_root.workspace)?;
+    let lines = git_stdout_lines(
+        &repo_root.workspace,
+        &repo_root.git_path,
+        [
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(HEAD)\t%(refname:short)\t%(upstream:short)",
+            "refs/heads",
+        ],
+    )?;
+    let branches = lines
+        .into_iter()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let head = parts.next()?;
+            let name = parts.next()?.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let upstream = parts
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            Some(GitBranch {
+                current: head.trim() == "*",
+                name,
+                upstream,
+            })
+        })
+        .collect();
+    Ok(branches)
+}
+
+/// Reject names that aren't valid git refnames before we ever spawn git, so
+/// bad input fails cleanly rather than relying on git's downstream rejection.
+/// Mirrors the relevant subset of `git check-ref-format` (no flag injection,
+/// no path traversal, no ref-special characters).
+fn validate_branch_name(name: &str) -> Result<&str> {
+    let trimmed = name.trim();
+    let invalid = trimmed.is_empty()
+        || trimmed.starts_with('-')
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('.')
+        || trimmed.ends_with('/')
+        || trimmed.contains("..")
+        || trimmed.contains("@{")
+        || trimmed.chars().any(|c| {
+            c.is_control() || matches!(c, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        });
+    if invalid {
+        return Err(GitError::command("branch", "invalid branch name"));
+    }
+    Ok(trimmed)
+}
+
+/// Switch the working tree to an existing local branch. Uses `git switch`
+/// (git ≥ 2.23, our floor) rather than `git checkout` so a name is never
+/// ambiguously interpreted as a pathspec. Fails — surfacing git's own
+/// message — if the switch would overwrite uncommitted changes.
+pub fn checkout_branch(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    name: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<()> {
+    let name = validate_branch_name(name)?.to_string();
+    let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
+    ensure_git_available(&repo_root.workspace)?;
+    let output = run_git(
+        &repo_root.workspace,
+        Some(&repo_root.git_path),
+        ["switch", name.as_str()],
+        DEFAULT_TIMEOUT_SECS,
+    )?;
+    ensure_success(&output, "git switch failed")
+}
+
+/// Create a new branch from the current HEAD and switch to it.
+pub fn create_branch(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    name: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<()> {
+    let name = validate_branch_name(name)?.to_string();
+    let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
+    ensure_git_available(&repo_root.workspace)?;
+    let output = run_git(
+        &repo_root.workspace,
+        Some(&repo_root.git_path),
+        ["switch", "-c", name.as_str()],
+        DEFAULT_TIMEOUT_SECS,
+    )?;
+    ensure_success(&output, "git switch -c failed")
 }
 
 // Clones can pull large histories over a slow link — give them far more

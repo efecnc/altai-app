@@ -1,3 +1,4 @@
+export { BranchSwitcher } from "./BranchSwitcher";
 export { SourceControlPanel } from "./SourceControlPanelLazy";
 export {
   getSourceControlRemoteIndicator,

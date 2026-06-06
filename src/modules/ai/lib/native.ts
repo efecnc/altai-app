@@ -55,6 +55,12 @@ export type GitChangedFile = {
   statusLabel: string;
 };
 
+export type GitBranch = {
+  name: string;
+  current: boolean;
+  upstream: string | null;
+};
+
 export type GitStatusSnapshot = {
   repoRoot: string;
   branch: string;
@@ -353,6 +359,23 @@ export const native = {
   gitPullFfOnly: (repoRoot: string) =>
     invoke<void>("git_pull_ff_only", {
       repoRoot,
+      workspace: currentWorkspaceEnv(),
+    }),
+  gitBranches: (repoRoot: string) =>
+    invoke<GitBranch[]>("git_branches", {
+      repoRoot,
+      workspace: currentWorkspaceEnv(),
+    }),
+  gitCheckoutBranch: (repoRoot: string, name: string) =>
+    invoke<void>("git_checkout_branch", {
+      repoRoot,
+      name,
+      workspace: currentWorkspaceEnv(),
+    }),
+  gitCreateBranch: (repoRoot: string, name: string) =>
+    invoke<void>("git_create_branch", {
+      repoRoot,
+      name,
       workspace: currentWorkspaceEnv(),
     }),
   gitPush: (repoRoot: string) =>

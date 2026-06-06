@@ -9,7 +9,6 @@ import type { TerminalTab } from "@/modules/tabs";
 import {
   ArrowDown01Icon,
   Cancel01Icon,
-  ColumnInsertIcon,
   ComputerTerminal02Icon,
   Delete02Icon,
   IncognitoIcon,
@@ -24,8 +23,6 @@ type Props = {
   onSelect: (id: number) => void;
   onClose: (id: number) => void;
   onNew: () => void;
-  onSplit: () => void;
-  canSplit: boolean;
   onHide: () => void;
 };
 
@@ -47,8 +44,6 @@ export function TerminalPanelHeader({
   onSelect,
   onClose,
   onNew,
-  onSplit,
-  canSplit,
   onHide,
 }: Props) {
   const ids = terminals.map((t) => t.id);
@@ -149,12 +144,6 @@ export function TerminalPanelHeader({
       </div>
 
       <div className="flex shrink-0 items-center gap-0.5">
-        <HeaderAction
-          icon={ColumnInsertIcon}
-          label="Split terminal"
-          onClick={onSplit}
-          disabled={!canSplit}
-        />
         <HeaderAction
           icon={PlusSignIcon}
           label={`New terminal (${fmtShortcut(MOD_KEY, "T")})`}

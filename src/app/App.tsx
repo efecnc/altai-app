@@ -905,6 +905,23 @@ export default function App() {
     }
   }, [terminalDrawerOpen]);
 
+  // Auto-hide the terminal drawer once the last terminal tab is closed. The
+  // ref guard means we only close after terminals existed (never on the
+  // initial empty state), so reopening still works.
+  const hadTerminalRef = useRef(false);
+  useEffect(() => {
+    const count = tabs.reduce(
+      (n, t) => (t.kind === "terminal" ? n + 1 : n),
+      0,
+    );
+    if (count > 0) {
+      hadTerminalRef.current = true;
+    } else if (hadTerminalRef.current) {
+      hadTerminalRef.current = false;
+      setTerminalDrawerOpen(false);
+    }
+  }, [tabs]);
+
   // One-time guard for stale dev-server state: if the persisted/ref width is
   // below the current min (e.g. after AGENT_SIDEBAR_MIN_WIDTH was bumped while
   // the app was hot-reloaded), bump the live panel back up to min on mount.
@@ -1153,6 +1170,17 @@ export default function App() {
   const toggleSourceControl = useCallback(() => {
     cycleSidebarView("source-control");
   }, [cycleSidebarView]);
+
+  // After a branch switch the working tree changed under us: refresh git
+  // status and reload open editors (reload() is a no-op on dirty buffers, so
+  // unsaved edits are preserved).
+  const refreshSourceControl = sourceControl.refresh;
+  const handleBranchSwitched = useCallback(() => {
+    void refreshSourceControl({ remote: "never" });
+    for (const t of tabsRef.current) {
+      if (t.kind === "editor") editorRefs.current.get(t.id)?.reload();
+    }
+  }, [refreshSourceControl]);
 
   const openGitGraphFromContext = useCallback(async () => {
     const known = sourceControl.hasRepo ? sourceControl.repo : null;
@@ -1718,11 +1746,6 @@ export default function App() {
         onSelect={setActiveTerminalId}
         onClose={handleClose}
         onNew={openNewTab}
-        onSplit={() => splitActivePaneInActiveTab("row")}
-        canSplit={
-          activeTerminalTab !== null &&
-          leafIds(activeTerminalTab.paneTree).length < MAX_PANES_PER_TAB
-        }
         onHide={() => setTerminalDrawerOpen(false)}
       />
       <div className="relative min-h-0 flex-1 px-2 py-1.5">
@@ -1853,6 +1876,7 @@ export default function App() {
                         onOpenGitGraph={openGitGraphFromContext}
                         onOpenGitHubItems={openGitHubItemsFromContext}
                         onOpenProjects={openProjectBoardFromContext}
+                        onBranchSwitched={handleBranchSwitched}
                       />
                     )}
                   </div>
