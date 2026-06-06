@@ -49,6 +49,7 @@ import {
   type GitHistorySearchHandle,
 } from "@/modules/git-history";
 import { GitHubItemsStack, ProjectBoardStack } from "@/modules/github";
+import { DatabaseConnectionsPanel, DatabaseStack } from "@/modules/database";
 import { getLaunchDir } from "@/lib/launchDir";
 import { useZoom } from "@/lib/useZoom";
 import { FileExplorer, type FileExplorerHandle } from "@/modules/explorer";
@@ -211,7 +212,12 @@ function readAgentSidebarWidth(): number {
 function readSidebarView(): SidebarViewId {
   try {
     const stored = window.localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY);
-    if (stored === "explorer" || stored === "source-control") return stored;
+    if (
+      stored === "explorer" ||
+      stored === "source-control" ||
+      stored === "database"
+    )
+      return stored;
   } catch {
     // ignore
   }
@@ -249,6 +255,7 @@ export default function App() {
     closeAiDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
+    openDatabaseTab,
     openGitHubItemsTab,
     openProjectBoardTab,
     openCommitFileDiffTab,
@@ -694,6 +701,7 @@ export default function App() {
   const isGitHistoryTab = activeTab?.kind === "git-history";
   const isGitHubItemsTab = activeTab?.kind === "github-items";
   const isProjectBoardTab = activeTab?.kind === "project-board";
+  const isDatabaseTab = activeTab?.kind === "database";
 
   // When an AI diff is approved (write_file applied to disk), reload any
   // open editor tabs for that path so the user sees the new content. We
@@ -1705,6 +1713,15 @@ export default function App() {
       >
         <ProjectBoardStack tabs={tabs} activeId={activeId} />
       </div>
+      <div
+        className={cn(
+          "absolute inset-0",
+          !isDatabaseTab && "invisible pointer-events-none",
+        )}
+        aria-hidden={!isDatabaseTab}
+      >
+        <DatabaseStack tabs={tabs} activeId={activeId} />
+      </div>
       {!activeTab ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center text-muted-foreground">
           <span className="text-[13px] font-medium">No file open</span>
@@ -1729,11 +1746,6 @@ export default function App() {
         onSelect={setActiveTerminalId}
         onClose={handleClose}
         onNew={openNewTab}
-        onSplit={() => splitActivePaneInActiveTab("row")}
-        canSplit={
-          activeTerminalTab !== null &&
-          leafIds(activeTerminalTab.paneTree).length < MAX_PANES_PER_TAB
-        }
         onHide={() => setTerminalDrawerOpen(false)}
       />
       <div className="relative min-h-0 flex-1 px-2 py-1.5">
@@ -1856,7 +1868,7 @@ export default function App() {
                         onAttachToAgent={handleAttachFileToAgent}
                         onOpenMarkdownPreview={openMarkdownPreview}
                       />
-                    ) : (
+                    ) : sidebarView === "source-control" ? (
                       <SourceControlPanel
                         open
                         sourceControl={sourceControl}
@@ -1865,6 +1877,11 @@ export default function App() {
                         onOpenGitHubItems={openGitHubItemsFromContext}
                         onOpenProjects={openProjectBoardFromContext}
                         onBranchSwitched={handleBranchSwitched}
+                      />
+                    ) : (
+                      <DatabaseConnectionsPanel
+                        open
+                        onConnected={openDatabaseTab}
                       />
                     )}
                   </div>
