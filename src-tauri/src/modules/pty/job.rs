@@ -2,6 +2,8 @@
 //! Dropping the handle kills the whole tree — only reliable orphan guard
 //! on Windows.
 
+#![cfg(windows)]
+
 use std::io;
 use std::mem::{size_of, zeroed};
 
