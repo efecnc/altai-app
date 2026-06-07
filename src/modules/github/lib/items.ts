@@ -20,6 +20,10 @@ export type GHItem = {
   comments: number;
   created_at: string;
   updated_at: string;
+  /** Set once the item is closed (merged or rejected/resolved). */
+  closed_at?: string | null;
+  /** Why an issue was closed: "completed" (resolved) vs "not_planned". */
+  state_reason?: "completed" | "reopened" | "not_planned" | null;
   draft?: boolean;
   /** Top-level on /pulls list rows (null until merged). */
   merged_at?: string | null;

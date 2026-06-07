@@ -1,5 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
   type GHItem,
@@ -11,14 +10,17 @@ import {
 } from "@/modules/github/lib/items";
 import {
   ArrowReloadHorizontalIcon,
+  ArrowRight01Icon,
   Comment01Icon,
+  InboxIcon,
   PlusSignIcon,
   Search01Icon,
+  Tag01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
 import { AssignAgentButton } from "./AssignAgentButton";
-import { itemState, Labels, StateBadge } from "./itemBits";
+import { Avatar, ItemStateIcon, itemState, Labels, StateText } from "./itemBits";
 
 type Props = {
   slug: RepoSlug;
@@ -101,7 +103,7 @@ export function ItemListView({
             >
               {k === "pulls" ? "Pull Requests" : "Issues"}
               {kind === k ? (
-                <span className="rounded-full bg-foreground/10 px-1.5 text-[10px] font-semibold">
+                <span className="rounded-full bg-foreground/10 px-1.5 text-[10px] font-semibold tabular-nums">
                   {filtered.length}
                 </span>
               ) : null}
@@ -139,19 +141,32 @@ export function ItemListView({
           ))}
         </div>
         {labelOptions.length > 0 ? (
-          <select
-            value={labelFilter}
-            onChange={(e) => setLabelFilter(e.target.value)}
-            aria-label="Filter by label"
-            className="h-7 max-w-[8rem] rounded-lg border border-border/60 bg-background/60 px-2 text-[11px] text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <option value="all">All labels</option>
-            {labelOptions.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
+          <div className="relative">
+            <HugeiconsIcon
+              icon={Tag01Icon}
+              size={12}
+              strokeWidth={1.85}
+              className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/50"
+            />
+            <select
+              value={labelFilter}
+              onChange={(e) => setLabelFilter(e.target.value)}
+              aria-label="Filter by label"
+              className={cn(
+                "h-7 max-w-[9rem] cursor-pointer appearance-none rounded-lg border bg-background/60 pl-6 pr-2 text-[11px] text-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                labelFilter === "all"
+                  ? "border-border/60"
+                  : "border-ring/40 text-foreground",
+              )}
+            >
+              <option value="all">All labels</option>
+              {labelOptions.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </div>
         ) : null}
         <div className="relative ml-auto min-w-0 flex-1">
           <HugeiconsIcon
@@ -197,70 +212,156 @@ export function ItemListView({
       ) : null}
 
       {loading ? (
-        <div className="flex items-center gap-2 px-1 py-6 text-[12px] text-muted-foreground">
-          <Spinner className="size-3.5" />
-          Loading…
-        </div>
+        <SkeletonList />
       ) : filtered.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 py-10 text-center text-[12px] text-muted-foreground/70">
-          {items.length === 0
-            ? kind === "pulls"
-              ? `No ${stateFilter === "all" ? "" : stateFilter} pull requests.`
-              : `No ${stateFilter === "all" ? "" : stateFilter} issues.`
-            : "Nothing matches your filters."}
-        </div>
+        <EmptyState
+          filtered={items.length > 0}
+          kind={kind}
+          stateFilter={stateFilter}
+        />
       ) : (
-        <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-          {filtered.map((it) => (
-            <li key={it.number} className="min-w-0">
-              <div className="flex items-center gap-1 rounded-lg border border-transparent pr-1.5 transition-colors hover:bg-muted/40">
-              <button
-                type="button"
-                onClick={() => onOpenItem(kind, it.number)}
-                className="flex min-w-0 flex-1 flex-col gap-1 rounded-lg px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <StateBadge state={itemState(it)} />
-                  <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
-                    {it.title}
-                  </span>
-                  <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/60">
-                    #{it.number}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2.5 text-[10.5px] text-muted-foreground/60">
-                  <span>
-                    {it.user?.login ?? "unknown"} · {relativeTime(it.updated_at)}
-                  </span>
-                  {it.comments > 0 ? (
-                    <span className="flex items-center gap-1">
-                      <HugeiconsIcon
-                        icon={Comment01Icon}
-                        size={10}
-                        strokeWidth={1.9}
-                      />
-                      {it.comments}
+        <ul className="-mx-1 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-1">
+          {filtered.map((it) => {
+            const st = itemState(it);
+            const resolvedAt =
+              st === "merged"
+                ? it.merged_at ?? it.pull_request?.merged_at
+                : st === "closed" || st === "not_planned"
+                  ? it.closed_at
+                  : null;
+            const verb =
+              st === "merged"
+                ? "merged"
+                : st === "closed" || st === "not_planned"
+                  ? "closed"
+                  : "updated";
+            return (
+              <li key={it.number} className="group/row min-w-0">
+                <div className="flex items-stretch gap-1 rounded-xl border border-transparent pr-1.5 transition-colors hover:border-border/60 hover:bg-muted/40">
+                  <button
+                    type="button"
+                    onClick={() => onOpenItem(kind, it.number)}
+                    className="flex min-w-0 flex-1 items-start gap-2.5 rounded-xl px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <span className="mt-px flex size-5 items-center justify-center">
+                      <ItemStateIcon state={st} kind={kind} size={15} />
                     </span>
-                  ) : null}
-                  <div className="ml-auto">
-                    <Labels labels={it.labels.slice(0, 3)} />
-                  </div>
+                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                      <div className="flex min-w-0 items-baseline gap-2">
+                        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
+                          {it.title}
+                        </span>
+                        <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground/50">
+                          #{it.number}
+                        </span>
+                      </div>
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-muted-foreground/70">
+                        {st !== "open" ? (
+                          <>
+                            <StateText state={st} kind={kind} />
+                            <span className="text-muted-foreground/40">·</span>
+                          </>
+                        ) : null}
+                        <span className="flex items-center gap-1">
+                          <Avatar url={it.user?.avatar_url} size={13} />
+                          <span className="font-medium text-muted-foreground/80">
+                            {it.user?.login ?? "unknown"}
+                          </span>
+                        </span>
+                        <span className="text-muted-foreground/40">·</span>
+                        <span>
+                          {verb} {relativeTime(resolvedAt ?? it.updated_at)}
+                        </span>
+                        {it.comments > 0 ? (
+                          <span className="flex items-center gap-1">
+                            <HugeiconsIcon
+                              icon={Comment01Icon}
+                              size={10}
+                              strokeWidth={1.9}
+                            />
+                            {it.comments}
+                          </span>
+                        ) : null}
+                        {it.labels.length > 0 ? (
+                          <Labels labels={it.labels.slice(0, 3)} />
+                        ) : null}
+                      </div>
+                    </div>
+                    <HugeiconsIcon
+                      icon={ArrowRight01Icon}
+                      size={14}
+                      strokeWidth={1.9}
+                      className="mt-1 shrink-0 text-muted-foreground/0 transition-colors group-hover/row:text-muted-foreground/40"
+                    />
+                  </button>
+                  <span className="flex items-center">
+                    <AssignAgentButton
+                      kind={kind === "pulls" ? "pr" : "issue"}
+                      slug={slug}
+                      number={it.number}
+                      title={it.title}
+                      body={it.body}
+                      url={it.html_url}
+                      variant="chip"
+                    />
+                  </span>
                 </div>
-              </button>
-              <AssignAgentButton
-                kind={kind === "pulls" ? "pr" : "issue"}
-                slug={slug}
-                number={it.number}
-                title={it.title}
-                body={it.body}
-                url={it.html_url}
-                variant="chip"
-              />
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
+    </div>
+  );
+}
+
+function SkeletonList() {
+  return (
+    <ul className="flex flex-col gap-px px-1" aria-hidden>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <li
+          key={i}
+          className="flex items-start gap-2.5 rounded-xl px-2.5 py-2.5"
+          style={{ opacity: 1 - i * 0.13 }}
+        >
+          <span className="mt-0.5 size-3.5 shrink-0 animate-pulse rounded-full bg-muted" />
+          <span className="flex min-w-0 flex-1 flex-col gap-2">
+            <span
+              className="h-3 animate-pulse rounded bg-muted"
+              style={{ width: `${70 - i * 7}%` }}
+            />
+            <span className="h-2 w-1/3 animate-pulse rounded bg-muted/70" />
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function EmptyState({
+  filtered,
+  kind,
+  stateFilter,
+}: {
+  filtered: boolean;
+  kind: ItemKind;
+  stateFilter: ItemStateFilter;
+}) {
+  const noun = kind === "pulls" ? "pull requests" : "issues";
+  const stateWord = stateFilter === "all" ? "" : `${stateFilter} `;
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-2 py-12 text-center">
+      <span className="flex size-10 items-center justify-center rounded-2xl bg-foreground/[0.04] text-muted-foreground/60">
+        <HugeiconsIcon icon={InboxIcon} size={20} strokeWidth={1.6} />
+      </span>
+      <p className="text-[12.5px] font-medium text-foreground/80">
+        {filtered ? "No matches" : `No ${stateWord}${noun}`}
+      </p>
+      <p className="max-w-[18rem] text-[11.5px] text-muted-foreground/60">
+        {filtered
+          ? "Try a different search or label filter."
+          : `When ${noun} land here, you can open, comment, and assign an agent to them.`}
+      </p>
     </div>
   );
 }

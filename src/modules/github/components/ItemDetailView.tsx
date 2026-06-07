@@ -27,7 +27,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
 import { Streamdown } from "streamdown";
 import { AssignAgentButton } from "./AssignAgentButton";
-import { Avatar, itemState, Labels, StateBadge } from "./itemBits";
+import { Avatar, ItemStateIcon, itemState, Labels, StateBadge } from "./itemBits";
 
 type Props = {
   slug: RepoSlug;
@@ -118,13 +118,24 @@ export function ItemDetailView({ slug, kind, number, onBack, onMutated }: Props)
   const pull = item && "merged" in item ? (item as GHPullDetail) : null;
   const canMerge =
     pull && pull.state === "open" && !pull.merged && pull.mergeable === true;
+  const st = item ? itemState(item) : "open";
+  const resolution =
+    item && st === "merged"
+      ? `merged ${relativeTime(
+          item.merged_at ?? item.pull_request?.merged_at ?? item.updated_at,
+        )}`
+      : item && (st === "closed" || st === "not_planned")
+        ? `${
+            st === "not_planned" ? "closed as not planned" : "closed"
+          } ${relativeTime(item.closed_at ?? item.updated_at)}`
+        : null;
 
   return (
     <div className="mx-auto flex h-full w-full max-w-2xl flex-col px-4 py-3">
       <button
         type="button"
         onClick={onBack}
-        className="mb-2 flex w-fit items-center gap-1 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground"
+        className="mb-2 -ml-1.5 flex w-fit items-center gap-1 rounded-md px-1.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
       >
         <HugeiconsIcon icon={ArrowLeft01Icon} size={13} strokeWidth={2} />
         Back to list
@@ -141,14 +152,17 @@ export function ItemDetailView({ slug, kind, number, onBack, onMutated }: Props)
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
           {/* Title + state */}
           <div className="flex flex-col gap-2">
-            <div className="flex items-start gap-2">
+            <div className="flex items-start gap-2.5">
+              <span className="mt-0.5">
+                <ItemStateIcon state={st} kind={kind} size={18} />
+              </span>
               <h2 className="flex-1 text-[15px] font-semibold leading-snug text-foreground">
                 {item.title}{" "}
                 <span className="font-normal text-muted-foreground/60">
                   #{item.number}
                 </span>
               </h2>
-              <StateBadge state={itemState(item)} />
+              <StateBadge state={st} kind={kind} />
             </div>
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
               <Avatar url={item.user?.avatar_url} size={16} />
@@ -156,6 +170,9 @@ export function ItemDetailView({ slug, kind, number, onBack, onMutated }: Props)
                 {item.user?.login ?? "unknown"}
               </span>
               <span>· opened {relativeTime(item.created_at)}</span>
+              {resolution ? (
+                <span className="text-muted-foreground/80">· {resolution}</span>
+              ) : null}
               {pull ? (
                 <span className="font-mono text-[10.5px]">
                   {pull.head.ref} → {pull.base.ref}
@@ -273,28 +290,33 @@ export function ItemDetailView({ slug, kind, number, onBack, onMutated }: Props)
           ) : null}
 
           {/* Comment composer */}
-          <div className="flex flex-col gap-2 pb-2">
+          <div className="flex flex-col gap-2 rounded-xl border border-border/50 bg-card/30 p-2 pb-2">
             <Textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Leave a comment…"
               aria-label="New comment"
               rows={3}
-              className="resize-none text-[12px]"
+              className="resize-none border-0 bg-transparent px-1 text-[12px] shadow-none focus-visible:ring-0"
             />
-            <Button
-              size="xs"
-              className="ml-auto h-7 gap-1.5 text-[11px]"
-              onClick={() => void submitComment()}
-              disabled={!draft.trim() || !!busy}
-            >
-              {busy === "comment" ? (
-                <Spinner className="size-3.5" />
-              ) : (
-                <HugeiconsIcon icon={SentIcon} size={12} strokeWidth={1.9} />
-              )}
-              Comment
-            </Button>
+            <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2">
+              <span className="pl-1 text-[10.5px] text-muted-foreground/50">
+                Markdown supported
+              </span>
+              <Button
+                size="xs"
+                className="h-7 gap-1.5 text-[11px]"
+                onClick={() => void submitComment()}
+                disabled={!draft.trim() || !!busy}
+              >
+                {busy === "comment" ? (
+                  <Spinner className="size-3.5" />
+                ) : (
+                  <HugeiconsIcon icon={SentIcon} size={12} strokeWidth={1.9} />
+                )}
+                Comment
+              </Button>
+            </div>
           </div>
         </div>
       )}
