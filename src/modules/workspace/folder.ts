@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import { native } from "../ai/lib/native";
@@ -183,8 +183,13 @@ export const useWorkspaceFolderStore = create<State>((set, get) => ({
       get().setFolder(path);
       return true;
     }
-    // Folder is gone — prune the dead entry rather than opening into an error.
-    get().removeRecent(path);
+    // Folder is gone — confirm before pruning so a temporarily-unplugged drive
+    // or offline network share doesn't silently lose the entry.
+    const remove = await ask(
+      `"${path}" is no longer accessible.\n\nRemove it from recent projects?`,
+      { title: "Folder not found", kind: "warning" },
+    );
+    if (remove) get().removeRecent(path);
     return false;
   },
   closeFolder: () => {

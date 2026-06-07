@@ -25,6 +25,7 @@ export function WorkspaceWelcome() {
   const removeRecent = useWorkspaceFolderStore((s) => s.removeRecent);
   const cloneRepo = useWorkspaceFolderStore((s) => s.cloneRepo);
   const [picking, setPicking] = useState(false);
+  const [openingRecent, setOpeningRecent] = useState<string | null>(null);
   const [home, setHome] = useState<string | null>(null);
 
   // Clone-repo inline form state.
@@ -197,8 +198,17 @@ export function WorkspaceWelcome() {
                   <div className="flex min-w-0 items-center rounded-md transition-colors hover:bg-muted/50">
                     <button
                       type="button"
-                      onClick={() => void openRecent(path)}
-                      className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      disabled={openingRecent !== null || picking || cloning}
+                      onClick={async () => {
+                        if (openingRecent || picking || cloning) return;
+                        setOpeningRecent(path);
+                        try {
+                          await openRecent(path);
+                        } finally {
+                          setOpeningRecent(null);
+                        }
+                      }}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
                     >
                       <span className="min-w-0 shrink-0 truncate text-[12.5px] font-medium text-foreground">
                         {folderName(path)}
