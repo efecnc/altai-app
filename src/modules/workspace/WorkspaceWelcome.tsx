@@ -21,7 +21,7 @@ import { folderName, prettyDir, useWorkspaceFolderStore } from "./folder";
 export function WorkspaceWelcome() {
   const recents = useWorkspaceFolderStore((s) => s.recents);
   const pickFolder = useWorkspaceFolderStore((s) => s.pickFolder);
-  const setFolder = useWorkspaceFolderStore((s) => s.setFolder);
+  const openRecent = useWorkspaceFolderStore((s) => s.openRecent);
   const removeRecent = useWorkspaceFolderStore((s) => s.removeRecent);
   const cloneRepo = useWorkspaceFolderStore((s) => s.cloneRepo);
   const [picking, setPicking] = useState(false);
@@ -197,7 +197,7 @@ export function WorkspaceWelcome() {
                   <div className="flex min-w-0 items-center rounded-md transition-colors hover:bg-muted/50">
                     <button
                       type="button"
-                      onClick={() => setFolder(path)}
+                      onClick={() => void openRecent(path)}
                       className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <span className="min-w-0 shrink-0 truncate text-[12.5px] font-medium text-foreground">
