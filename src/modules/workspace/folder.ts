@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { create } from "zustand";
 import { native } from "../ai/lib/native";
@@ -45,6 +45,23 @@ function pushRecentFolders(folders: string[]): void {
   void native.setRecentFolders(folders).catch(() => {});
 }
 
+/**
+ * Whether `path` still exists and is a directory. Used to fall back to the
+ * welcome screen — instead of loading into a broken workspace ("no such file or
+ * directory") — when a persisted or recent folder was deleted/moved/unmounted.
+ */
+async function folderIsAccessible(path: string): Promise<boolean> {
+  try {
+    // Authorize first: fs access for paths outside the default scope must go
+    // through workspace authorization, else stat fails for a perfectly valid
+    // folder. A missing path makes authorize/stat throw → treated as gone.
+    await native.workspaceAuthorize(path);
+    return (await native.stat(path)).kind === "dir";
+  } catch {
+    return false;
+  }
+}
+
 type State = {
   folder: string | null;
   /** Most-recently-opened workspaces, newest first. Powers the welcome list. */
@@ -71,6 +88,12 @@ type State = {
   /** Drop a path from the recents list (e.g. it was moved/deleted). */
   removeRecent: (path: string) => void;
   /**
+   * Open a workspace from the recents list. Verifies it still exists first; if
+   * it was deleted/moved, drops it from recents instead of loading into an
+   * error screen. Resolves true when the folder was opened.
+   */
+  openRecent: (path: string) => Promise<boolean>;
+  /**
    * Close the current workspace → return to the welcome screen. Keeps recents
    * (the just-closed folder stays at the top of the list). The persisted
    * folder is cleared so the next launch shows the welcome too.
@@ -91,9 +114,16 @@ export const useWorkspaceFolderStore = create<State>((set, get) => ({
     const recents = (await store.get<string[]>(KEY_RECENTS)) ?? [];
     const recentList = Array.isArray(recents) ? recents : [];
     // New windows start on the welcome screen; only `main` reopens the folder.
-    const saved = isPrimaryWindow()
+    let saved = isPrimaryWindow()
       ? ((await store.get<string>(KEY_FOLDER)) ?? null)
       : null;
+    // If the persisted workspace was deleted/moved/unmounted, fall back to the
+    // welcome screen instead of loading into a broken workspace, and forget it
+    // as the active folder (it stays in recents so the user can re-pick it).
+    if (saved && !(await folderIsAccessible(saved))) {
+      saved = null;
+      void store.delete(KEY_FOLDER).then(() => store.save());
+    }
     set({
       folder: saved,
       recents: recentList,
@@ -147,6 +177,20 @@ export const useWorkspaceFolderStore = create<State>((set, get) => ({
       await store.set(KEY_RECENTS, recents);
       await store.save();
     })();
+  },
+  openRecent: async (path) => {
+    if (await folderIsAccessible(path)) {
+      get().setFolder(path);
+      return true;
+    }
+    // Folder is gone — confirm before pruning so a temporarily-unplugged drive
+    // or offline network share doesn't silently lose the entry.
+    const remove = await ask(
+      `"${path}" is no longer accessible.\n\nRemove it from recent projects?`,
+      { title: "Folder not found", kind: "warning" },
+    );
+    if (remove) get().removeRecent(path);
+    return false;
   },
   closeFolder: () => {
     set({ folder: null });
