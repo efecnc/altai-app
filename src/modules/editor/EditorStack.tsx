@@ -253,14 +253,19 @@ export function EditorStack({
     handleDrop(leaf.id, sig.dir === "row" ? "right" : "bottom", activeId);
   }, [splitSignal, activeId, layout, editorById, handleDrop]);
 
+  const onCanSplitChangeRef = useRef(onCanSplitChange);
+  useEffect(() => {
+    onCanSplitChangeRef.current = onCanSplitChange;
+  }, [onCanSplitChange]);
+
   // Report whether the active editor group can be split (its leaf holds 2+ tabs)
   // so the header button can enable/disable itself.
   useEffect(() => {
     const leaf = editorById.has(activeId)
       ? leafContainingTab(layout, activeId)
       : null;
-    onCanSplitChange?.(!!leaf && leaf.tabIds.length >= 2);
-  }, [layout, activeId, editorById, onCanSplitChange]);
+    onCanSplitChangeRef.current?.(!!leaf && leaf.tabIds.length >= 2);
+  }, [layout, activeId, editorById]);
 
   // Drop callback / preview / buffer-cache state for closed tabs.
   useEffect(() => {

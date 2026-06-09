@@ -99,7 +99,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
     const cmRef = useRef<ReactCodeMirrorRef>(null);
-    const wrapRef = useRef<HTMLDivElement>(null);
+    const [wrapEl, setWrapEl] = useState<HTMLDivElement | null>(null);
     const { resolvedTheme } = useTheme();
     const vimMode = usePreferencesStore((s) => s.vimMode);
     const minimapEnabled = usePreferencesStore((s) => s.minimapEnabled);
@@ -217,15 +217,14 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
 
     // Track pane width so the minimap can hide itself in narrow split panes.
     useEffect(() => {
-      const el = wrapRef.current;
-      if (!el) return;
+      if (!wrapEl) return;
       const ro = new ResizeObserver((entries) => {
-        const w = entries[0]?.contentRect.width ?? el.clientWidth;
+        const w = entries[0]?.contentRect.width ?? wrapEl.clientWidth;
         setMinimapFits(w >= MINIMAP_MIN_WIDTH);
       });
-      ro.observe(el);
+      ro.observe(wrapEl);
       return () => ro.disconnect();
-    }, [doc.status]);
+    }, [wrapEl]);
 
     useEffect(() => {
       const view = cmRef.current?.view;
@@ -410,7 +409,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     }
 
     return (
-      <div ref={wrapRef} className="flex h-full min-h-0 flex-col">
+      <div ref={setWrapEl} className="flex h-full min-h-0 flex-col">
         <CodeMirror
           ref={cmRef}
           value={doc.content}
