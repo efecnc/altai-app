@@ -24,10 +24,33 @@ export function minimapExtension(): Extension {
     gitChangesField,
     showMinimap.compute(["doc", "selection", gitChangesField], (state: EditorState) => ({
       create: () => ({ dom: document.createElement("div") }),
-      displayText: "blocks",
-      showOverlay: "mouse-over",
+      // Render actual (scaled-down) characters with syntax colors, like
+      // VSCode's minimap — not abstract blocks. "always" keeps the viewport
+      // box visible so the current position in the file is always obvious.
+      displayText: "characters",
+      showOverlay: "always",
       gutters: computeMinimapGutters(state),
     })),
+    // The package's default viewport box is rgb(121,121,121) @ 0.2 — too faint
+    // to read your position. Replace it with a theme-aware translucent slider
+    // (brighter on hover/drag) plus a thin outline, like VSCode's minimap slider.
+    EditorView.theme({
+      ".cm-minimap-overlay-container .cm-minimap-overlay": {
+        background:
+          "color-mix(in srgb, var(--foreground) 15%, transparent) !important",
+        opacity: "1 !important",
+        outline:
+          "1px solid color-mix(in srgb, var(--foreground) 22%, transparent)",
+        outlineOffset: "-1px",
+        borderRadius: "2px",
+        transition: "background 120ms ease",
+      },
+      ".cm-minimap-overlay-container:hover .cm-minimap-overlay, .cm-minimap-overlay-container.cm-minimap-overlay-active .cm-minimap-overlay":
+        {
+          background:
+            "color-mix(in srgb, var(--foreground) 24%, transparent) !important",
+        },
+    }),
   ];
 }
 

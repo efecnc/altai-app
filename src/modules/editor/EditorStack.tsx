@@ -42,6 +42,13 @@ type Props = {
   onDirtyChange: (id: number, dirty: boolean) => void;
   registerHandle: (id: number, handle: EditorPaneHandle | null) => void;
   onCloseTab: (id: number) => void;
+  /**
+   * Bumped `n` by the header Split button to split the active editor group
+   * along `dir` (moves the active tab into a new group beside the current).
+   */
+  splitSignal?: { dir: "row" | "col"; n: number } | null;
+  /** Reports whether the active editor group can be split (its leaf has 2+ tabs). */
+  onCanSplitChange?: (canSplit: boolean) => void;
 };
 
 function isImagePath(path: string): boolean {
@@ -65,6 +72,8 @@ export function EditorStack({
   onDirtyChange,
   registerHandle,
   onCloseTab,
+  splitSignal,
+  onCanSplitChange,
 }: Props) {
   const editors = useMemo(
     () => tabs.filter((t): t is EditorTab => t.kind === "editor"),
@@ -228,6 +237,35 @@ export function EditorStack({
     },
     [],
   );
+
+  // Header Split button → split the active editor group: move the active tab
+  // into a new group on the right (row) / bottom (col), like dragging it to
+  // that edge. Keyed on the signal's nonce so it fires once per click; the
+  // ≥2-tabs guard mirrors `canSplit` (a lone tab has nothing to split off).
+  const lastSplitNonceRef = useRef(splitSignal?.n ?? 0);
+  useEffect(() => {
+    const sig = splitSignal;
+    if (!sig || sig.n === 0 || sig.n === lastSplitNonceRef.current) return;
+    lastSplitNonceRef.current = sig.n;
+    if (!editorById.has(activeId)) return;
+    const leaf = leafContainingTab(layout, activeId);
+    if (!leaf || leaf.tabIds.length < 2) return;
+    handleDrop(leaf.id, sig.dir === "row" ? "right" : "bottom", activeId);
+  }, [splitSignal, activeId, layout, editorById, handleDrop]);
+
+  const onCanSplitChangeRef = useRef(onCanSplitChange);
+  useEffect(() => {
+    onCanSplitChangeRef.current = onCanSplitChange;
+  }, [onCanSplitChange]);
+
+  // Report whether the active editor group can be split (its leaf holds 2+ tabs)
+  // so the header button can enable/disable itself.
+  useEffect(() => {
+    const leaf = editorById.has(activeId)
+      ? leafContainingTab(layout, activeId)
+      : null;
+    onCanSplitChangeRef.current?.(!!leaf && leaf.tabIds.length >= 2);
+  }, [layout, activeId, editorById]);
 
   // Drop callback / preview / buffer-cache state for closed tabs.
   useEffect(() => {

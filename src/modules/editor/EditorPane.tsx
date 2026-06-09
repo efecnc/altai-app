@@ -17,6 +17,7 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { Prec } from "@codemirror/state";
 import { vim } from "@replit/codemirror-vim";
@@ -38,6 +39,11 @@ import { getKey } from "@/modules/ai/lib/keyring";
 import { onKeysChanged } from "@/modules/settings/store";
 import { native } from "@/modules/ai/lib/native";
 import { listen } from "@tauri-apps/api/event";
+
+// Below this editor width the minimap is suppressed: in narrow split panes it
+// dominates the view and becomes unreadable, so we hide it like VSCode does in
+// slim editors. Measured per-pane via ResizeObserver.
+const MINIMAP_MIN_WIDTH = 700;
 
 export type EditorPaneHandle = {
   setQuery: (q: string) => void;
@@ -93,9 +99,12 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
     const cmRef = useRef<ReactCodeMirrorRef>(null);
+    const [wrapEl, setWrapEl] = useState<HTMLDivElement | null>(null);
     const { resolvedTheme } = useTheme();
     const vimMode = usePreferencesStore((s) => s.vimMode);
     const minimapEnabled = usePreferencesStore((s) => s.minimapEnabled);
+    // Whether the pane is wide enough for the minimap (false in slim splits).
+    const [minimapFits, setMinimapFits] = useState(true);
     const languageRef = useRef<string | null>(null);
     const apiKeyRef = useRef<string | null>(null);
 
@@ -206,15 +215,26 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
       });
     }, [vimMode]);
 
+    // Track pane width so the minimap can hide itself in narrow split panes.
+    useEffect(() => {
+      if (!wrapEl) return;
+      const ro = new ResizeObserver((entries) => {
+        const w = entries[0]?.contentRect.width ?? wrapEl.clientWidth;
+        setMinimapFits(w >= MINIMAP_MIN_WIDTH);
+      });
+      ro.observe(wrapEl);
+      return () => ro.disconnect();
+    }, [wrapEl]);
+
     useEffect(() => {
       const view = cmRef.current?.view;
       if (!view) return;
       view.dispatch({
         effects: minimapCompartment.reconfigure(
-          minimapEnabled ? minimapExtension() : [],
+          minimapEnabled && minimapFits ? minimapExtension() : [],
         ),
       });
-    }, [minimapEnabled]);
+    }, [minimapEnabled, minimapFits]);
 
     // Minimap git-diff markers (#82): fetch the file's working-tree diff and
     // push the changed lines into editor state. Refreshes when the file is
@@ -389,7 +409,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, Props>(
     }
 
     return (
-      <div className="flex h-full min-h-0 flex-col">
+      <div ref={setWrapEl} className="flex h-full min-h-0 flex-col">
         <CodeMirror
           ref={cmRef}
           value={doc.content}

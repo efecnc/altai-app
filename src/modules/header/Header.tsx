@@ -47,7 +47,7 @@ type Props = {
   onPin: (id: number) => void;
   onToggleSidebar: () => void;
   onSplit: (dir: "row" | "col") => void;
-  /** Active tab is a terminal and below the per-tab pane cap. */
+  /** Active editor group can be split (it holds 2+ tabs). */
   canSplit: boolean;
   onOpenShortcuts: () => void;
   onOpenSettings: () => void;
@@ -185,7 +185,8 @@ export function Header({
               variant="ghost"
               size="icon-sm"
               className="shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-              title="Split terminal"
+              title="Split editor"
+              aria-label="Split editor"
               disabled={!canSplit}
             >
               <HugeiconsIcon icon={GridViewIcon} size={16} strokeWidth={1.75} />

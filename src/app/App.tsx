@@ -99,7 +99,6 @@ import {
 } from "@/modules/source-control";
 import { StatusBar } from "@/modules/statusbar";
 import {
-  MAX_PANES_PER_TAB,
   tabTriggerId,
   type TerminalTab,
   useTabs,
@@ -1368,6 +1367,19 @@ export default function App() {
     [activeTerminalId, splitActivePane],
   );
 
+  // Header Split button → split the active EDITOR group (not the terminal).
+  // EditorStack owns the group layout, so we bump a signal it watches; it also
+  // reports back whether a split is possible (active group has 2+ tabs).
+  const [editorCanSplit, setEditorCanSplit] = useState(false);
+  const [editorSplit, setEditorSplit] = useState<{
+    dir: "row" | "col";
+    n: number;
+  }>({ dir: "row", n: 0 });
+  const requestEditorSplit = useCallback(
+    (dir: "row" | "col") => setEditorSplit((s) => ({ dir, n: s.n + 1 })),
+    [],
+  );
+
   const handleCloseTabOrPane = useCallback(() => {
     // A focused main tab closes first; otherwise close the drawer terminal/pane.
     const main = tabsRef.current.find((x) => x.id === activeId);
@@ -1681,6 +1693,8 @@ export default function App() {
             registerHandle={registerEditorHandle}
             onDirtyChange={handleEditorDirty}
             onCloseTab={disposeTab}
+            splitSignal={editorSplit}
+            onCanSplitChange={setEditorCanSplit}
           />
         </div>
       </div>
@@ -1880,11 +1894,8 @@ export default function App() {
             onClose={handleClose}
             onPin={pinTab}
             onToggleSidebar={toggleSidebar}
-            onSplit={splitActivePaneInActiveTab}
-            canSplit={
-              activeTerminalTab !== null &&
-              leafIds(activeTerminalTab.paneTree).length < MAX_PANES_PER_TAB
-            }
+            onSplit={requestEditorSplit}
+            canSplit={editorCanSplit}
             onOpenShortcuts={() => setShortcutsOpen(true)}
             onOpenSettings={() => void openSettingsWindow()}
             onToggleAgentSidebar={miniOpen ? closeMini : openMini}
