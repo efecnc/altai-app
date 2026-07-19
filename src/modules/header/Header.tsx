@@ -31,7 +31,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
+  type ReactElement,
   type RefObject,
 } from "react";
 import {
@@ -77,7 +77,7 @@ function IconTooltip({
   children,
 }: {
   label: string;
-  children: ReactNode;
+  children: ReactElement;
 }) {
   return (
     <Tooltip>
