@@ -304,13 +304,13 @@ export default function App() {
   const agentSidebarRef = useRef<PanelImperativeHandle | null>(null);
   const agentSidebarWidthRef = useRef(readAgentSidebarWidth());
   const agentSidebarWidthWriteTimerRef = useRef(0);
-  // Terminal bottom drawer (#61). Open by default so a terminal is visible on
-  // launch (as a drawer now, not a full-screen tab).
-  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(true);
+  // Keep the terminal drawer out of the way on launch. It opens when the user
+  // explicitly toggles it, creates a terminal, or sends a command to it.
+  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(false);
   const terminalDrawerRef = useRef<PanelImperativeHandle | null>(null);
   const terminalDrawerHeightRef = useRef(readTerminalDrawerHeight());
-  // Guards against a 0px ResizeObserver tick on mount spuriously closing the
-  // (default-open) drawer before layout settles — only mirror genuine collapses.
+  // Guards against a 0px ResizeObserver tick on mount — only mirror genuine
+  // user-driven drawer collapses after it has been opened once.
   const terminalDrawerSeenOpenRef = useRef(false);
   // A freshly cloned workspace opens straight into Source Control so the new
   // repo is visible without manually switching views; otherwise restore the
