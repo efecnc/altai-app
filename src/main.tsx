@@ -16,6 +16,13 @@ if (USE_CUSTOM_WINDOW_CONTROLS) {
   document.documentElement.dataset.chrome = "borderless";
 }
 
+// The WebView's stock context menu exposes browser actions such as Reload and
+// Inspect Element. App-owned context menus (file explorer, editor, etc.) mark
+// the event as handled, so leave those intact and suppress only the fallback.
+document.addEventListener("contextmenu", (event) => {
+  if (!event.defaultPrevented) event.preventDefault();
+});
+
 type StartupBoundaryState = { error: Error | null };
 
 /** Keep a renderer failure actionable instead of leaving the native window black. */

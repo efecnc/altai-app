@@ -21,6 +21,7 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "focus": true,
+        "devtools": false,
         "backgroundColor": "#0a0a0a"
       }
     ],
