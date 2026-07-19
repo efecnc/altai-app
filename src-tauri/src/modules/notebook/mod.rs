@@ -1,12 +1,12 @@
 use serde::Serialize;
 use shared_child::SharedChild;
 use std::io::Read;
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 use tempfile::NamedTempFile;
-use std::io::Write;
 
 const CELL_TIMEOUT_SECS: u64 = 30;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
@@ -68,9 +68,9 @@ fn run_cell(source: String, cwd: Option<String>) -> Result<CellResult, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let child = Arc::new(SharedChild::spawn(&mut cmd).map_err(|e| {
-        format!("Failed to spawn {}: {}", python, e)
-    })?);
+    let child = Arc::new(
+        SharedChild::spawn(&mut cmd).map_err(|e| format!("Failed to spawn {}: {}", python, e))?,
+    );
 
     let mut stdout_pipe = child
         .take_stdout()

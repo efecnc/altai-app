@@ -1,13 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { native } from "@/modules/ai/lib/native";
+import { native, type InstalledSkillInfo } from "@/modules/ai/lib/native";
 import {
   Alert02Icon,
   CheckmarkCircle02Icon,
   Download01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 
 /**
@@ -24,6 +24,24 @@ export function SkillsSection() {
   const [skill, setSkill] = useState("");
   const [installing, setInstalling] = useState(false);
   const [result, setResult] = useState<InstallResult>({ kind: "idle" });
+  const [installed, setInstalled] = useState<InstalledSkillInfo[]>([]);
+  const [loadingInstalled, setLoadingInstalled] = useState(true);
+
+  const reloadInstalled = async () => {
+    setLoadingInstalled(true);
+    try {
+      const workspace = await native.workspaceCurrentDir();
+      setInstalled(await native.agentListSkills(workspace));
+    } catch {
+      setInstalled([]);
+    } finally {
+      setLoadingInstalled(false);
+    }
+  };
+
+  useEffect(() => {
+    void reloadInstalled();
+  }, []);
 
   const repoTrimmed = repo.trim();
   const canInstall = !installing && repoTrimmed.length > 0;
@@ -52,6 +70,7 @@ export function SkillsSection() {
           ? { kind: "success", message: `Installed: ${names.join(", ")}` }
           : { kind: "error", message: "No skills found in that repository." },
       );
+      void reloadInstalled();
     } catch (err) {
       setResult({
         kind: "error",
@@ -143,6 +162,17 @@ export function SkillsSection() {
             </span>
           </div>
         ) : null}
+      </div>
+
+      <div className="rounded-xl border border-border/60 bg-card/60 p-5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-[12.5px] font-medium">Installed workspace skills</h3>
+            <p className="mt-1 text-[11px] text-muted-foreground">These are discovered from IsanAgent’s workspace registry and can be selected per background task.</p>
+          </div>
+          <Button size="sm" variant="ghost" className="h-7 text-[10.5px]" onClick={() => void reloadInstalled()} disabled={loadingInstalled}>Refresh</Button>
+        </div>
+        {loadingInstalled ? <p className="py-5 text-[11px] text-muted-foreground">Loading skills…</p> : installed.length ? <ul className="mt-3 divide-y divide-border/45 rounded-lg border border-border/50">{installed.map((item) => <li key={item.name} className="px-3 py-2"><div className="text-[11px] font-medium">{item.name}</div>{item.description ? <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">{item.description}</p> : null}</li>)}</ul> : <p className="mt-3 rounded-lg border border-dashed border-border/60 px-3 py-5 text-center text-[11px] text-muted-foreground">No workspace skills installed yet.</p>}
       </div>
     </div>
   );

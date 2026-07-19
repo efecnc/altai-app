@@ -23,7 +23,9 @@ use super::paths::{
     InstallState,
 };
 use super::progress::{InstallPhase, ProgressReporter};
-use super::registry::{current_platform_key, ArchiveKind, InstallSource, LspManifest, PlatformAsset};
+use super::registry::{
+    current_platform_key, ArchiveKind, InstallSource, LspManifest, PlatformAsset,
+};
 
 /// Result of a completed install — the same payload the Tauri command
 /// returns to the caller.
@@ -77,9 +79,7 @@ pub async fn run_install(
             if cancel.is_cancelled().await {
                 progress.report(InstallPhase::Cancelled);
             } else {
-                progress.report(InstallPhase::Failed {
-                    message: e.clone(),
-                });
+                progress.report(InstallPhase::Failed { message: e.clone() });
             }
         }
     }
@@ -144,25 +144,31 @@ async fn install_github_release(
     progress: &ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<InstallResult, String> {
-    let (owner, repo, tag, asset_template, platforms, archive, binary_name) = match &manifest.install
-    {
-        InstallSource::GithubRelease {
-            owner,
-            repo,
-            tag,
-            asset_template,
-            platforms,
-            archive,
-            binary_name,
-        } => (owner, repo, tag, asset_template, platforms, *archive, binary_name),
-        _ => unreachable!("dispatch invariant"),
-    };
+    let (owner, repo, tag, asset_template, platforms, archive, binary_name) =
+        match &manifest.install {
+            InstallSource::GithubRelease {
+                owner,
+                repo,
+                tag,
+                asset_template,
+                platforms,
+                archive,
+                binary_name,
+            } => (
+                owner,
+                repo,
+                tag,
+                asset_template,
+                platforms,
+                *archive,
+                binary_name,
+            ),
+            _ => unreachable!("dispatch invariant"),
+        };
 
     let platform = pick_platform(platforms)?;
     let asset = asset_template.replace("{platform}", &platform.asset_platform);
-    let url = format!(
-        "https://github.com/{owner}/{repo}/releases/download/{tag}/{asset}"
-    );
+    let url = format!("https://github.com/{owner}/{repo}/releases/download/{tag}/{asset}");
 
     // Pre-create the install layout and a temp file for the streamed asset.
     let tmp_dir = server_tmp_dir(app, &manifest.id)?;
@@ -235,11 +241,12 @@ fn extract_archive(
         // npm and Node-runtime code paths can reuse the same extractor
         // through `extract_tar_gzip` below.
         ArchiveKind::TarGzip => Err(
-            "tar.gz isn't a valid GithubRelease archive; use the npm/Node code paths instead".into(),
+            "tar.gz isn't a valid GithubRelease archive; use the npm/Node code paths instead"
+                .into(),
         ),
-        ArchiveKind::Zip => Err(
-            "zip extraction is not enabled yet — used by Windows rust-analyzer builds".into(),
-        ),
+        ArchiveKind::Zip => {
+            Err("zip extraction is not enabled yet — used by Windows rust-analyzer builds".into())
+        }
     }
 }
 
@@ -247,8 +254,8 @@ fn extract_gzip(src: &std::path::Path, dest: &std::path::Path) -> Result<(), Str
     use std::io::{BufReader, Write};
     let input = std::fs::File::open(src).map_err(|e| format!("open {}: {e}", src.display()))?;
     let mut decoder = GzDecoder::new(BufReader::new(input));
-    let mut output = std::fs::File::create(dest)
-        .map_err(|e| format!("create {}: {e}", dest.display()))?;
+    let mut output =
+        std::fs::File::create(dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
     // Pump in 64 KiB chunks. Avoids holding the whole binary (rust-analyzer
     // is ~50 MiB decompressed) in memory.
     let mut buf = vec![0u8; 64 * 1024];
@@ -262,7 +269,9 @@ fn extract_gzip(src: &std::path::Path, dest: &std::path::Path) -> Result<(), Str
             Err(e) => return Err(format!("gunzip: {e}")),
         }
     }
-    output.flush().map_err(|e| format!("flush extracted: {e}"))?;
+    output
+        .flush()
+        .map_err(|e| format!("flush extracted: {e}"))?;
     Ok(())
 }
 
@@ -330,7 +339,10 @@ async fn install_go(
         // Best-effort cleanup so a half-built dir doesn't masquerade as installed.
         let _ = tokio::fs::remove_dir_all(&bin_dir).await;
         return Err(if stderr.is_empty() {
-            format!("`go install {target}` failed (exit {:?})", output.status.code())
+            format!(
+                "`go install {target}` failed (exit {:?})",
+                output.status.code()
+            )
         } else {
             format!("`go install {target}` failed: {stderr}")
         });
@@ -491,12 +503,7 @@ fn build_package_json(
             s.push_str(",\n");
         }
         *first = false;
-        let _ = write!(
-            s,
-            "    \"{}\": \"{}\"",
-            json_escape(pkg),
-            json_escape(ver)
-        );
+        let _ = write!(s, "    \"{}\": \"{}\"", json_escape(pkg), json_escape(ver));
     };
     emit(package, version, &mut s, &mut first);
     for p in peers {
@@ -535,8 +542,13 @@ fn path_with_node_prefix(node_bin: &std::path::Path) -> std::ffi::OsString {
         Some(existing) => {
             let mut paths: Vec<std::path::PathBuf> = vec![bin_dir];
             paths.extend(std::env::split_paths(&existing));
-            std::env::join_paths(paths)
-                .unwrap_or_else(|_| std::ffi::OsString::from(node_bin.parent().unwrap_or_else(|| std::path::Path::new(""))))
+            std::env::join_paths(paths).unwrap_or_else(|_| {
+                std::ffi::OsString::from(
+                    node_bin
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("")),
+                )
+            })
         }
         None => bin_dir.into_os_string(),
     }
@@ -576,8 +588,7 @@ pub(crate) fn extract_tar_gzip(
     use flate2::read::GzDecoder;
     use tar::Archive;
 
-    std::fs::create_dir_all(dest_dir)
-        .map_err(|e| format!("mkdir extract dest: {e}"))?;
+    std::fs::create_dir_all(dest_dir).map_err(|e| format!("mkdir extract dest: {e}"))?;
     let file = std::fs::File::open(src).map_err(|e| format!("open {}: {e}", src.display()))?;
     let mut archive = Archive::new(GzDecoder::new(std::io::BufReader::new(file)));
     archive.set_preserve_permissions(true);
@@ -598,7 +609,10 @@ pub(crate) fn extract_tar_gzip(
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
         {
-            return Err(format!("tar entry escapes archive root: {}", entry_path.display()));
+            return Err(format!(
+                "tar entry escapes archive root: {}",
+                entry_path.display()
+            ));
         }
         if top_dir.is_none() {
             if let Some(std::path::Component::Normal(first)) = entry_path.components().next() {

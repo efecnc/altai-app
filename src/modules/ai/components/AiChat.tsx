@@ -5,11 +5,6 @@ import {
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import {
-  Message,
-  MessageContent,
-  MessageResponse,
-} from "@/components/ai-elements/message";
-import {
   Reasoning,
   ReasoningContent,
   ReasoningTrigger,
@@ -25,15 +20,20 @@ import { motion } from "motion/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowRight01Icon,
+  Cancel01Icon,
+  CheckmarkCircle01Icon,
   CodeIcon,
+  CopyIcon,
   File01Icon,
   GlobalSearchIcon,
   HashtagIcon,
+  PencilEdit02Icon,
+  Refresh01Icon,
   TerminalIcon,
 } from "@hugeicons/core-free-icons";
 import { SLASH_COMMANDS, ALTAI_CMD_RE } from "../lib/slashCommands";
-import { AgentStatusPill } from "./AgentStatusPill";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { editUserMessage, retryLastMessage } from "../store/chatStore";
 import type {
   ChatStatus,
   DynamicToolUIPart,
@@ -41,8 +41,14 @@ import type {
   UIMessage,
   UIMessagePart,
 } from "ai";
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AiToolApproval } from "./AiToolApproval";
+import {
+  Message,
+  MessageActions,
+  MessageContent,
+  MessageResponse,
+} from "@/components/ai-elements/message";
 
 function CommandSnippet({ name }: { name: string }) {
   const meta = SLASH_COMMANDS[name];
@@ -76,12 +82,20 @@ type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 type ContextChip =
   | { kind: "selection"; source: "terminal" | "editor"; lines: number }
   | { kind: "file"; name: string; lines: number }
+  | { kind: "terminal"; name: string; lines: number }
+  | { kind: "diff"; name: string; lines: number }
+  | { kind: "folder"; name: string; lines: number }
   | { kind: "snippet"; name: string };
 
 const SELECTION_RE =
   /<selection\s+source="(terminal|editor)">\n?([\s\S]*?)\n?<\/selection>/g;
 const FILE_RE =
   /<file\s+name="([^"]+)"[^>]*>\n?([\s\S]*?)\n?<\/file>/g;
+const TERMINAL_CONTEXT_RE =
+  /<terminal-context(?:\s+name="([^"]+)")?>\n?([\s\S]*?)\n?<\/terminal-context>/g;
+const GIT_DIFF_RE =
+  /<git-diff(?:\s+name="([^"]+)")?>\n?([\s\S]*?)\n?<\/git-diff>/g;
+const FOLDER_RE = /<folder\s+name="([^"]+)">\n?([\s\S]*?)\n?<\/folder>/g;
 const SNIPPET_RE = /<snippet\s+name="([^"]+)">\n?[\s\S]*?\n?<\/snippet>/g;
 
 function countLines(s: string): number {
@@ -107,6 +121,21 @@ function stripUserContextBlocks(text: string): {
   });
   out = out.replace(FILE_RE, (_m, name: string, body: string) => {
     chips.push({ kind: "file", name, lines: countLines(body) });
+    return "";
+  });
+  out = out.replace(
+    TERMINAL_CONTEXT_RE,
+    (_m, name: string | undefined, body: string) => {
+      chips.push({ kind: "terminal", name: name || "Active terminal", lines: countLines(body) });
+      return "";
+    },
+  );
+  out = out.replace(GIT_DIFF_RE, (_m, name: string | undefined, body: string) => {
+    chips.push({ kind: "diff", name: name || "Working tree diff", lines: countLines(body) });
+    return "";
+  });
+  out = out.replace(FOLDER_RE, (_m, name: string, body: string) => {
+    chips.push({ kind: "folder", name, lines: countLines(body) });
     return "";
   });
   out = out.replace(SNIPPET_RE, (_m, name: string) => {
@@ -152,6 +181,15 @@ function chipIcon(c: ContextChip) {
   if (c.kind === "file") {
     return <HugeiconsIcon icon={File01Icon} size={10} strokeWidth={1.75} />;
   }
+  if (c.kind === "terminal") {
+    return <HugeiconsIcon icon={TerminalIcon} size={10} strokeWidth={1.75} />;
+  }
+  if (c.kind === "diff") {
+    return <HugeiconsIcon icon={CodeIcon} size={10} strokeWidth={1.75} />;
+  }
+  if (c.kind === "folder") {
+    return <HugeiconsIcon icon={File01Icon} size={10} strokeWidth={1.75} />;
+  }
   return <HugeiconsIcon icon={HashtagIcon} size={10} strokeWidth={1.75} />;
 }
 
@@ -160,6 +198,7 @@ function chipLabel(c: ContextChip): string {
     return c.source === "editor" ? "Editor selection" : "Terminal selection";
   }
   if (c.kind === "file") return c.name;
+  if (c.kind === "terminal" || c.kind === "diff" || c.kind === "folder") return c.name;
   return `#${c.name}`;
 }
 type AnyPart = UIMessagePart<Record<string, never>, Record<string, never>>;
@@ -176,7 +215,7 @@ type Props = {
   error: Error | undefined;
   clearError: () => void;
   addToolApprovalResponse: (arg: ApprovalArg) => void | PromiseLike<void>;
-  stop: () => void | PromiseLike<void>;
+  stop?: () => void;
 };
 
 export function AiChatView({
@@ -185,10 +224,8 @@ export function AiChatView({
   error,
   clearError,
   addToolApprovalResponse,
+  stop,
 }: Props) {
-  const isBusy = status === "submitted" || status === "streaming";
-  const lastMessage = messages[messages.length - 1];
-  const showSpinner = isBusy && lastMessage?.role === "user";
   // Accessibility — pref-driven aria-live policy for the chat transcript.
   // "off" disables announcements entirely (some SR users prefer to pull
   // updates via virtual cursor instead of being interrupted on every chunk).
@@ -199,6 +236,7 @@ export function AiChatView({
       : chatAnnounce === "assertive"
         ? "assertive"
         : "polite";
+  const lastMessage = messages[messages.length - 1];
   const streamingMessageId =
     status === "streaming" && lastMessage?.role === "assistant"
       ? lastMessage.id
@@ -225,19 +263,19 @@ export function AiChatView({
   return (
     <Conversation className="overflow-x-hidden" aria-live={ariaLiveProp}>
       <ConversationContent className="min-w-0 gap-5 p-3">
-        {messages.map((m) => (
+        {messages.map((m, i) => (
           <RenderedMessage
             key={m.id}
             message={m}
             onApproval={onApproval}
             streaming={m.id === streamingMessageId}
+            canRetry={
+              m.role === "assistant" && i === messages.length - 1 && status !== "streaming"
+            }
+            onRetry={() => void retryLastMessage()}
+            onStop={() => void stop?.()}
           />
         ))}
-        {/* Live runtime status — moved here from the bottom-right status bar
-            so the agent's current step/approval state reads inline with the
-            conversation. `busy` covers the submitted window before the first
-            agent event; the chat's own error block handles failures. */}
-        <AgentStatusPill busy={showSpinner} hideError />
         {error && (
           // role="alert" => assertive live region. Without this the chat
           // failure was silent to screen readers and the agent appeared
@@ -267,15 +305,92 @@ export function AiChatView({
   );
 }
 
+function messageTextForCopy(m: UIMessage): string {
+  return m.parts
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("\n")
+    .trim();
+}
+
+function MessageCopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const tRef = useRef<number>(0);
+  useEffect(() => () => window.clearTimeout(tRef.current), []);
+  const onCopy = async () => {
+    if (!navigator?.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      tRef.current = window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* swallow */
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      title="Copy message"
+      aria-label="Copy message"
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+    >
+      <HugeiconsIcon
+        icon={copied ? CheckmarkCircle01Icon : CopyIcon}
+        size={11}
+        strokeWidth={1.75}
+      />
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+function HoverActionButton({
+  title,
+  onClick,
+  tone,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  tone?: "primary";
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] transition-colors hover:bg-foreground/10 hover:text-foreground",
+        tone === "primary"
+          ? "font-medium text-foreground"
+          : "text-muted-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 const RenderedMessage = memo(function RenderedMessage({
   message,
   onApproval,
   streaming,
+  canRetry,
+  onRetry,
+  onStop,
 }: {
   message: UIMessage;
   onApproval: (id: string, approved: boolean) => void;
   streaming: boolean;
+  canRetry?: boolean;
+  onRetry?: () => void;
+  onStop?: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
   // Index of the trailing text part — only that one is "live" mid-stream.
   // Earlier text parts (separated by tool calls) are already finalized.
   let lastTextIdx = -1;
@@ -296,6 +411,52 @@ const RenderedMessage = memo(function RenderedMessage({
     const withoutCmd = cmdMatch ? rawText.slice(cmdMatch[0].length) : rawText;
     const stripped = stripUserContextBlocks(withoutCmd);
 
+    const startEdit = () => {
+      setDraft(stripped.text);
+      setEditing(true);
+    };
+    const commitEdit = () => {
+      const t = draft.trim();
+      setEditing(false);
+      if (t) void editUserMessage(message.id, t);
+    };
+    const cancelEdit = () => {
+      setEditing(false);
+      setDraft("");
+    };
+
+    if (editing) {
+      return (
+        <Message from="user">
+          <MessageContent>
+            <textarea
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  commitEdit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelEdit();
+                }
+              }}
+              className="min-h-[3rem] w-full resize-y rounded-md bg-background/60 px-2 py-1.5 text-[12px] leading-relaxed outline-none ring-1 ring-border/60 focus:ring-foreground/30"
+            />
+          </MessageContent>
+          <MessageActions className="justify-end gap-1">
+            <HoverActionButton title="Save" onClick={commitEdit} tone="primary">
+              Save
+            </HoverActionButton>
+            <HoverActionButton title="Cancel" onClick={cancelEdit}>
+              Cancel
+            </HoverActionButton>
+          </MessageActions>
+        </Message>
+      );
+    }
+
     return (
       <Message from="user">
         <MessageContent>
@@ -309,6 +470,15 @@ const RenderedMessage = memo(function RenderedMessage({
             </p>
           ) : null}
         </MessageContent>
+        {stripped.text ? (
+          <MessageActions className="justify-end opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+            <MessageCopyButton text={stripped.text} />
+            <HoverActionButton title="Edit" onClick={startEdit}>
+              <HugeiconsIcon icon={PencilEdit02Icon} size={11} strokeWidth={1.75} />
+              Edit
+            </HoverActionButton>
+          </MessageActions>
+        ) : null}
       </Message>
     );
   }
@@ -366,6 +536,20 @@ const RenderedMessage = memo(function RenderedMessage({
           })}
         </div>
       </MessageContent>
+      <MessageActions className="opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+        <MessageCopyButton text={messageTextForCopy(message)} />
+        {streaming ? (
+          <HoverActionButton title="Stop generating" onClick={() => onStop?.()}>
+            <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={1.75} />
+            Stop
+          </HoverActionButton>
+        ) : canRetry ? (
+          <HoverActionButton title="Retry" onClick={() => onRetry?.()}>
+            <HugeiconsIcon icon={Refresh01Icon} size={11} strokeWidth={1.75} />
+            Retry
+          </HoverActionButton>
+        ) : null}
+      </MessageActions>
     </Message>
   );
 });

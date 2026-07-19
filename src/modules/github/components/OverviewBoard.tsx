@@ -111,7 +111,7 @@ export function OverviewBoard({ slug }: Props) {
     for (const a of assignments) {
       if (a.source.kind === "issue") set.add(`issue-${a.source.number}`);
       else if (a.source.kind === "pr") set.add(`pr-${a.source.number}`);
-      else set.add(`todo-${a.source.todoId}`);
+      else if (a.source.kind === "todo") set.add(`todo-${a.source.todoId}`);
     }
     return set;
   }, [assignments]);

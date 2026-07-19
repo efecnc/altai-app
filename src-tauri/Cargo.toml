@@ -49,10 +49,9 @@ hex = "0.4"
 tar = "0.4"
 
 # İsanAgent — embedded as Rust crate (direct API, no sidecar)
-# Temporarily pinned to the fork COMMIT carrying the forbid-final nudge bound
-# (altaidevorg/isanagent#58) — an immutable rev, not a mutable branch ref.
-# Revert to altaidevorg/main once that PR merges.
-isanagent = { git = "https://github.com/efecnc/isanagent.git", rev = "f8533f3d57456ca3fd5a4cfcbe0e0cc1f573eefb" }
+# Temporarily pinned to the IsanAgent edit-approval PR. Revert to
+# altaidevorg/main at the merged immutable revision once #62 lands.
+isanagent = { git = "https://github.com/efecnc/isanagent.git", rev = "fa3352b2e9e09502774792b3c289cdf946b65c3e" }
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"
 tauri-plugin-deep-link = "2"
@@ -92,6 +91,10 @@ objc2-app-kit = { version = "0.3", features = [
 	"NSResponder",
 ] }
 objc2-foundation = { version = "0.3", features = ["NSString"] }
+# Reads/writes the app bundle's Info.plist so ALTAI can declare itself a
+# handler for `public.item` (all files) and `public.folder`, which makes it
+# appear in Finder's "Open With" submenu on macOS.
+plist = "1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-autostart = "2"

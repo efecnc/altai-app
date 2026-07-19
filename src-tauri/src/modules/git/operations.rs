@@ -304,12 +304,7 @@ pub fn unstage(
     if !looks_like_no_head(&output) {
         return ensure_success(&output, "git reset failed");
     }
-    let mut rm_args: Vec<OsString> = vec![
-        "rm".into(),
-        "--cached".into(),
-        "-r".into(),
-        "--".into(),
-    ];
+    let mut rm_args: Vec<OsString> = vec!["rm".into(), "--cached".into(), "-r".into(), "--".into()];
     for p in &resolved {
         rm_args.push(p.clone().into());
     }
@@ -1066,9 +1061,9 @@ fn validate_branch_name(name: &str) -> Result<&str> {
         || trimmed.ends_with('/')
         || trimmed.contains("..")
         || trimmed.contains("@{")
-        || trimmed.chars().any(|c| {
-            c.is_control() || matches!(c, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
-        });
+        || trimmed
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\'));
     if invalid {
         return Err(GitError::command("branch", "invalid branch name"));
     }

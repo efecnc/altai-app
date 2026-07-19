@@ -53,7 +53,9 @@ pub async fn webview_create(
         return Ok(());
     }
 
-    let main_window = app.get_webview_window("main").ok_or("main window not found")?;
+    let main_window = app
+        .get_webview_window("main")
+        .ok_or("main window not found")?;
     let scale_factor = main_window.scale_factor().map_err(|e| e.to_string())?;
     let main_pos = main_window
         .inner_position()
@@ -93,8 +95,10 @@ pub async fn webview_set_bounds(
     let Some(webview) = app.get_webview_window(&label) else {
         return Ok(());
     };
-    
-    let main_window = app.get_webview_window("main").ok_or("main window not found")?;
+
+    let main_window = app
+        .get_webview_window("main")
+        .ok_or("main window not found")?;
     let scale_factor = main_window.scale_factor().map_err(|e| e.to_string())?;
     let main_pos = main_window
         .inner_position()

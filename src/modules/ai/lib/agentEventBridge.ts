@@ -7,6 +7,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { appendBackgroundMessage } from "./backgroundTranscript";
 import { pruneOldToolOutputs } from "./compaction";
 import type { Todo, TodoStatus } from "./todos";
+import { parseMcpToolName, type McpToolInfo } from "@/modules/mcp/toolName";
 import { z } from "zod";
 
 /**
@@ -17,6 +18,21 @@ import { z } from "zod";
 const todoWriteSchema = z.object({
   items: z.array(z.record(z.string(), z.unknown())),
 });
+
+const RESEARCH_TOOL_NAMES = new Set([
+  "web_search",
+  "web_fetch",
+  "arxiv_search",
+  "arxiv_fetch",
+  "hf_hub_file_fetch",
+]);
+
+const activeMcpCalls = new Map<string, McpToolInfo>();
+
+function activityKindForTool(name: string): "research" | "mcp" | "tool" {
+  if (parseMcpToolName(name)) return "mcp";
+  return RESEARCH_TOOL_NAMES.has(name) ? "research" : "tool";
+}
 
 /** Normalize the agent's free-form todo status into the app's TodoStatus.
  *  Case-insensitive + tolerant of common LLM variants. */
@@ -204,6 +220,17 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         // history shows every call inline with input/output instead of
         // each new tool overwriting the last one on a single status line.
         store.patchAgentMeta({ status: "streaming", step: payload.name });
+        {
+          const mcp = parseMcpToolName(payload.name);
+          if (mcp) activeMcpCalls.set(payload.id, mcp);
+          store.addActivity({
+            label: mcp
+              ? `MCP · ${mcp.server} → ${mcp.tool}`
+              : `Started ${payload.name}`,
+            detail: mcp ? "Calling connected MCP server" : "Tool call in progress",
+            kind: activityKindForTool(payload.name),
+          });
+        }
         store.startNativeToolCall(payload.id, payload.name, payload.input);
         if (payload.name === "todo_write") {
           ingestTodoWrite(payload.input, store.activeSessionId);
@@ -211,10 +238,22 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         break;
 
       case "tool_call_end":
+        {
+        const mcp = activeMcpCalls.get(payload.id);
+        activeMcpCalls.delete(payload.id);
         if (payload.error) {
           store.patchAgentMeta({ step: `${payload.id} (error)` });
         }
+        store.addActivity({
+          label: mcp
+            ? `MCP ${payload.error ? "failed" : "finished"} · ${mcp.server} → ${mcp.tool}`
+            : payload.error ? "Tool call failed" : "Tool call finished",
+          detail: payload.error ?? (mcp ? "MCP result received" : payload.id),
+          kind: mcp ? "mcp" : "tool",
+          tone: payload.error ? "error" : "success",
+        });
         store.endNativeToolCall(payload.id, payload.output, payload.error);
+        }
         break;
 
       case "thinking":
@@ -227,6 +266,14 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         // the turn yields back to the user (idle) until they reply.
         store.appendNativeMessage(payload.content, "assistant");
         store.setPendingChoices(payload.choices);
+        store.addActivity({
+          label: "Agent requested clarification",
+          detail: payload.choices.length
+            ? `${payload.choices.length} suggested answer${payload.choices.length === 1 ? "" : "s"}`
+            : undefined,
+          kind: "agent",
+          tone: "warning",
+        });
         store.patchAgentMeta({ status: "idle", step: null });
         break;
 
@@ -249,9 +296,16 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
       }
 
       case "approval_request":
-        store.patchAgentMeta({
-          status: "awaiting-approval",
-          approvalsPending: store.agentMeta.approvalsPending + 1,
+        store.addApproval({
+          id: payload.id,
+          action: payload.action,
+          payload: payload.payload,
+        });
+        store.addActivity({
+          label: `Approval needed: ${payload.action}`,
+          detail: "Waiting for your decision",
+          kind: "approval",
+          tone: "warning",
         });
         break;
 
@@ -260,6 +314,12 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
       // status line rather than persisted messages.
       case "execution_run_finished": {
         const secs = (payload.duration_ms / 1000).toFixed(1);
+        store.addActivity({
+          label: `Run finished with exit ${payload.exit_code ?? "?"}`,
+          detail: `${secs}s · ${plural(payload.artifact_count, "artifact")}`,
+          kind: "execution",
+          tone: payload.exit_code === 0 ? "success" : "warning",
+        });
         store.patchAgentMeta({
           step: `Run finished — exit ${payload.exit_code ?? "?"}, ${secs}s, ${plural(payload.artifact_count, "artifact")}`,
         });
@@ -268,6 +328,12 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
 
       case "execution_job_finished": {
         const secs = (payload.duration_ms / 1000).toFixed(1);
+        store.addActivity({
+          label: `Background job ${payload.status}`,
+          detail: `${payload.job_id} · ${secs}s`,
+          kind: "execution",
+          tone: payload.status === "success" ? "success" : "default",
+        });
         store.patchAgentMeta({
           step: `Background job ${payload.job_id} ${payload.status} — ${secs}s, ${plural(payload.artifact_count, "artifact")}`,
         });
@@ -275,6 +341,11 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
       }
 
       case "background_job_updated":
+        store.addActivity({
+          label: `Background job ${payload.state}`,
+          detail: payload.detail ?? payload.job_id,
+          kind: "execution",
+        });
         store.patchAgentMeta({
           step: `Background job ${payload.job_id}: ${payload.state}`,
         });
@@ -292,6 +363,11 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
           childChatId: payload.child_chat_id,
           displayName: payload.display_name,
           agentName: payload.agent_name,
+        });
+        store.addActivity({
+          label: `Dispatched ${label}`,
+          detail: "Subagent running",
+          kind: "agent",
         });
         store.patchAgentMeta({ step: `Dispatched ${label}…` });
         break;
@@ -311,11 +387,18 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
           tracked?.agentName ||
           "subagent";
         store.removeSubagentTask(payload.task_id);
+        store.addActivity({
+          label: `${label} ${payload.status}`,
+          detail: "Subagent finished",
+          kind: "agent",
+          tone: payload.status === "completed" ? "success" : "default",
+        });
         store.patchAgentMeta({ step: `${label} ${payload.status}` });
         break;
       }
 
       case "done":
+        store.addActivity({ label: "Agent finished", kind: "agent", tone: "success" });
         store.patchAgentMeta({ status: "idle", step: null });
         store.closeAssistantTurn();
         // TS-side prune pass: collapse old tool outputs to a marker when the
@@ -327,6 +410,12 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         break;
 
       case "error":
+        store.addActivity({
+          label: "Agent run failed",
+          detail: payload.message,
+          kind: "agent",
+          tone: "error",
+        });
         store.patchAgentMeta({ status: "error", error: payload.message });
         store.closeAssistantTurn();
         break;
@@ -339,6 +428,16 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         break;
 
       case "experiment_result":
+        store.addArtifacts({
+          experimentId: payload.experiment_id,
+          paths: payload.artifacts,
+        });
+        store.addActivity({
+          label: "Experiment result received",
+          detail: `${plural(payload.artifacts.length, "artifact")} available`,
+          kind: "execution",
+          tone: "success",
+        });
         window.dispatchEvent(
           new CustomEvent("altai:experiment-result", { detail: payload }),
         );

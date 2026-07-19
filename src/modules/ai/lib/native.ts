@@ -61,6 +61,7 @@ export type GrepResponse = {
 
 export type GlobHit = { path: string; rel: string };
 export type GlobResponse = { hits: GlobHit[]; truncated: boolean };
+export type WorkspaceFilesResult = { files: string[]; truncated: boolean };
 
 export type GitRepoInfo = {
   repoRoot: string;
@@ -195,6 +196,8 @@ export type CheckpointInfo = {
   existed: boolean;
 };
 
+export type InstalledSkillInfo = { name: string; description: string | null };
+
 export const native = {
   workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
   /** Mirror the recent-folders list into the OS taskbar/Dock menu. */
@@ -203,6 +206,11 @@ export const native = {
   workspaceAuthorize: (path: string) =>
     invoke<string>("workspace_authorize", {
       path,
+      workspace: currentWorkspaceEnv(),
+    }),
+  listWorkspaceFiles: (root: string) =>
+    invoke<WorkspaceFilesResult>("fs_list_files", {
+      root,
       workspace: currentWorkspaceEnv(),
     }),
   readFile: (
@@ -588,6 +596,24 @@ export const native = {
       chatId,
       workspacePath: workspacePath ?? null,
     }),
+  /**
+   * Rewind a chat's backend history to the `keepUserMessages`-th user message
+   * (1-based): keep everything up to and including it, delete the rest. Returns
+   * the deleted row count. `keepUserMessages === 0` wipes the whole thread.
+   *
+   * Backs frontend conversation edit / retry / checkpoint-rollback — the
+   * durable history lives in the backend, so the rewind happens there.
+   */
+  agentTruncateAfterUserMessage: (
+    chatId: string,
+    keepUserMessages: number,
+    workspacePath?: string,
+  ) =>
+    invoke<number>("agent_truncate_after_user_message", {
+      chatId,
+      keepUserMessages,
+      workspacePath: workspacePath ?? null,
+    }),
 
 
   agentApprove: (approvalId: string, approved: boolean) =>
@@ -603,6 +629,8 @@ export const native = {
    */
   agentInstallSkill: (repoUrl: string, workspacePath?: string, skill?: string) =>
     invoke<string[]>("agent_install_skill", { workspacePath, repoUrl, skill }),
+  agentListSkills: (workspacePath?: string) =>
+    invoke<InstalledSkillInfo[]>("agent_list_skills", { workspacePath }),
   gitClone: (url: string, destParent: string) =>
     invoke<string>("git_clone", { url, destParent }),
   githubDeviceStart: () => invoke<GitHubDeviceCode>("github_device_start"),

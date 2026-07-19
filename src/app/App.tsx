@@ -34,6 +34,7 @@ import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { redactSensitive } from "@/modules/ai/lib/redact";
 import { native } from "@/modules/ai/lib/native";
 import { useAgentsStore } from "@/modules/ai/store/agentsStore";
+import { usePlanStore, type QueuedEdit } from "@/modules/ai/store/planStore";
 import { useSnippetsStore } from "@/modules/ai/store/snippetsStore";
 import { announce, LiveRegion } from "@/modules/a11y";
 import {
@@ -149,6 +150,7 @@ const AGENT_SIDEBAR_DEFAULT_WIDTH = 380;
 const AGENT_SIDEBAR_MIN_WIDTH = 380;
 const AGENT_SIDEBAR_MAX_WIDTH = 640;
 const AGENT_SIDEBAR_WIDTH_STORAGE_KEY = "altai.agentSidebar.width";
+const PLAN_REVIEW_DIFF_PREFIX = "plan-review:";
 
 // Terminal bottom drawer (#61).
 const TERMINAL_DRAWER_DEFAULT_HEIGHT = 280;
@@ -249,6 +251,7 @@ export default function App() {
     setSettingsSection,
     newTerminalTabWithLeaf,
     openAiDiffTab,
+    setAiDiffStatus,
     closeAiDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
@@ -1134,6 +1137,77 @@ export default function App() {
     [openFileTab, openNotebookTab],
   );
 
+  useEffect(() => {
+    const onOpenFile = (event: Event) => {
+      const path = (event as CustomEvent<string>).detail;
+      if (typeof path === "string" && path.trim()) handleOpenFile(path, true);
+    };
+    window.addEventListener("altai:open-file", onOpenFile);
+    return () => window.removeEventListener("altai:open-file", onOpenFile);
+  }, [handleOpenFile]);
+
+  // Plan review lives inside the AI panel while the detailed CodeMirror diff
+  // belongs in the central tab area. A small DOM event keeps those modules
+  // decoupled without threading tab callbacks through the whole shell.
+  useEffect(() => {
+    const onPlanReviewDiff = (event: Event) => {
+      const edit = (event as CustomEvent<QueuedEdit>).detail;
+      if (!edit || typeof edit.id !== "string" || !edit.path) return;
+      openAiDiffTab({
+        path: edit.path,
+        originalContent: edit.originalContent,
+        proposedContent: edit.proposedContent,
+        approvalId: `${PLAN_REVIEW_DIFF_PREFIX}${edit.id}`,
+        isNewFile: edit.isNewFile,
+      });
+    };
+    window.addEventListener("altai:plan-review-diff", onPlanReviewDiff);
+    return () =>
+      window.removeEventListener("altai:plan-review-diff", onPlanReviewDiff);
+  }, [openAiDiffTab]);
+
+  const handleAiDiffDecision = useCallback(
+    (approvalId: string, approved: boolean) => {
+      if (!approvalId.startsWith(PLAN_REVIEW_DIFF_PREFIX)) {
+        respondToApproval(approvalId, approved);
+        return;
+      }
+
+      const editId = approvalId.slice(PLAN_REVIEW_DIFF_PREFIX.length);
+      if (!approved) {
+        usePlanStore.getState().removeOne(editId);
+        useChatStore.getState().addActivity({
+          label: "Rejected a reviewed change",
+          tone: "warning",
+        });
+        setAiDiffStatus(approvalId, "rejected");
+        return;
+      }
+
+      void usePlanStore
+        .getState()
+        .applyOne(editId)
+        .then((result) => {
+          if (!result) return;
+          if (result.ok) {
+            useChatStore.getState().addActivity({
+              label: "Applied a reviewed change from full diff",
+              detail: "Restore point available in Undo",
+              tone: "success",
+            });
+            setAiDiffStatus(approvalId, "approved");
+          } else {
+            useChatStore.getState().addActivity({
+              label: "Could not apply reviewed change",
+              detail: result.error,
+              tone: "error",
+            });
+          }
+        });
+    },
+    [respondToApproval, setAiDiffStatus],
+  );
+
   const handlePathRenamed = useCallback(
     (from: string, to: string) => {
       for (const t of tabs) {
@@ -1770,8 +1844,8 @@ export default function App() {
         <AiDiffStack
           tabs={tabs}
           activeId={activeId}
-          onAccept={(id) => respondToApproval(id, true)}
-          onReject={(id) => respondToApproval(id, false)}
+          onAccept={(id) => handleAiDiffDecision(id, true)}
+          onReject={(id) => handleAiDiffDecision(id, false)}
         />
       </div>
       <div

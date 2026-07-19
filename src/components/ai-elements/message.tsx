@@ -24,6 +24,7 @@ import {
 } from "react";
 import { Streamdown } from "streamdown";
 import { ChatStreamingProvider } from "./chat-code";
+import { chatMarkdownComponents } from "./chat-markdown";
 import { MarkdownCode } from "./markdown-code";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
@@ -321,7 +322,14 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
   streaming?: boolean;
 };
 
-const streamdownComponents = { code: MarkdownCode };
+// Merge the compact chat headings with the code-block override so a single
+// `components` map covers both. Streamdown shallow-merges this into its own
+// default component registry, so anything not listed here (lists, tables,
+// blockquotes, links) keeps the library default.
+const streamdownComponents = {
+  code: MarkdownCode,
+  ...chatMarkdownComponents,
+};
 
 export const MessageResponse = memo(
   ({ className, streaming = false, ...props }: MessageResponseProps) => (

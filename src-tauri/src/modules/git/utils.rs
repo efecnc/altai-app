@@ -106,8 +106,7 @@ fn canonicalize_parent(repo_root: &Path, joined: &Path, rel: &str) -> Result<Pat
 /// Standard base64 (with `=` padding). Small self-contained encoder so we
 /// don't pull in a crate just for HTTP basic-auth header construction.
 pub fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -180,7 +179,9 @@ mod tests {
 
     #[test]
     fn auth_args_only_for_github_https_with_token() {
-        assert!(github_auth_config_args(Some("https://github.com/a/b.git"), Some("tok")).len() == 2);
+        assert!(
+            github_auth_config_args(Some("https://github.com/a/b.git"), Some("tok")).len() == 2
+        );
         assert!(github_auth_config_args(Some("git@github.com:a/b.git"), Some("tok")).is_empty());
         assert!(github_auth_config_args(Some("https://github.com/a/b.git"), None).is_empty());
         assert!(github_auth_config_args(None, Some("tok")).is_empty());

@@ -17,6 +17,7 @@ import {
   providerNeedsKey,
   providerSupportsKey,
   type ModelId,
+  type ModelInfo,
   type ProviderId,
 } from "@/modules/ai/config";
 import { clearKey, getAllKeys, setKey } from "@/modules/ai/lib/keyring";
@@ -28,6 +29,7 @@ import {
   setAutocompleteProvider,
   setDefaultModel,
   setFallbackModelId,
+  setHiddenModelIds,
   setLmstudioBaseURL,
   setLmstudioModelId,
   setMlxBaseURL,
@@ -121,6 +123,8 @@ export function ModelsSection() {
           ))}
         </div>
       </div>
+
+      <ModelVisibilityBlock keys={keys} />
 
       <LocalModelsBlock />
 
@@ -875,6 +879,88 @@ function StatusLine({
     <span className="text-[10.5px] text-destructive">
       Could not reach the server.
     </span>
+  );
+}
+
+function ModelVisibilityBlock({ keys }: { keys: KeysMap }) {
+  const hiddenIds = usePreferencesStore((s) => s.hiddenModelIds);
+  const hiddenSet = useMemo(() => new Set(hiddenIds), [hiddenIds]);
+
+  const grouped = useMemo(() => {
+    const map = new Map<ProviderId, ModelInfo[]>();
+    for (const m of MODELS) {
+      const arr = map.get(m.provider) ?? [];
+      arr.push(m);
+      map.set(m.provider, arr);
+    }
+    return map;
+  }, []);
+
+  const toggle = (id: string) => {
+    const next = hiddenSet.has(id)
+      ? hiddenIds.filter((x) => x !== id)
+      : [...hiddenIds, id];
+    void setHiddenModelIds(next);
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-[13px] font-medium">Model visibility</h3>
+        <span className="text-[10.5px] leading-relaxed text-muted-foreground">
+          Choose which models appear in the model picker. Models whose provider
+          has no API key are always hidden until a key is added.
+        </span>
+      </div>
+
+      <div className="flex max-h-[22rem] flex-col gap-3 overflow-y-auto rounded-lg border border-border/60 bg-card/60 px-3 py-2.5">
+        {PROVIDERS.map((p) => {
+          const models = grouped.get(p.id) ?? [];
+          if (models.length === 0) return null;
+          const providerKeyed = !providerNeedsKey(p.id) || !!keys[p.id];
+          return (
+            <div key={p.id} className="flex flex-col gap-1">
+              <div className="flex items-center gap-1.5 py-0.5">
+                <ProviderIcon provider={p.id} size={12} />
+                <span className="text-[11px] font-medium">{p.label}</span>
+                {!providerKeyed ? (
+                  <span className="text-[10px] text-amber-600 dark:text-amber-400">
+                    no API key
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-col">
+                {models.map((m) => {
+                  const disabled = !providerKeyed;
+                  const visible = providerKeyed && !hiddenSet.has(m.id);
+                  return (
+                    <label
+                      key={m.id}
+                      className={cn(
+                        "flex items-center gap-2 rounded-md px-2 py-1 text-[11.5px] transition-colors hover:bg-accent/40",
+                        disabled &&
+                          "cursor-not-allowed opacity-50 hover:bg-transparent",
+                      )}
+                    >
+                      <Switch
+                        checked={visible}
+                        disabled={disabled}
+                        onCheckedChange={() => toggle(m.id)}
+                        aria-label={`Show ${m.label} in model picker`}
+                      />
+                      <span className="truncate">{m.label}</span>
+                      <span className="truncate text-[10px] text-muted-foreground">
+                        {m.hint}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

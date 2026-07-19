@@ -87,6 +87,26 @@ export async function buildLanguageModel(
       })(resolvedModelId);
       break;
     }
+    case "zai": {
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
+      built = createOpenAICompatible({
+        name: "zai",
+        baseURL: "https://api.z.ai/api/paas/v4",
+        apiKey: key,
+      })(resolvedModelId);
+      break;
+    }
+    case "zai-coding-plan": {
+      const { createOpenAICompatible } =
+        await import("@ai-sdk/openai-compatible");
+      built = createOpenAICompatible({
+        name: "zai-coding-plan",
+        baseURL: "https://api.z.ai/api/coding/paas/v4",
+        apiKey: key,
+      })(resolvedModelId);
+      break;
+    }
     case "groq": {
       const { createGroq } = await import("@ai-sdk/groq");
       built = createGroq({ apiKey: key })(resolvedModelId);
@@ -162,7 +182,7 @@ export function buildConfiguredLanguageModel(
   mlxModelId?: string,
 ): Promise<LanguageModel> {
   const m = getModel(modelId);
-  let resolvedId: string = m.id;
+  let resolvedId: string = m.apiName ?? m.id;
   if (m.id === "lmstudio-local") {
     if (!lmstudioModelId?.trim()) {
       throw new Error(

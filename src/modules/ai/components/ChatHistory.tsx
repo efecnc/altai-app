@@ -58,6 +58,8 @@ function extractSnippet(messages: UIMessage[]): string {
       const raw = (p as { text?: string }).text ?? "";
       const cleaned = raw
         .replace(/<terminal-context[\s\S]*?<\/terminal-context>\s*/g, "")
+        .replace(/<git-diff[\s\S]*?<\/git-diff>\s*/g, "")
+        .replace(/<folder[\s\S]*?<\/folder>\s*/g, "")
         .replace(/<selection[\s\S]*?<\/selection>\s*/g, "")
         .replace(/<file[\s\S]*?<\/file>\s*/g, "")
         .replace(/\s+/g, " ")

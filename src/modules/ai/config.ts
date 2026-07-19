@@ -9,6 +9,8 @@ export type ProviderId =
   | "groq"
   | "deepseek"
   | "mistral"
+  | "zai"
+  | "zai-coding-plan"
   | "openrouter"
   | "openai-compatible"
   | "lmstudio"
@@ -47,6 +49,13 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     consoleUrl: "https://aistudio.google.com/apikey",
   },
   {
+    id: "zai",
+    label: "Z.AI",
+    keyringAccount: "zai-api-key",
+    keyPrefix: null,
+    consoleUrl: "https://z.ai/manage-apikey/apikey-list",
+  },
+  {
     id: "xai",
     label: "xAI",
     keyringAccount: "xai-api-key",
@@ -80,6 +89,13 @@ export const PROVIDERS: readonly ProviderInfo[] = [
     keyringAccount: "mistral-api-key",
     keyPrefix: null,
     consoleUrl: "https://console.mistral.ai/api-keys/",
+  },
+  {
+    id: "zai-coding-plan",
+    label: "Z.AI Coding Plan",
+    keyringAccount: "zai-coding-plan-api-key",
+    keyPrefix: null,
+    consoleUrl: "https://z.ai/manage-apikey/apikey-list",
   },
   {
     id: "openrouter",
@@ -139,6 +155,7 @@ export type ModelInfo = {
   description: string;
   capabilities: ModelCapabilities;
   tags?: readonly ModelTag[];
+  apiName?: string;
 };
 
 export const MODELS = [
@@ -350,6 +367,94 @@ export const MODELS = [
     description: "Purpose-built coding model from Mistral.",
     capabilities: { intelligence: 4, speed: 4, cost: 4 },
     tags: ["coding"],
+  },
+
+  // ── Z.AI (GLM) ─────────────────────────────────────────────────────────────
+  {
+    id: "glm-5.2",
+    provider: "zai",
+    label: "GLM 5.2",
+    hint: "Best",
+    description: "Flagship GLM with 1M context and strong coding.",
+    capabilities: { intelligence: 5, speed: 3, cost: 3 },
+    tags: ["reasoning", "tools", "coding"],
+  },
+  {
+    id: "glm-5.1",
+    provider: "zai",
+    label: "GLM 5.1",
+    hint: "Previous",
+    description: "Previous flagship with strong agentic coding.",
+    capabilities: { intelligence: 5, speed: 3, cost: 3 },
+    tags: ["reasoning", "tools", "coding"],
+  },
+  {
+    id: "glm-5-turbo",
+    provider: "zai",
+    label: "GLM 5 Turbo",
+    hint: "Fast",
+    description: "Faster GLM-5 tier for everyday agent work.",
+    capabilities: { intelligence: 4, speed: 4, cost: 3 },
+    tags: ["tools", "coding"],
+  },
+  {
+    id: "glm-4.7",
+    provider: "zai",
+    label: "GLM 4.7",
+    hint: "Coding",
+    description: "Strong agentic coding at a lower price.",
+    capabilities: { intelligence: 4, speed: 4, cost: 4 },
+    tags: ["reasoning", "tools", "coding"],
+  },
+  {
+    id: "glm-4.7-flash",
+    provider: "zai",
+    label: "GLM 4.7 Flash",
+    hint: "Free",
+    description: "Free lightweight GLM for quick tasks.",
+    capabilities: { intelligence: 3, speed: 5, cost: 5 },
+    tags: ["tools"],
+  },
+  {
+    id: "glm-4.5-air",
+    provider: "zai",
+    label: "GLM 4.5 Air",
+    hint: "Cheap",
+    description: "Efficient everyday GLM at open-weight prices.",
+    capabilities: { intelligence: 3, speed: 4, cost: 5 },
+    tags: ["tools", "coding"],
+  },
+
+  // ── Z.AI Coding Plan (subscription; separate endpoint + key) ──────────────
+  {
+    id: "glm-5.2-coding",
+    provider: "zai-coding-plan",
+    apiName: "glm-5.2",
+    label: "GLM 5.2",
+    hint: "Coding Plan",
+    description: "Flagship GLM via the Coding Plan subscription.",
+    capabilities: { intelligence: 5, speed: 3, cost: 5 },
+    tags: ["reasoning", "tools", "coding"],
+  },
+  {
+    id: "glm-5-turbo-coding",
+    provider: "zai-coding-plan",
+    apiName: "glm-5-turbo",
+    label: "GLM 5 Turbo",
+    hint: "Coding Plan",
+    description: "Faster GLM-5 tier via the Coding Plan subscription.",
+    capabilities: { intelligence: 4, speed: 4, cost: 5 },
+    tags: ["tools", "coding"],
+  },
+  {
+    id: "glm-4.7-coding",
+    provider: "zai-coding-plan",
+    apiName: "glm-4.7",
+    label: "GLM 4.7",
+    hint: "Coding Plan",
+    description: "Routine agentic coding via the Coding Plan subscription.",
+    capabilities: { intelligence: 4, speed: 4, cost: 5 },
+    tags: ["reasoning", "tools", "coding"],
   },
 
   // ── Cerebras (autocomplete-tier) ──────────────────────────────────────────
@@ -651,6 +756,15 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   "mistral-large-latest": 131_072,
   "mistral-medium-latest": 32_768,
   "codestral-latest": 256_000,
+  "glm-5.2": 1_000_000,
+  "glm-5.1": 200_000,
+  "glm-5-turbo": 200_000,
+  "glm-4.7": 200_000,
+  "glm-4.7-flash": 200_000,
+  "glm-4.5-air": 128_000,
+  "glm-5.2-coding": 1_000_000,
+  "glm-5-turbo-coding": 200_000,
+  "glm-4.7-coding": 200_000,
 };
 
 export function getModelContextLimit(
@@ -689,6 +803,12 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "deepseek-v4-pro": { input: 0.28, output: 1.1, cacheRead: 0.028 },
   "deepseek-v4-flash": { input: 0.07, output: 0.27, cacheRead: 0.007 },
   "deepseek-reasoner": { input: 0.55, output: 2.19, cacheRead: 0.14 },
+  "glm-5.2": { input: 1.4, output: 4.4, cacheRead: 0.26 },
+  "glm-5.1": { input: 1.4, output: 4.4, cacheRead: 0.26 },
+  "glm-5-turbo": { input: 1.2, output: 4.0, cacheRead: 0.24 },
+  "glm-4.7": { input: 0.6, output: 2.2, cacheRead: 0.11 },
+  "glm-4.7-flash": { input: 0, output: 0 },
+  "glm-4.5-air": { input: 0.2, output: 1.1, cacheRead: 0.03 },
 };
 
 export function estimateCost(
@@ -717,6 +837,18 @@ export function providerNeedsKey(id: ProviderId): boolean {
   return !KEYLESS_PROVIDERS.includes(id);
 }
 
+export function isModelAvailable(
+  model: ModelInfo,
+  hasProviderKey: (provider: ProviderId) => boolean,
+  hiddenIds: ReadonlySet<string>,
+): boolean {
+  if (hiddenIds.has(model.id)) return false;
+  if (providerNeedsKey(model.provider) && !hasProviderKey(model.provider)) {
+    return false;
+  }
+  return true;
+}
+
 /** True for providers that accept an API key — required *or* optional.
  *  Used by Settings to decide whether to render a key card at all. */
 export function providerSupportsKey(id: ProviderId): boolean {
@@ -739,6 +871,7 @@ export const DEFAULT_AUTOCOMPLETE_MODEL: Partial<Record<ProviderId, string>> = {
   google: "gemini-2.5-flash",
   xai: "grok-4-fast-reasoning",
   deepseek: "deepseek-v4-flash",
+  zai: "glm-4.7-flash",
   openrouter: "openai/gpt-5.4-mini",
   "openai-compatible": "",
 };
@@ -858,6 +991,8 @@ const LITE_SYSTEM_PROMPT_MODEL_IDS = new Set<string>([
   "gemini-2.5-flash",
   "gemini-3-flash-preview",
   "deepseek-v4-flash",
+  "glm-4.7-flash",
+  "glm-4.5-air",
   "gpt-oss-120b",
   "openai/gpt-oss-20b",
   "llama3.3-70b",

@@ -52,6 +52,7 @@ type Props = {
   onActiveChange?: (active: boolean) => void;
   onRevealInTerminal?: (path: string) => void;
   onAttachToAgent?: (path: string) => void;
+  onOpenWith?: (path: string) => void;
 };
 
 export type ExplorerSearchHandle = {
@@ -67,6 +68,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
   onActiveChange,
   onRevealInTerminal,
   onAttachToAgent,
+  onOpenWith,
 }: Props,
   ref,
 ) {
@@ -284,6 +286,12 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
                           Open
                         </ContextMenuItem>
                       )}
+                      <ContextMenuItem
+                        className={COMPACT_ITEM}
+                        onSelect={() => onOpenWith?.(hit.path)}
+                      >
+                        Open With…
+                      </ContextMenuItem>
                       {hit.is_dir && onRevealInTerminal && (
                         <ContextMenuItem
                           className={COMPACT_ITEM}

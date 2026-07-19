@@ -6,7 +6,9 @@ export type SettingsTab =
   | "skills"
   | "github"
   | "language-servers"
+  | "mcp"
   | "context"
+  | "project"
   | "accessibility"
   | "about";
 

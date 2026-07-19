@@ -1,5 +1,5 @@
-use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 use super::isanagentignore;
+use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
 /// Creates a new empty file. Fails if the file already exists.
 #[tauri::command]

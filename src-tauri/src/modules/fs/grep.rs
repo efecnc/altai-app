@@ -8,8 +8,8 @@ use grep_searcher::{BinaryDetection, SearcherBuilder};
 use ignore::{WalkBuilder, WalkState};
 use serde::Serialize;
 
-use super::to_canon;
 use super::isanagentignore::IGNORE_FILENAME;
+use super::to_canon;
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
 const FILE_SIZE_CAP: u64 = 5 * 1024 * 1024;

@@ -304,12 +304,8 @@ async fn stdin_writer_task(
     // JSON-RPC servers), this is how it gets delivered.
 }
 
-async fn reader_task<R>(
-    id: u64,
-    stream: &'static str,
-    mut reader: R,
-    channel: Channel<Response>,
-) where
+async fn reader_task<R>(id: u64, stream: &'static str, mut reader: R, channel: Channel<Response>)
+where
     R: AsyncReadExt + Unpin,
 {
     // 16 KiB matches PTY's chunk size; small enough for low-latency frames,

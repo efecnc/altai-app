@@ -6,6 +6,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { parseMcpToolName } from "@/modules/mcp/toolName";
 import {
   Archive02Icon,
   ArchiveArrowDownIcon,
@@ -22,6 +23,7 @@ import {
   FolderOpenIcon,
   GlobalSearchIcon,
   Link02Icon,
+  PlugIcon,
   RobotIcon,
   Search01Icon,
   SparklesIcon,
@@ -33,6 +35,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { DynamicToolUIPart, ToolUIPart } from "ai";
 import type { ComponentProps, ReactNode } from "react";
 import { isValidElement, memo, useState } from "react";
+import {
+  parseTodoItems,
+  summarizeTodos,
+  TodoChecklist,
+} from "./todo-checklist";
 
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart;
@@ -106,7 +113,8 @@ const TOOL_META: Record<string, { label: string; icon: typeof File01Icon }> = {
 // Unknown names pass through unchanged so non-tool status text (e.g.
 // "Sending to ALTAI…") is left alone.
 export function toolLabel(name: string): string {
-  return TOOL_META[name]?.label ?? name;
+  const mcp = parseMcpToolName(name);
+  return mcp ? `MCP · ${mcp.server}` : TOOL_META[name]?.label ?? name;
 }
 
 const STATUS_DOT: Record<ToolPart["state"], string> = {
@@ -130,6 +138,8 @@ const STATUS_LABEL: Record<ToolPart["state"], string> = {
 };
 
 function deriveSummary(toolName: string, input: unknown): string | null {
+  const mcp = parseMcpToolName(toolName);
+  if (mcp) return mcp.tool;
   if (!input || typeof input !== "object") return null;
   const i = input as Record<string, unknown>;
   const str = (k: string) =>
@@ -245,19 +255,26 @@ export type ToolProps = ComponentProps<typeof Collapsible> & {
 };
 
 // Tools whose `input` is large and streamed (file bodies, sub-agent
-// prompts, todo lists). We hide the *input* body for these — the AI
-// diff tab is the canonical place to view file changes, and re-rendering
-// streamed input on every token both stalls the UI and duplicates
-// information. Outputs are still shown: a `run_subagent` summary or a
-// `write_file` "✓ wrote · path" card is the meaningful artifact.
+// prompts). We hide the *input* body for these — the AI diff tab is the
+// canonical place to view file changes, and re-rendering streamed input on
+// every token both stalls the UI and duplicates information. Outputs are
+// still shown: a `run_subagent` summary or a `write_file` "✓ wrote · path"
+// card is the meaningful artifact.
+// `todo_write` is intentionally NOT in this set — its input is the canonical
+// checklist the user wants to see inline (Kilo-Code style), rendered via the
+// dedicated `TodoChecklist` rather than a raw JSON dump.
 const INPUT_HEAVY_TOOLS = new Set([
   "write_file",
   "edit_file",
-  "todo_write",
   "python_run",
   "execution_run",
   "execution_run_background",
 ]);
+
+// Tools that render their input as a rich inline card instead of the default
+// mono JSON / preview block. For these the input body is always shown
+// (regardless of INPUT_HEAVY_TOOLS) and the card carries its own affordances.
+const INPUT_RICH_TOOLS = new Set(["todo_write"]);
 
 const ToolImpl = ({
   className,
@@ -269,18 +286,30 @@ const ToolImpl = ({
   defaultOpen,
   ...props
 }: ToolProps) => {
+  const mcp = parseMcpToolName(toolName);
   const meta = TOOL_META[toolName];
-  const Icon = meta?.icon ?? ToolsIcon;
-  const label = meta?.label ?? toolName;
+  const Icon = mcp ? PlugIcon : meta?.icon ?? ToolsIcon;
+  const label = mcp ? `MCP · ${mcp.server}` : meta?.label ?? toolName;
   const summary = deriveSummary(toolName, input);
   const subtitle = deriveSubtitle(toolName, input);
   const isError = state === "output-error";
-  const open = defaultOpen ?? isError;
   const isInputHeavy = INPUT_HEAVY_TOOLS.has(toolName);
-  // Hide just the streamed input for heavy tools — outputs are always
-  // shown when present so e.g. a `run_subagent` summary or a
-  // `write_file` confirmation card remains reachable.
-  const showInputBody = !isInputHeavy && Boolean(input);
+  const isInputRich = INPUT_RICH_TOOLS.has(toolName);
+  // For `todo_write`: expand while the plan is still active (pending or
+  // in_progress items remain) so the user watches progress live; collapse
+  // once everything is done so the finished checklist doesn't crowd the
+  // transcript. Errors always expand.
+  const todoItems = isInputRich ? parseTodoItems(input) : [];
+  const todoSummary = isInputRich ? summarizeTodos(todoItems) : null;
+  const todoHasOpen =
+    todoSummary !== null &&
+    (todoSummary.inProgress > 0 || todoSummary.done < todoSummary.total);
+  const open = isInputRich
+    ? isError || todoHasOpen
+    : (defaultOpen ?? isError);
+  // Rich-input tools always show the input body (their card *is* the input
+  // view). Heavy tools hide it; everyone else shows it when present.
+  const showInputBody = isInputRich || (!isInputHeavy && Boolean(input));
   const showOutputBody = output !== undefined;
   const hasDetails =
     showInputBody || showOutputBody || Boolean(errorText);
@@ -322,7 +351,12 @@ const ToolImpl = ({
           className="shrink-0 text-muted-foreground"
         />
         <span className="shrink-0 font-medium text-foreground">{label}</span>
-        {summary ? (
+        {isInputRich && todoSummary ? (
+          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+            {todoSummary.done}/{todoSummary.total}
+          </span>
+        ) : null}
+        {summary && !isInputRich ? (
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
             {summary}
           </span>
@@ -381,8 +415,28 @@ export const Tool = memo(ToolImpl, (a, b) => {
 
 function ToolInput({ toolName, input }: { toolName: string; input: unknown }) {
   if (input == null) return null;
+  const mcp = parseMcpToolName(toolName);
+  if (mcp) {
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-violet-500/20 bg-violet-500/[0.055] px-2 py-1.5 text-[10.5px]">
+          <span className="font-medium text-violet-700 dark:text-violet-300">{mcp.server}</span>
+          <span className="text-muted-foreground">→</span>
+          <code className="font-mono text-foreground">{mcp.tool}</code>
+        </div>
+        <div className="space-y-1">
+          <div className="text-[10px] font-medium text-muted-foreground">Arguments</div>
+          <CodeBlockMini code={typeof input === "string" ? input : JSON.stringify(input, null, 2)} language="json" />
+        </div>
+      </div>
+    );
+  }
   const preview = renderInputPreview(toolName, input);
+  // Rich previews (e.g. the todo checklist) carry their own visual identity
+  // — a redundant "Input" caption above them just adds noise.
+  const isRich = INPUT_RICH_TOOLS.has(toolName) && preview !== null;
   if (preview) {
+    if (isRich) return <>{preview}</>;
     return (
       <div className="space-y-1">
         <div className="text-[10px] font-medium text-muted-foreground">
@@ -414,6 +468,11 @@ function renderInputPreview(
   const str = (k: string) =>
     typeof i[k] === "string" ? (i[k] as string) : null;
 
+  if (toolName === "todo_write") {
+    const items = parseTodoItems(input);
+    if (items.length === 0) return null;
+    return <TodoChecklist items={items} dense />;
+  }
   if (toolName === "exec") {
     const cmd = str("command");
     const cwd = str("working_dir");
@@ -473,6 +532,25 @@ function ToolOutput({
   }
   if (output === undefined || output === null) return null;
 
+  // Pruned-old-output marker: the TS-side prune pass collapses tool outputs
+  // outside the recency window to `{ cleared: true }` (see compaction.ts).
+  // Render the human-facing marker instead of the raw `{cleared:true}` JSON.
+  if (
+    typeof output === "object" &&
+    (output as { cleared?: unknown }).cleared === true
+  ) {
+    return (
+      <div className="space-y-1">
+        <div className="text-[10px] font-medium text-muted-foreground">
+          Output
+        </div>
+        <div className="rounded border border-dashed border-border/60 bg-muted/30 px-2 py-1.5 font-mono text-[11px] italic text-muted-foreground">
+          [Old tool result content cleared]
+        </div>
+      </div>
+    );
+  }
+
   const custom = renderToolOutput(toolName, output);
   if (custom) return custom;
 
@@ -504,6 +582,7 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
   // monospace `CodeBlockMini` which reads as a wall of text; we extract
   // the meaningful bits instead.
   if (typeof output === "string") {
+    if (parseMcpToolName(toolName)) return <McpToolOutput output={output} />;
     if (toolName === "web_fetch" || toolName === "arxiv_fetch") {
       return <FetchedDocOutput text={output} />;
     }
@@ -846,27 +925,13 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
   }
 
   if (toolName === "todo_write") {
-    const count = typeof o.count === "number" ? o.count : null;
-    const inProgress =
-      typeof o.inProgress === "string" ? o.inProgress : null;
+    // The full checklist is rendered inline from the tool's `input` (see
+    // renderInputPreview + TodoChecklist), so the output card would just
+    // duplicate it. Surface only a compact "updated" confirmation.
     return (
-      <div className="space-y-0.5 font-mono text-[11px]">
-        <div className="flex items-center gap-1.5">
-          <span className="text-emerald-600 dark:text-emerald-400">✓</span>
-          <span className="text-foreground">
-            {count != null
-              ? `${count} item${count === 1 ? "" : "s"}`
-              : "updated"}
-          </span>
-        </div>
-        {inProgress ? (
-          <div className="flex items-center gap-1.5 pl-3">
-            <span className="size-1.5 shrink-0 rounded-full bg-amber-500" />
-            <span className="truncate text-muted-foreground">
-              in progress · {inProgress}
-            </span>
-          </div>
-        ) : null}
+      <div className="flex items-center gap-1.5 font-mono text-[11px]">
+        <span className="text-emerald-600 dark:text-emerald-400">✓</span>
+        <span className="text-muted-foreground">plan updated</span>
       </div>
     );
   }
@@ -923,6 +988,30 @@ function renderToolOutput(toolName: string, output: unknown): ReactNode | null {
   }
 
   return null;
+}
+
+function McpToolOutput({ output }: { output: string }) {
+  let text = output;
+  try {
+    const parsed = JSON.parse(output) as { content?: unknown; structuredContent?: unknown };
+    if (Array.isArray(parsed.content)) {
+      const textParts = parsed.content
+        .filter((part): part is { type?: unknown; text?: unknown } => !!part && typeof part === "object")
+        .map((part) => (part.type === "text" && typeof part.text === "string" ? part.text : null))
+        .filter((part): part is string => part !== null);
+      if (textParts.length) text = textParts.join("\n\n");
+    } else if (parsed.structuredContent !== undefined) {
+      text = JSON.stringify(parsed.structuredContent, null, 2);
+    }
+  } catch {
+    // Non-JSON MCP output is still valid; render it as returned.
+  }
+  return (
+    <div className="space-y-1">
+      <div className="text-[10px] font-medium text-muted-foreground">MCP result</div>
+      <CodeBlockMini code={text} language="text" />
+    </div>
+  );
 }
 
 // Trailing footer the Rust runtime appends to every web_fetch / arxiv_fetch

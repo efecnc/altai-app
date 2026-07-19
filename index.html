@@ -21,11 +21,44 @@
         } catch (e) {}
       })();
     </script>
+    <script>
+      (function () {
+        function showStartupError(error) {
+          var root = document.getElementById("root");
+          if (!root || root.dataset.startupError) return;
+          root.dataset.startupError = "true";
+          var detail = error && (error.stack || error.message)
+            ? String(error.stack || error.message)
+            : String(error || "Unknown startup error");
+          root.innerHTML =
+            '<main style="box-sizing:border-box;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;background:#0a0a0a;color:#f5f5f5;font-family:ui-sans-serif,system-ui,sans-serif">' +
+            '<section style="max-width:720px;border:1px solid #7f1d1d;border-radius:12px;background:#1c1012;padding:20px">' +
+            '<h1 style="margin:0 0 8px;font-size:16px">ALTAI could not start</h1>' +
+            '<p style="margin:0 0 14px;color:#d4d4d8;font-size:13px">The startup error is shown below. Please share it so it can be fixed.</p>' +
+            '<pre style="margin:0;max-height:40vh;overflow:auto;white-space:pre-wrap;color:#fecaca;font-size:12px">' +
+            detail.replace(/[&<>]/g, function (char) {
+              return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[char];
+            }) +
+            '</pre></section></main>';
+        }
+        window.addEventListener("error", function (event) {
+          showStartupError(event.error || event.message);
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          showStartupError(event.reason);
+        });
+      })();
+    </script>
   </head>
 
   <body>
     <div id="root">
-      <div id="terminal"></div>
+      <div
+        id="altai-boot"
+        style="display:flex;min-height:100vh;align-items:center;justify-content:center;background:#0a0a0a;color:#a1a1aa;font:13px ui-sans-serif,system-ui,sans-serif"
+      >
+        Starting ALTAI…
+      </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

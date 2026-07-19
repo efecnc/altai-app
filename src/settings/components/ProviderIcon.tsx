@@ -11,6 +11,7 @@ import {
   DeepseekIcon,
   GlobeIcon,
   Hexagon01Icon,
+  AiBrain01Icon,
   PlugIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -24,6 +25,8 @@ const ICON_BY_PROVIDER = {
   groq: FlashIcon,
   deepseek: DeepseekIcon,
   mistral: Hexagon01Icon,
+  zai: AiBrain01Icon,
+  "zai-coding-plan": AiBrain01Icon,
   openrouter: GlobeIcon,
   "openai-compatible": PlugIcon,
   lmstudio: ComputerIcon,

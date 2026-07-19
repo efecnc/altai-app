@@ -4,7 +4,11 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 import { defineConfig } from "vite";
 
-const host = process.env.TAURI_DEV_HOST;
+const hmrHost = process.env.TAURI_DEV_HOST;
+// WebKit can resolve `localhost` to IPv4 while Vite's automatic host choice
+// may bind only IPv6 (`::1`). Pin the dev server to loopback IPv4 so Tauri's
+// webview and the server always agree on the address.
+const devHost = hmrHost || "127.0.0.1";
 
 // https://vite.dev/config/
 export default defineConfig(async ({ mode }) => ({
@@ -86,11 +90,11 @@ export default defineConfig(async ({ mode }) => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
-    hmr: host
+    host: devHost,
+    hmr: hmrHost
       ? {
           protocol: "ws",
-          host,
+          host: hmrHost,
           port: 1421,
         }
       : undefined,

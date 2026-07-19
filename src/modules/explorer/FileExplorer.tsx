@@ -25,6 +25,7 @@ import {
   useState,
 } from "react";
 import { ExplorerSearch, type ExplorerSearchHandle } from "./ExplorerSearch";
+import { OpenWithDialog } from "./OpenWithDialog";
 import { EntryRow, PendingRow, StatusRow } from "./TreeRow";
 import { InlineInput } from "./InlineInput";
 import { copyToClipboard, revealInFinder } from "./lib/contextActions";
@@ -174,6 +175,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
     const [selectedPath, setSelectedPath] = useState<string | null>(null);
     const [isSearchOpen, setIsSearchOpen] = useState(false);
     const [isSearchActive, setIsSearchActive] = useState(false);
+    const [openWithPath, setOpenWithPath] = useState<string | null>(null);
     const searchRef = useRef<ExplorerSearchHandle>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const treeRef = useRef<HTMLDivElement>(null);
@@ -365,6 +367,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
               onRevealInTerminal={onRevealInTerminal}
               onAttachToAgent={onAttachToAgent}
               onOpenMarkdownPreview={onOpenMarkdownPreview}
+              onOpenWith={setOpenWithPath}
             />
           );
         }
@@ -453,6 +456,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
           onActiveChange={setIsSearchActive}
           onRevealInTerminal={onRevealInTerminal}
           onAttachToAgent={onAttachToAgent}
+          onOpenWith={setOpenWithPath}
         />
 
         {!isSearchActive ? (
@@ -565,6 +569,12 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
               )}
               <ContextMenuItem
                 className={COMPACT_ITEM}
+                onSelect={() => setOpenWithPath(rootPath)}
+              >
+                Open With…
+              </ContextMenuItem>
+              <ContextMenuItem
+                className={COMPACT_ITEM}
                 onSelect={() => void revealInFinder(rootPath)}
               >
                 Reveal in Finder
@@ -598,6 +608,13 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(
             </ContextMenuContent>
           </ContextMenu>
         ) : null}
+        <OpenWithDialog
+          path={openWithPath}
+          open={openWithPath !== null}
+          onOpenChange={(open) => {
+            if (!open) setOpenWithPath(null);
+          }}
+        />
       </div>
     );
   },

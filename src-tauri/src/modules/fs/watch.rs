@@ -64,7 +64,10 @@ fn all_paths_ignored(event: &Event) -> bool {
     if event.paths.is_empty() {
         return false;
     }
-    event.paths.iter().all(|p| isanagentignore::is_ignored(p, true))
+    event
+        .paths
+        .iter()
+        .all(|p| isanagentignore::is_ignored(p, true))
 }
 
 /// Drains coalesced change ticks and emits one `fs://changed` per quiet burst.
@@ -86,12 +89,7 @@ fn run_debounce_loop(app: AppHandle, root: String, rx: Receiver<()>) {
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         }
-        let _ = app.emit(
-            "fs://changed",
-            FsChangedEvent {
-                root: root.clone(),
-            },
-        );
+        let _ = app.emit("fs://changed", FsChangedEvent { root: root.clone() });
     }
 }
 
@@ -179,7 +177,11 @@ mod tests {
     #[test]
     fn all_paths_ignored_true_when_every_path_matches_ignore() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join(isanagentignore::IGNORE_FILENAME), "secret*\n").unwrap();
+        fs::write(
+            dir.path().join(isanagentignore::IGNORE_FILENAME),
+            "secret*\n",
+        )
+        .unwrap();
         isanagentignore::invalidate_all();
         let event = Event::new(EventKind::Create(CreateKind::File));
         let mut event = event;
@@ -190,7 +192,11 @@ mod tests {
     #[test]
     fn all_paths_ignored_false_when_any_path_is_outside_ignore() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join(isanagentignore::IGNORE_FILENAME), "secret*\n").unwrap();
+        fs::write(
+            dir.path().join(isanagentignore::IGNORE_FILENAME),
+            "secret*\n",
+        )
+        .unwrap();
         isanagentignore::invalidate_all();
         let mut event = Event::new(EventKind::Create(CreateKind::File));
         event.paths = vec![dir.path().join("secret"), dir.path().join("readme")];

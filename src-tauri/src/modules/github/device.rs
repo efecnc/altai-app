@@ -61,7 +61,11 @@ pub async fn start() -> Result<DeviceCodeResponse, String> {
         .map_err(|e| format!("unexpected GitHub response: {e}"))?;
     Ok(DeviceCodeResponse {
         interval: if raw.interval == 0 { 5 } else { raw.interval },
-        expires_in: if raw.expires_in == 0 { 900 } else { raw.expires_in },
+        expires_in: if raw.expires_in == 0 {
+            900
+        } else {
+            raw.expires_in
+        },
         device_code: raw.device_code,
         user_code: raw.user_code,
         verification_uri: raw.verification_uri,
@@ -85,7 +89,9 @@ pub async fn poll(device_code: &str, interval: u64, expires_in: u64) -> Result<S
 
     loop {
         if Instant::now() >= deadline {
-            return Err("GitHub authorization timed out — please try connecting again.".to_string());
+            return Err(
+                "GitHub authorization timed out — please try connecting again.".to_string(),
+            );
         }
         tokio::time::sleep(Duration::from_secs(wait)).await;
 
@@ -106,9 +112,7 @@ pub async fn poll(device_code: &str, interval: u64, expires_in: u64) -> Result<S
             Some("expired_token") => {
                 return Err("The device code expired — please try connecting again.".to_string())
             }
-            Some("access_denied") => {
-                return Err("GitHub authorization was cancelled.".to_string())
-            }
+            Some("access_denied") => return Err("GitHub authorization was cancelled.".to_string()),
             Some(other) => return Err(format!("GitHub authorization failed: {other}")),
             None => continue,
         }

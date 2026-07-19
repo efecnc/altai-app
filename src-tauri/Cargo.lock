@@ -148,6 +148,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "plist",
  "portable-pty",
  "reqwest 0.12.28",
  "serde",
@@ -3596,7 +3597,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 [[package]]
 name = "isanagent"
 version = "0.10.0"
-source = "git+https://github.com/efecnc/isanagent.git?rev=f8533f3d57456ca3fd5a4cfcbe0e0cc1f573eefb#f8533f3d57456ca3fd5a4cfcbe0e0cc1f573eefb"
+source = "git+https://github.com/efecnc/isanagent.git?rev=fa3352b2e9e09502774792b3c289cdf946b65c3e#fa3352b2e9e09502774792b3c289cdf946b65c3e"
 dependencies = [
  "arboard",
  "async-stream",
@@ -3618,6 +3619,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "htmd",
+ "ignore",
  "imap",
  "include_dir",
  "lettre",

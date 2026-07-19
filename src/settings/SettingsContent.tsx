@@ -7,7 +7,9 @@ import {
   GithubIcon,
   InformationCircleIcon,
   Layers02Icon,
+  Notebook01Icon,
   PuzzleIcon,
+  PlugIcon,
   Settings01Icon,
   UniversalAccessIcon,
   UserMultiple02Icon,
@@ -22,7 +24,9 @@ import { ContextSection } from "./sections/ContextSection";
 import { GeneralSection } from "./sections/GeneralSection";
 import { GitHubSection } from "./sections/GitHubSection";
 import { LanguageServersSection } from "./sections/LanguageServersSection";
+import { McpSection } from "./sections/McpSection";
 import { ModelsSection } from "./sections/ModelsSection";
+import { ProjectIntelligenceSection } from "./sections/ProjectIntelligenceSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
 import { SkillsSection } from "./sections/SkillsSection";
 
@@ -36,10 +40,12 @@ const TABS: {
   { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon, component: ShortcutsSection },
   { id: "models", label: "Models", icon: AiScanIcon, component: ModelsSection },
   { id: "context", label: "Context", icon: Layers02Icon, component: ContextSection },
+  { id: "project", label: "Project", icon: Notebook01Icon, component: ProjectIntelligenceSection },
   { id: "agents", label: "Agents", icon: UserMultiple02Icon, component: AgentsSection },
   { id: "skills", label: "Skills", icon: PuzzleIcon, component: SkillsSection },
   { id: "github", label: "GitHub", icon: GithubIcon, component: GitHubSection },
   { id: "language-servers", label: "Languages", icon: CodeSquareIcon, component: LanguageServersSection },
+  { id: "mcp", label: "MCP", icon: PlugIcon, component: McpSection },
   { id: "accessibility", label: "Accessibility", icon: UniversalAccessIcon, component: AccessibilitySection },
   { id: "about", label: "About", icon: InformationCircleIcon, component: AboutSection },
 ];

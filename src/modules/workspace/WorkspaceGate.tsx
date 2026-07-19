@@ -17,9 +17,16 @@ export function WorkspaceGate({ children }: { children: React.ReactNode }) {
     void hydrate();
   }, [hydrate]);
 
-  // Brief blank while we read the persisted folder — avoids flashing the
-  // welcome screen before we know whether a workspace is already remembered.
-  if (!hydrated) return null;
+  // Keep the app visibly alive while we read persisted workspace state. If the
+  // native store is slow or unavailable, folder.ts guarantees this resolves to
+  // the welcome screen rather than leaving a black window behind.
+  if (!hydrated) {
+    return (
+      <main className="flex h-screen w-screen items-center justify-center bg-background text-[13px] text-muted-foreground">
+        Starting ALTAI…
+      </main>
+    );
+  }
 
   if (!folder) return <WorkspaceWelcome />;
 

@@ -40,6 +40,7 @@ export type EntryRowProps = {
   onRevealInTerminal?: (path: string) => void;
   onAttachToAgent?: (path: string) => void;
   onOpenMarkdownPreview?: (path: string) => void;
+  onOpenWith?: (path: string) => void;
 };
 
 function isMarkdownPath(path: string): boolean {
@@ -64,6 +65,7 @@ function EntryRowImpl(props: EntryRowProps) {
     onRevealInTerminal,
     onAttachToAgent,
     onOpenMarkdownPreview,
+    onOpenWith,
   } = props;
 
   const [isConfirming, setIsConfirming] = useState(false);
@@ -155,6 +157,12 @@ function EntryRowImpl(props: EntryRowProps) {
             Open
           </ContextMenuItem>
         )}
+        <ContextMenuItem
+          className={COMPACT_ITEM}
+          onSelect={() => onOpenWith?.(path)}
+        >
+          Open With…
+        </ContextMenuItem>
         {!isDir && isMarkdownPath(path) && onOpenMarkdownPreview && (
           <ContextMenuItem
             className={COMPACT_ITEM}

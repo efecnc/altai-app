@@ -5,7 +5,9 @@ import { z } from "zod";
 export type AssignmentSource =
   | { kind: "issue"; owner: string; repo: string; number: number; url: string }
   | { kind: "pr"; owner: string; repo: string; number: number; url: string }
-  | { kind: "todo"; todoId: string };
+  | { kind: "todo"; todoId: string }
+  /** A user-created task that runs in its own background chat. */
+  | { kind: "task"; prompt: string };
 
 export type AssignmentStatus =
   | "dispatching"
@@ -15,6 +17,15 @@ export type AssignmentStatus =
   | "failed"
   | "cancelled";
 
+/** Per-task runtime choices. They are deliberately stored with the task so a
+ * completed run remains auditable after the global preferences change. */
+export type AssignmentRunConfig = {
+  agentId?: string;
+  modelId?: string;
+  skills?: string[];
+  permissionMode?: "ask" | "auto-edit" | "bypass";
+};
+
 /** One assignment = one ALTAI session = one IsanAgent chat_id (1:1). */
 export interface Assignment {
   id: string;
@@ -23,6 +34,7 @@ export interface Assignment {
   sessionId: string;
   title: string;
   status: AssignmentStatus;
+  runConfig?: AssignmentRunConfig;
   createdAt: number;
   updatedAt: number;
 }
@@ -43,6 +55,7 @@ const assignmentSourceSchema = z.discriminatedUnion("kind", [
     url: z.string(),
   }),
   z.object({ kind: z.literal("todo"), todoId: z.string() }),
+  z.object({ kind: z.literal("task"), prompt: z.string().min(1) }),
 ]);
 
 const assignmentSchema = z.object({
@@ -58,6 +71,14 @@ const assignmentSchema = z.object({
     "failed",
     "cancelled",
   ]),
+  runConfig: z
+    .object({
+      agentId: z.string().optional(),
+      modelId: z.string().optional(),
+      skills: z.array(z.string().min(1)).max(20).optional(),
+      permissionMode: z.enum(["ask", "auto-edit", "bypass"]).optional(),
+    })
+    .optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 }) satisfies z.ZodType<Assignment>;
@@ -122,5 +143,20 @@ export function buildTodoSeed(title: string, description?: string): string {
     description ? `\n${clip(description)}` : "",
     ``,
     `Use todo_write to track sub-steps and spawn sub-agents where it helps. Summarize the outcome when done.`,
+  ].join("\n");
+}
+
+/** Seed prompt for a standalone task run. */
+export function buildTaskSeed(prompt: string, skills?: string[]): string {
+  return [
+    "You are running as an independent background task in ALTAI.",
+    "",
+    "Task:",
+    clip(prompt, 12_000),
+    "",
+    skills?.length
+      ? `Selected workspace skills: ${skills.join(", ")}. Load the relevant skill instructions before using a selected skill.`
+      : "",
+    "Work autonomously in the current workspace. Start with todo_write for any task with multiple steps. Inspect before changing files, verify your work when practical, and ask for approval only when an action genuinely requires it. Finish with a concise summary of results, changed files, and any remaining limitations.",
   ].join("\n");
 }

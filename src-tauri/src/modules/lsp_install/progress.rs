@@ -17,7 +17,10 @@ pub enum InstallPhase {
     Started { total_bytes: Option<u64> },
     /// Streaming bytes from the network. `total_bytes` is `None` for
     /// chunked responses with no Content-Length.
-    Downloaded { bytes: u64, total_bytes: Option<u64> },
+    Downloaded {
+        bytes: u64,
+        total_bytes: Option<u64>,
+    },
     /// Decompressing / unpacking on disk. No byte counter — extract is
     /// usually fast and progress jitter would just confuse the bar.
     Extracting,

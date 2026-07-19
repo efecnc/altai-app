@@ -1,5 +1,5 @@
 use super::runtime::{self, AgentRuntime, CompactionArg};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 /// Cross-provider failover spec sent from JS (camelCase) — the model the agent
@@ -49,10 +49,7 @@ pub async fn agent_start(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let base = base_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let base = base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
     // The user-selected workspace folder. IsanAgent roots its workspace at
     // `<folder>/.isanagent` so memory/sandbox/config live with the project,
     // not under `~/.isanagent`.
@@ -109,10 +106,19 @@ pub async fn agent_send(
     let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
     let key = api_key.unwrap_or_default();
     let model = model_name.unwrap_or_else(|| "gemini-2.5-flash".to_string());
-    let persona = instructions.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let persona = instructions
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let base = base_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let workspace = workspace_path.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let permission = permission_mode.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let workspace = workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let permission = permission_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let fb = fallback.map(|f| isanagent::agent::FallbackProviderSpec {
         provider_name: f.provider_name,
         base_url: f.base_url,
@@ -164,7 +170,6 @@ pub async fn agent_cancel(
     runtime::route_cancel(&state, chat_id.unwrap_or_default()).await
 }
 
-
 /// List all chat sessions persisted in the active workspace's backend memory DB.
 ///
 /// This is the reconciliation source for the frontend chat-history list: it
@@ -209,6 +214,28 @@ pub async fn agent_get_session_messages(
         .map(serde_json::to_value)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to serialize messages: {}", e))
+}
+
+/// Rewind a chat's backend history to the N-th user message.
+///
+/// Sends `TruncateAfterUserMessage` to the per-workspace memory actor: keep
+/// everything up to and including the `keep_user_messages`-th user-role message
+/// (1-based, insert order), delete the rest. Returns the number of deleted rows
+/// (`0` is a no-op; `keep_user_messages == 0` wipes the whole thread). This
+/// backs the frontend's conversation edit / retry / checkpoint-rollback — the
+/// durable history lives in the backend, so the rewind must too.
+#[tauri::command]
+pub async fn agent_truncate_after_user_message(
+    state: State<'_, AgentRuntime>,
+    chat_id: String,
+    keep_user_messages: usize,
+    workspace_path: Option<String>,
+) -> Result<usize, String> {
+    let ws = workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    runtime::truncate_after_user_message(&state, ws, &chat_id, keep_user_messages).await
 }
 
 /// Fetch paper metadata directly from the arXiv Atom API.
@@ -311,11 +338,69 @@ pub async fn agent_install_skill(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|p| format!("{}/.isanagent", p.trim_end_matches('/')));
-    let workspace =
-        isanagent::workspace::IsanagentWorkspace::new(workspace_root.as_deref(), None)?;
+    let workspace = isanagent::workspace::IsanagentWorkspace::new(workspace_root.as_deref(), None)?;
     let mut registry = isanagent::skills::SkillRegistry::new(workspace.skills_path());
     let skill = skill.as_deref().map(str::trim).filter(|s| !s.is_empty());
     registry.install_skills_from_repo(repo, skill).await
+}
+
+/// A lightweight index of skills installed in this workspace. Skills remain
+/// owned and loaded by IsanAgent; this only gives ALTAI a safe UI catalogue.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledSkillInfo {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[tauri::command]
+pub fn agent_list_skills(
+    workspace_path: Option<String>,
+) -> Result<Vec<InstalledSkillInfo>, String> {
+    let workspace_root = workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|p| format!("{}/.isanagent", p.trim_end_matches('/')));
+    let workspace = isanagent::workspace::IsanagentWorkspace::new(workspace_root.as_deref(), None)?;
+    let path = workspace.skills_path();
+    let entries = match std::fs::read_dir(&path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut skills = entries
+        .flatten()
+        .filter_map(|entry| {
+            let kind = entry.file_type().ok()?;
+            if !kind.is_dir() {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().trim().to_string();
+            if name.is_empty() || name.starts_with('.') {
+                return None;
+            }
+            let description = std::fs::read_to_string(entry.path().join("SKILL.md"))
+                .ok()
+                .and_then(|text| skill_description(&text));
+            Some(InstalledSkillInfo { name, description })
+        })
+        .collect::<Vec<_>>();
+    skills.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(skills)
+}
+
+fn skill_description(text: &str) -> Option<String> {
+    for line in text.lines().take(40) {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("description:") {
+            let value = value.trim().trim_matches(['\'', '"']);
+            if !value.is_empty() {
+                return Some(value.chars().take(180).collect());
+            }
+        }
+    }
+    None
 }
 
 fn extract_arxiv_id(url: &str) -> Option<String> {

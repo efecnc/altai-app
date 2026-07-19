@@ -111,18 +111,27 @@ export const useWorkspaceFolderStore = create<State>((set, get) => ({
   },
   hydrate: async () => {
     if (get().hydrated) return;
-    const recents = (await store.get<string[]>(KEY_RECENTS)) ?? [];
-    const recentList = Array.isArray(recents) ? recents : [];
-    // New windows start on the welcome screen; only `main` reopens the folder.
-    let saved = isPrimaryWindow()
-      ? ((await store.get<string>(KEY_FOLDER)) ?? null)
-      : null;
-    // If the persisted workspace was deleted/moved/unmounted, fall back to the
-    // welcome screen instead of loading into a broken workspace, and forget it
-    // as the active folder (it stays in recents so the user can re-pick it).
-    if (saved && !(await folderIsAccessible(saved))) {
-      saved = null;
-      void store.delete(KEY_FOLDER).then(() => store.save());
+    let recentList: string[] = [];
+    let saved: string | null = null;
+    try {
+      const recents = (await store.get<string[]>(KEY_RECENTS)) ?? [];
+      recentList = Array.isArray(recents) ? recents : [];
+      // New windows start on the welcome screen; only `main` reopens the folder.
+      saved = isPrimaryWindow()
+        ? ((await store.get<string>(KEY_FOLDER)) ?? null)
+        : null;
+      // If the persisted workspace was deleted/moved/unmounted, fall back to the
+      // welcome screen instead of loading into a broken workspace, and forget it
+      // as the active folder (it stays in recents so the user can re-pick it).
+      if (saved && !(await folderIsAccessible(saved))) {
+        saved = null;
+        void store.delete(KEY_FOLDER).then(() => store.save());
+      }
+    } catch (error) {
+      // A missing/corrupt store or a transient native-plugin failure must never
+      // leave the entire app permanently blank. Start clean and let the user
+      // pick a workspace instead.
+      console.warn("workspace hydration failed; starting without a workspace", error);
     }
     set({
       folder: saved,

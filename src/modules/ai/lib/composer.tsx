@@ -15,7 +15,7 @@ import { useSnippetsStore } from "../store/snippetsStore";
 export type FileAttachment = {
   id: string;
   name: string;
-  kind: "image" | "text" | "selection";
+  kind: "image" | "text" | "selection" | "terminal" | "diff" | "folder";
   mediaType: string;
   url?: string;
   text?: string;
@@ -38,6 +38,13 @@ type ComposerCtx = {
   addFiles: (list: FileList | null) => Promise<void>;
   /** Attach a file by absolute path — used by the file explorer's "Attach to Agent". */
   attachFileByPath: (path: string) => Promise<void>;
+  attachFolderByPath: (path: string) => Promise<void>;
+  /** Add a bounded, visible piece of runtime context (terminal output or diff). */
+  addTextContext: (input: {
+    kind: "terminal" | "diff" | "folder";
+    name: string;
+    text: string;
+  }) => void;
   removeFile: (id: string) => void;
   pickedSnippets: Snippet[];
   addSnippet: (s: Snippet) => void;
@@ -50,6 +57,7 @@ type ComposerCtx = {
   stop: () => void;
   voice: Voice;
   canSend: boolean;
+  contextTokenEstimate: number;
 };
 
 const Ctx = createContext<ComposerCtx | null>(null);
@@ -102,6 +110,17 @@ export function AiComposerProvider({ children }: ProviderProps) {
     window.addEventListener("altai:ai-attach-file", onAttach);
     return () => window.removeEventListener("altai:ai-attach-file", onAttach);
     // attachFileByPath is stable for our purposes (closes over setFiles only)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const onAttach = (e: Event) => {
+      const path = (e as CustomEvent<string>).detail;
+      if (typeof path === "string" && path.length > 0) void attachFolderByPath(path);
+    };
+    window.addEventListener("altai:ai-attach-folder", onAttach);
+    return () => window.removeEventListener("altai:ai-attach-folder", onAttach);
+    // attachFolderByPath only closes over stable setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -194,6 +213,49 @@ export function AiComposerProvider({ children }: ProviderProps) {
     }
   };
 
+  const attachFolderByPath = async (path: string) => {
+    try {
+      const result = await native.listWorkspaceFiles(path);
+      const files = result.files.slice(0, 500);
+      const manifest = files.length ? files.map((file) => `- ${file}`).join("\n") : "(No files found)";
+      const suffix = result.truncated ? "\n…[file list truncated]" : "";
+      const name = path.split(/[\\/]/).filter(Boolean).pop() || path;
+      addTextContext({ kind: "folder", name, text: `${manifest}${suffix}` });
+    } catch (error) {
+      console.error("attachFolderByPath failed:", error);
+    }
+  };
+
+  const addTextContext = (input: {
+    kind: "terminal" | "diff" | "folder";
+    name: string;
+    text: string;
+  }) => {
+    const text = input.text.trim();
+    if (!text) return;
+    // Keep a single context attachment from turning an ordinary chat turn
+    // into an unbounded prompt. The backend already truncates git diffs; this
+    // covers terminal output and external callers too.
+    const bounded = text.length > 60_000 ? `${text.slice(0, 60_000)}\n…[truncated]` : text;
+    const id = `context-${input.kind}-${input.name}`;
+    setFiles((prev) => {
+      const attachment: FileAttachment = {
+        id,
+        name: input.name,
+        kind: input.kind,
+        mediaType: "text/plain",
+        text: bounded,
+        size: bounded.length,
+      };
+      const existing = prev.findIndex((file) => file.id === id);
+      if (existing < 0) return [...prev, attachment];
+      const next = [...prev];
+      next[existing] = attachment;
+      return next;
+    });
+    useChatStore.getState().focusInput();
+  };
+
   const submit = () => {
     if (isBusy) return;
     const trimmed = value.trim();
@@ -240,6 +302,15 @@ export function AiComposerProvider({ children }: ProviderProps) {
         (f) =>
           `<selection source="${f.source ?? "terminal"}">\n${f.text ?? ""}\n</selection>`,
       );
+    const terminalBlocks = files
+      .filter((f) => f.kind === "terminal")
+      .map((f) => `<terminal-context name="${f.name}">\n${f.text ?? ""}\n</terminal-context>`);
+    const diffBlocks = files
+      .filter((f) => f.kind === "diff")
+      .map((f) => `<git-diff name="${f.name}">\n${f.text ?? ""}\n</git-diff>`);
+    const folderBlocks = files
+      .filter((f) => f.kind === "folder")
+      .map((f) => `<folder name="${f.name}">\n${f.text ?? ""}\n</folder>`);
     const { body: bodyAfterTokens, blocks: snippetBlocks } = expandSnippetTokens(
       effectiveText,
       useSnippetsStore.getState().snippets,
@@ -263,6 +334,9 @@ export function AiComposerProvider({ children }: ProviderProps) {
       commandMarker ?? "",
       allSnippetBlocks.join("\n\n"),
       selectionBlocks.join("\n\n"),
+      terminalBlocks.join("\n\n"),
+      diffBlocks.join("\n\n"),
+      folderBlocks.join("\n\n"),
       fileBlocks.join("\n\n"),
       bodyAfterTokens,
     ]
@@ -300,6 +374,11 @@ export function AiComposerProvider({ children }: ProviderProps) {
       files.length > 0 ||
       pickedSnippets.length > 0 ||
       pickedCommands.length > 0);
+  const contextTokenEstimate = Math.ceil(
+    (files.reduce((total, file) => total + (file.kind === "image" ? 0 : (file.text?.length ?? 0)), 0) +
+      pickedSnippets.reduce((total, snippet) => total + snippet.content.length, 0)) /
+      4,
+  );
 
   const ctx: ComposerCtx = {
     textareaRef,
@@ -308,6 +387,8 @@ export function AiComposerProvider({ children }: ProviderProps) {
     files,
     addFiles,
     attachFileByPath,
+    attachFolderByPath,
+    addTextContext,
     removeFile,
     pickedSnippets,
     addSnippet,
@@ -320,6 +401,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
     stop,
     voice,
     canSend,
+    contextTokenEstimate,
   };
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>;

@@ -12,7 +12,12 @@ use crate::modules::net::{safe_http_request, HttpResponse};
 use crate::modules::secrets::{self, SecretsState};
 
 pub fn get_token(app: &AppHandle, secrets: &SecretsState) -> Result<Option<String>, String> {
-    secrets::get_secret(app, secrets, config::SECRETS_SERVICE, config::SECRETS_ACCOUNT)
+    secrets::get_secret(
+        app,
+        secrets,
+        config::SECRETS_SERVICE,
+        config::SECRETS_ACCOUNT,
+    )
 }
 
 pub fn store_token(app: &AppHandle, secrets: &SecretsState, token: &str) -> Result<(), String> {
@@ -26,7 +31,12 @@ pub fn store_token(app: &AppHandle, secrets: &SecretsState, token: &str) -> Resu
 }
 
 pub fn clear_token(app: &AppHandle, secrets: &SecretsState) -> Result<(), String> {
-    secrets::delete_secret(app, secrets, config::SECRETS_SERVICE, config::SECRETS_ACCOUNT)
+    secrets::delete_secret(
+        app,
+        secrets,
+        config::SECRETS_SERVICE,
+        config::SECRETS_ACCOUNT,
+    )
 }
 
 fn auth_headers(token: &str) -> HashMap<String, String> {
@@ -36,10 +46,7 @@ fn auth_headers(token: &str) -> HashMap<String, String> {
         "accept".to_string(),
         "application/vnd.github+json".to_string(),
     );
-    h.insert(
-        "x-github-api-version".to_string(),
-        "2022-11-28".to_string(),
-    );
+    h.insert("x-github-api-version".to_string(), "2022-11-28".to_string());
     h.insert("user-agent".to_string(), config::USER_AGENT.to_string());
     h
 }

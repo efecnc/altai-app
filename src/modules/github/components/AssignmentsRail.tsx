@@ -59,6 +59,7 @@ function mapRun(run: RunState, fallback: AssignmentStatus): AssignmentStatus {
 function sourceLabel(a: Assignment): string {
   if (a.source.kind === "issue") return `Issue #${a.source.number}`;
   if (a.source.kind === "pr") return `PR #${a.source.number}`;
+  if (a.source.kind === "task") return "Background task";
   return "Todo";
 }
 

@@ -131,9 +131,7 @@ impl Channel for TauriChannel {
 ///
 /// Called from the bus router in runtime.rs to map `TelemetryEvent`
 /// variants to the `Event` enum the frontend already understands.
-pub fn map_telemetry_to_event(
-    telemetry: &isanagent::bus::TelemetryEvent,
-) -> Option<Event> {
+pub fn map_telemetry_to_event(telemetry: &isanagent::bus::TelemetryEvent) -> Option<Event> {
     use isanagent::bus::TelemetryEvent;
     match telemetry {
         TelemetryEvent::ToolCall {
@@ -155,9 +153,7 @@ pub fn map_telemetry_to_event(
             is_error,
             ..
         } => Some(Event::ToolCallEnd {
-            id: tool_call_id
-                .clone()
-                .unwrap_or_else(|| tool_name.clone()),
+            id: tool_call_id.clone().unwrap_or_else(|| tool_name.clone()),
             output: serde_json::Value::String(result.clone()),
             // isanagent sets `is_error` accurately for both in-band tool
             // failures (e.g. `edit_file` "old_text not found") and non-zero
@@ -279,9 +275,7 @@ pub fn map_telemetry_to_event(
 
 /// The originating `chat_id` of a telemetry event, for per-chat event routing.
 /// Returns `None` for variants that aren't scoped to a chat.
-pub fn telemetry_chat_id(
-    telemetry: &isanagent::bus::TelemetryEvent,
-) -> Option<&str> {
+pub fn telemetry_chat_id(telemetry: &isanagent::bus::TelemetryEvent) -> Option<&str> {
     use isanagent::bus::TelemetryEvent::*;
     match telemetry {
         ToolCall { chat_id, .. }
@@ -762,8 +756,7 @@ mod tests {
 
         for e in &events {
             let json = serde_json::to_string(e).unwrap();
-            let parsed: serde_json::Value =
-                serde_json::from_str(&json).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
             let tag = parsed["type"].as_str().unwrap();
             assert_eq!(tag, event_type(e));
             // Round-trip through the Value representation

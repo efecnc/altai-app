@@ -151,7 +151,12 @@ pub fn current_platform_key() -> &'static str {
 /// All four LSPs we plan to support out of the box. Frontend mirrors this
 /// list and looks up by `id`.
 pub fn default_registry() -> Vec<LspManifest> {
-    vec![rust_analyzer(), typescript_language_server(), pyright(), gopls()]
+    vec![
+        rust_analyzer(),
+        typescript_language_server(),
+        pyright(),
+        gopls(),
+    ]
 }
 
 /// Look up one manifest by id.

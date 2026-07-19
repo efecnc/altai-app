@@ -6,9 +6,11 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { create } from "zustand";
 import {
   type Assignment,
+  type AssignmentRunConfig,
   type AssignmentSource,
   type AssignmentStatus,
   buildItemSeed,
+  buildTaskSeed,
   loadAssignments,
   saveAssignments,
 } from "../lib/assignments";
@@ -26,10 +28,10 @@ function newAssignmentId(): string {
 }
 
 /** Verify a runtime target (provider+model+key) resolves before dispatching. */
-function resolveTarget(): { ok: true } | { ok: false; error: string } {
+function resolveTarget(modelId?: string): { ok: true } | { ok: false; error: string } {
   const cs = useChatStore.getState();
   const p = usePreferencesStore.getState();
-  const r = resolveIsanAgentTarget(cs.selectedModelId, cs.apiKeys, {
+  const r = resolveIsanAgentTarget(modelId ?? cs.selectedModelId, cs.apiKeys, {
     lmstudioBaseURL: p.lmstudioBaseURL,
     lmstudioModelId: p.lmstudioModelId,
     mlxBaseURL: p.mlxBaseURL,
@@ -44,6 +46,7 @@ type AssignInput = {
   source: AssignmentSource;
   title: string;
   seed: string;
+  runConfig?: AssignmentRunConfig;
 };
 
 type State = {
@@ -56,6 +59,7 @@ type State = {
   updateStatus: (id: string, status: AssignmentStatus) => void;
   cancel: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  runTask: (input: { title: string; prompt: string; runConfig?: AssignmentRunConfig }) => Promise<string>;
 };
 
 export const useAssignmentsStore = create<State>((set, get) => ({
@@ -82,8 +86,8 @@ export const useAssignmentsStore = create<State>((set, get) => ({
     });
   },
 
-  assign: async ({ source, title, seed }) => {
-    const target = resolveTarget();
+  assign: async ({ source, title, seed, runConfig }) => {
+    const target = resolveTarget(runConfig?.modelId);
     if (!target.ok) throw new Error(target.error);
 
     set({ dispatching: true });
@@ -99,6 +103,7 @@ export const useAssignmentsStore = create<State>((set, get) => ({
         sessionId,
         title,
         status: "dispatching",
+        runConfig,
         createdAt: now,
         updatedAt: now,
       };
@@ -108,7 +113,7 @@ export const useAssignmentsStore = create<State>((set, get) => ({
         return { assignments: next };
       });
 
-      const ok = await dispatchToSession(seed, sessionId);
+      const ok = await dispatchToSession(seed, sessionId, runConfig);
       if (!ok) {
         // Dispatch failed at the runtime — tear down the orphan session and
         // drop the card, then surface the error to the caller.
@@ -181,6 +186,18 @@ export const useAssignmentsStore = create<State>((set, get) => ({
       const next = s.assignments.filter((x) => x.id !== id);
       void saveAssignments(next);
       return { assignments: next };
+    });
+  },
+
+  runTask: async ({ title, prompt, runConfig }) => {
+    const cleanPrompt = prompt.trim();
+    if (!cleanPrompt) throw new Error("Describe the task before starting it.");
+    const cleanTitle = title.trim() || cleanPrompt.split("\n")[0].slice(0, 96);
+    return get().assign({
+      source: { kind: "task", prompt: cleanPrompt },
+      title: `🤖 ${cleanTitle}`,
+      seed: buildTaskSeed(cleanPrompt, runConfig?.skills),
+      runConfig,
     });
   },
 }));

@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverAnchor } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
@@ -7,6 +7,7 @@ import {
   Attachment01Icon,
   Cancel01Icon,
   CodeIcon,
+  File01Icon,
   HashtagIcon,
   Key01Icon,
   Mic01Icon,
@@ -17,6 +18,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { ACCEPTED_FILES, useComposer, type FileAttachment } from "../lib/composer";
+import { native } from "../lib/native";
 import { useWorkspaceFiles } from "../hooks/useWorkspaceFiles";
 import { SLASH_COMMANDS } from "../lib/slashCommands";
 import type { Snippet } from "../lib/snippets";
@@ -88,6 +90,7 @@ export function AiInputBar() {
   const [trigger, setTrigger] = useState<SnippetTrigger | null>(null);
   const [fileTrigger, setFileTrigger] = useState<FileTrigger | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [contextOpen, setContextOpen] = useState(false);
   const workspaceFiles = useWorkspaceFiles(workspaceRoot, fileTrigger !== null);
 
   const [fileQuery, setFileQuery] = useState("");
@@ -240,6 +243,38 @@ export function AiInputBar() {
     c.pickedSnippets.length > 0 ||
     c.pickedCommands.length > 0;
 
+  const attachActiveFile = async () => {
+    const path = useChatStore.getState().live.getActiveFile();
+    if (!path) return;
+    await c.attachFileByPath(path);
+    setContextOpen(false);
+  };
+
+  const attachTerminalContext = () => {
+    const output = useChatStore.getState().live.getTerminalContext();
+    if (!output) return;
+    c.addTextContext({ kind: "terminal", name: "Active terminal", text: output });
+    setContextOpen(false);
+  };
+
+  const attachWorkingDiff = async () => {
+    if (!workspaceRoot) return;
+    try {
+      const diff = await native.gitDiff(workspaceRoot, null, false);
+      if (diff.diffText.trim()) {
+        c.addTextContext({ kind: "diff", name: "Working tree diff", text: diff.diffText });
+      }
+    } finally {
+      setContextOpen(false);
+    }
+  };
+
+  const attachWorkspaceMap = async () => {
+    if (!workspaceRoot) return;
+    await c.attachFolderByPath(workspaceRoot);
+    setContextOpen(false);
+  };
+
   return (
     <div className="shrink-0 bg-transparent px-3 pt-1.5 pb-1.5">
       <input
@@ -282,6 +317,7 @@ export function AiInputBar() {
               }}
               commands={c.pickedCommands}
               onRemoveCommand={(name) => c.removeCommand(name)}
+              contextTokenEstimate={c.contextTokenEstimate}
             />
           </div>
         )}
@@ -425,6 +461,24 @@ export function AiInputBar() {
             <HugeiconsIcon icon={Attachment01Icon} size={14} strokeWidth={1.75} />
           </ToolbarIcon>
 
+          <Popover open={contextOpen} onOpenChange={setContextOpen}>
+            <PopoverAnchor asChild>
+              <ToolbarIcon
+                title="Add workspace context"
+                onClick={() => setContextOpen((open) => !open)}
+                disabled={c.isBusy}
+              >
+                <HugeiconsIcon icon={CodeIcon} size={14} strokeWidth={1.75} />
+              </ToolbarIcon>
+            </PopoverAnchor>
+            <PopoverContent side="top" align="start" sideOffset={6} className="w-56 p-1.5">
+              <ContextAction icon={File01Icon} label="Active file" detail="Attach the file open in the editor" disabled={!workspaceRoot || !useChatStore.getState().live.getActiveFile()} onClick={() => void attachActiveFile()} />
+              <ContextAction icon={Attachment01Icon} label="Workspace file map" detail="Attach a compact folder manifest" disabled={!workspaceRoot} onClick={() => void attachWorkspaceMap()} />
+              <ContextAction icon={TerminalIcon} label="Active terminal" detail="Attach the latest non-private output" disabled={!useChatStore.getState().live.getTerminalContext()} onClick={attachTerminalContext} />
+              <ContextAction icon={CodeIcon} label="Working tree diff" detail="Attach unstaged Git changes" disabled={!workspaceRoot} onClick={() => void attachWorkingDiff()} />
+            </PopoverContent>
+          </Popover>
+
           <PermissionModeSwitcher variant="toolbar-icon" />
           {agentPickerEnabled && <AgentSwitcher variant="toolbar" />}
           <ModelDropdown />
@@ -525,6 +579,7 @@ function ChipsRow({
   onRemoveSnippet,
   commands,
   onRemoveCommand,
+  contextTokenEstimate,
 }: {
   files: FileAttachment[];
   onRemoveFile: (id: string) => void;
@@ -532,6 +587,7 @@ function ChipsRow({
   onRemoveSnippet: (id: string) => void;
   commands: { name: string; label: string; icon: typeof HashtagIcon }[];
   onRemoveCommand: (name: string) => void;
+  contextTokenEstimate: number;
 }) {
   if (files.length === 0 && snippets.length === 0 && commands.length === 0)
     return null;
@@ -613,6 +669,12 @@ function ChipsRow({
                 strokeWidth={1.75}
                 className="text-muted-foreground"
               />
+            ) : f.kind === "terminal" ? (
+              <HugeiconsIcon icon={TerminalIcon} size={11} strokeWidth={1.75} className="text-sky-600 dark:text-sky-400" />
+            ) : f.kind === "diff" ? (
+              <HugeiconsIcon icon={CodeIcon} size={11} strokeWidth={1.75} className="text-amber-600 dark:text-amber-400" />
+            ) : f.kind === "folder" ? (
+              <HugeiconsIcon icon={Attachment01Icon} size={11} strokeWidth={1.75} className="text-violet-600 dark:text-violet-400" />
             ) : (
               <span className="font-mono text-[10px] text-muted-foreground">
                 {extOf(f.name)}
@@ -625,6 +687,9 @@ function ChipsRow({
                   · {selLineCount(f.text)}L
                 </span>
               ) : null}
+              {(f.kind === "terminal" || f.kind === "diff" || f.kind === "folder") && f.text ? (
+                <span className="ml-1 text-muted-foreground">· {selLineCount(f.text)}L</span>
+              ) : null}
             </span>
             <button
               type="button"
@@ -636,8 +701,34 @@ function ChipsRow({
             </button>
           </motion.div>
         ))}
+        {contextTokenEstimate > 0 ? (
+          <span className="self-center px-1 text-[10px] tabular-nums text-muted-foreground" title="Approximate attached context tokens">
+            ~{contextTokenEstimate >= 1000 ? `${(contextTokenEstimate / 1000).toFixed(1)}k` : contextTokenEstimate} tokens
+          </span>
+        ) : null}
       </AnimatePresence>
     </div>
+  );
+}
+
+function ContextAction({
+  icon,
+  label,
+  detail,
+  disabled,
+  onClick,
+}: {
+  icon: typeof CodeIcon;
+  label: string;
+  detail: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" disabled={disabled} onClick={onClick} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left disabled:opacity-40 hover:bg-accent">
+      <HugeiconsIcon icon={icon} size={13} strokeWidth={1.75} className="shrink-0 text-muted-foreground" />
+      <span className="min-w-0"><span className="block text-[11px] font-medium">{label}</span><span className="block truncate text-[9.5px] text-muted-foreground">{detail}</span></span>
+    </button>
   );
 }
 

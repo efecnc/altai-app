@@ -15,10 +15,13 @@ async fn fetch_user(token: &str) -> Result<GitHubUser, String> {
         return Err("GitHub token is invalid or has expired.".to_string());
     }
     if !(200..300).contains(&resp.status) {
-        return Err(format!("GitHub /user request failed (HTTP {})", resp.status));
+        return Err(format!(
+            "GitHub /user request failed (HTTP {})",
+            resp.status
+        ));
     }
-    let raw: GitHubUserRaw =
-        serde_json::from_slice(&resp.body).map_err(|e| format!("unexpected GitHub response: {e}"))?;
+    let raw: GitHubUserRaw = serde_json::from_slice(&resp.body)
+        .map_err(|e| format!("unexpected GitHub response: {e}"))?;
     Ok(GitHubUser {
         login: raw.login,
         name: raw.name,
@@ -119,8 +122,8 @@ pub async fn github_create_repo(
             resp.status
         ));
     }
-    let raw: CreatedRepoRaw =
-        serde_json::from_slice(&resp.body).map_err(|e| format!("unexpected GitHub response: {e}"))?;
+    let raw: CreatedRepoRaw = serde_json::from_slice(&resp.body)
+        .map_err(|e| format!("unexpected GitHub response: {e}"))?;
     Ok(CreatedRepo {
         full_name: raw.full_name,
         clone_url: raw.clone_url,

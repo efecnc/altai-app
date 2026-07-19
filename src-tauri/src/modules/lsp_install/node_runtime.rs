@@ -46,7 +46,12 @@ pub async fn ensure_node_runtime(
     let root = runtime_root(app)?;
     let resolved = NodeRuntime {
         node_bin: root.join("bin").join(node_bin_name()),
-        npm_cli_js: root.join("lib").join("node_modules").join("npm").join("bin").join("npm-cli.js"),
+        npm_cli_js: root
+            .join("lib")
+            .join("node_modules")
+            .join("npm")
+            .join("bin")
+            .join("npm-cli.js"),
     };
     if resolved.node_bin.exists() && resolved.npm_cli_js.exists() {
         return Ok(resolved);
@@ -129,7 +134,11 @@ fn runtime_root(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn node_bin_name() -> &'static str {
-    if cfg!(windows) { "node.exe" } else { "node" }
+    if cfg!(windows) {
+        "node.exe"
+    } else {
+        "node"
+    }
 }
 
 /// Map our `(os, arch)` to Node's release-tag platform string. Matches

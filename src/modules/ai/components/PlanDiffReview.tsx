@@ -9,8 +9,10 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
-import { usePlanStore, type QueuedEdit } from "../store/planStore";
+import { useEffect, useState } from "react";
+import { native, type CheckpointInfo } from "../lib/native";
+import { usePlanStore, type AppliedPlanEdit, type QueuedEdit } from "../store/planStore";
+import { useChatStore } from "../store/chatStore";
 
 function basename(p: string): string {
   const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
@@ -32,14 +34,42 @@ function diffStats(
   return { added, removed };
 }
 
-export function PlanDiffReview() {
+export function PlanDiffReview({
+  open = false,
+  autoOpen = true,
+  onClose,
+}: {
+  /** Opens the review centre even when no plan edits are pending. */
+  open?: boolean;
+  /** Pending plan edits normally interrupt the chat for a deliberate review. */
+  autoOpen?: boolean;
+  onClose?: () => void;
+}) {
   const queue = usePlanStore((s) => s.queue);
+  const applied = usePlanStore((s) => s.applied);
   const removeOne = usePlanStore((s) => s.removeOne);
   const clear = usePlanStore((s) => s.clear);
+  const applyOne = usePlanStore((s) => s.applyOne);
   const applyAll = usePlanStore((s) => s.applyAll);
+  const addActivity = useChatStore((s) => s.addActivity);
   const [busy, setBusy] = useState(false);
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [checkpoints, setCheckpoints] = useState<CheckpointInfo[]>([]);
 
-  if (queue.length === 0) return null;
+  useEffect(() => {
+    if (!open && queue.length === 0) return;
+    let mounted = true;
+    void native.checkpointList().then((items) => {
+      if (mounted) setCheckpoints(items);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [open, queue.length]);
+
+  if (!open && (!autoOpen || queue.length === 0)) return null;
+  const historyCount = applied.length + checkpoints.length;
 
   const onApply = async () => {
     setBusy(true);
@@ -48,9 +78,48 @@ export function PlanDiffReview() {
       const failed = results.filter((r) => !r.ok);
       if (failed.length) {
         console.error("plan apply failures:", failed);
+        setFeedback(`${failed.length} change${failed.length === 1 ? "" : "s"} could not be applied. They remain in review.`);
+        addActivity({
+          label: "Some reviewed changes could not be applied",
+          detail: `${failed.length} change${failed.length === 1 ? "" : "s"} remain queued`,
+          tone: "error",
+        });
+      } else {
+        setFeedback(`${results.length} change${results.length === 1 ? "" : "s"} applied. A restore point is available in Undo.`);
+        addActivity({
+          label: `Applied ${results.length} reviewed change${results.length === 1 ? "" : "s"}`,
+          detail: "Restore points are available in Undo",
+          tone: "success",
+        });
       }
     } finally {
       setBusy(false);
+    }
+  };
+
+  const onApplyOne = async (id: string) => {
+    setApplyingId(id);
+    setFeedback(null);
+    try {
+      const result = await applyOne(id);
+      if (!result) return;
+      if (result.ok) {
+        setFeedback("Change applied. A restore point is available in Undo.");
+        addActivity({
+          label: "Applied a reviewed change",
+          detail: "Restore point available in Undo",
+          tone: "success",
+        });
+      } else {
+        setFeedback(`Could not apply change: ${result.error ?? "Unknown error"}`);
+        addActivity({
+          label: "Reviewed change could not be applied",
+          detail: result.error,
+          tone: "error",
+        });
+      }
+    } finally {
+      setApplyingId(null);
     }
   };
 
@@ -59,14 +128,18 @@ export function PlanDiffReview() {
       <div className="flex items-center justify-between border-b border-border/40 px-3 py-2">
         <div className="flex flex-col">
           <span className="text-[13px] font-semibold tracking-tight">
-            Plan review
+            Change review
           </span>
           <span className="text-[10.5px] text-muted-foreground">
-            {queue.length} pending change{queue.length === 1 ? "" : "s"}
+            {queue.length
+              ? `${queue.length} pending change${queue.length === 1 ? "" : "s"}`
+              : historyCount
+                ? `${historyCount} restorable change${historyCount === 1 ? "" : "s"}`
+                : "No changes to review"}
           </span>
         </div>
         <div className="flex items-center gap-1.5">
-          <Button
+          {queue.length ? <Button
             type="button"
             size="sm"
             variant="ghost"
@@ -76,8 +149,8 @@ export function PlanDiffReview() {
           >
             <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={2} />
             Discard all
-          </Button>
-          <Button
+          </Button> : null}
+          {queue.length ? <Button
             type="button"
             size="sm"
             className="h-7 gap-1.5 text-[11px]"
@@ -86,23 +159,65 @@ export function PlanDiffReview() {
           >
             <HugeiconsIcon icon={Tick02Icon} size={12} strokeWidth={2} />
             Apply {queue.length}
-          </Button>
+          </Button> : null}
+          {onClose ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="size-7"
+              onClick={onClose}
+              aria-label="Close change review"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={2} />
+            </Button>
+          ) : null}
         </div>
       </div>
-      <ul className="flex flex-1 flex-col gap-1.5 overflow-auto p-3">
-        {queue.map((q) => (
-          <PlanRow key={q.id} item={q} onReject={() => removeOne(q.id)} />
-        ))}
-      </ul>
+      {feedback ? (
+        <div className="border-b border-border/40 bg-muted/25 px-3 py-1.5 text-[10.5px] text-muted-foreground">
+          {feedback}
+        </div>
+      ) : null}
+      <div className="flex flex-1 flex-col gap-3 overflow-auto p-3">
+        {queue.length ? <section>
+          <div className="mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Awaiting your decision</div>
+          <ul className="flex flex-col gap-1.5">
+          {queue.map((q) => (
+          <PlanRow
+            key={q.id}
+            item={q}
+            busy={busy || applyingId === q.id}
+            onOpenDiff={() => {
+              if (q.kind === "create_directory") return;
+              window.dispatchEvent(
+                new CustomEvent("altai:plan-review-diff", { detail: q }),
+              );
+            }}
+            onApply={() => void onApplyOne(q.id)}
+            onReject={() => removeOne(q.id)}
+          />
+          ))}
+          </ul>
+        </section> : null}
+        <ReviewHistory items={checkpoints} applied={applied} onCheckpointsChange={setCheckpoints} />
+        {!queue.length && !historyCount ? <div className="rounded-lg border border-dashed border-border/60 px-4 py-8 text-center text-[11px] leading-relaxed text-muted-foreground">When the agent proposes a plan or edits a file, it will appear here with a safe restore option.</div> : null}
+      </div>
     </div>
   );
 }
 
 function PlanRow({
   item,
+  busy,
+  onOpenDiff,
+  onApply,
   onReject,
 }: {
   item: QueuedEdit;
+  busy: boolean;
+  onOpenDiff: () => void;
+  onApply: () => void;
   onReject: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -169,16 +284,43 @@ function PlanRow({
             </div>
           )}
         </div>
-        <Button
-          type="button"
-          size="icon"
-          variant="ghost"
-          className="size-5 shrink-0 opacity-0 transition-opacity group-hover/row:opacity-100"
-          onClick={onReject}
-          aria-label="Reject"
-        >
-          <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={1.75} />
-        </Button>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100">
+          {!isDir ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="size-5"
+              onClick={onOpenDiff}
+              disabled={busy}
+              aria-label="Open full diff"
+            >
+              <HugeiconsIcon icon={FileEditIcon} size={11} strokeWidth={1.75} />
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="size-5"
+            onClick={onReject}
+            disabled={busy}
+            aria-label="Reject"
+          >
+            <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={1.75} />
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="size-5 text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-400"
+            onClick={onApply}
+            disabled={busy}
+            aria-label="Apply this change"
+          >
+            <HugeiconsIcon icon={Tick02Icon} size={11} strokeWidth={1.75} />
+          </Button>
+        </div>
       </div>
       {open && !isDir ? (
         <div className="border-t border-border/40 bg-muted/20 px-2.5 py-2">
@@ -189,6 +331,101 @@ function PlanRow({
         </div>
       ) : null}
     </li>
+  );
+}
+
+function ReviewHistory({
+  items,
+  applied,
+  onCheckpointsChange,
+}: {
+  items: CheckpointInfo[];
+  applied: AppliedPlanEdit[];
+  onCheckpointsChange: (items: CheckpointInfo[]) => void;
+}) {
+  const restoreApplied = usePlanStore((s) => s.restoreApplied);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!items.length && !applied.length) return null;
+
+  const restoreCheckpoint = async (id: string) => {
+    if (restoring) return;
+    setError(null);
+    setRestoring(id);
+    try {
+      await native.checkpointRestore(id);
+      onCheckpointsChange(await native.checkpointList());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRestoring(null);
+    }
+  };
+
+  const restoreReviewed = async (id: string) => {
+    if (restoring) return;
+    setError(null);
+    setRestoring(id);
+    try {
+      const result = await restoreApplied(id);
+      if (result && !result.ok) setError(result.error ?? "Could not restore change.");
+    } finally {
+      setRestoring(null);
+    }
+  };
+
+  return (
+    <section className="border-t border-border/45 pt-3">
+      <div className="mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Restore points</div>
+      <p className="mb-2 px-0.5 text-[10px] leading-relaxed text-muted-foreground">Every agent edit has a pre-edit snapshot. Restoring a new file removes it; restoring an existing file puts its prior content back.</p>
+      {error ? <p className="mb-2 rounded-md bg-destructive/10 px-2 py-1.5 text-[10px] text-destructive">{error}</p> : null}
+      <div className="space-y-1.5">
+        {[...applied].reverse().map((item) => (
+          <HistoryRow
+            key={`plan-${item.id}`}
+            path={item.path}
+            detail={`Accepted review · ${item.isNewFile ? "remove new file" : "restore prior content"}`}
+            restoring={restoring === item.id}
+            onRestore={() => void restoreReviewed(item.id)}
+          />
+        ))}
+        {items.map((item) => (
+          <HistoryRow
+            key={item.id}
+            path={item.path}
+            detail={`${item.label} · ${new Date(item.createdMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+            restoring={restoring === item.id}
+            onRestore={() => void restoreCheckpoint(item.id)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function HistoryRow({
+  path,
+  detail,
+  restoring,
+  onRestore,
+}: {
+  path: string;
+  detail: string;
+  restoring: boolean;
+  onRestore: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border/50 bg-card/60 px-2.5 py-2">
+      <HugeiconsIcon icon={FileEditIcon} size={12} strokeWidth={1.75} className="shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[11px] font-medium text-foreground" title={path}>{basename(path)}</div>
+        <div className="truncate text-[9.5px] text-muted-foreground" title={detail}>{detail}</div>
+      </div>
+      <Button type="button" size="sm" variant="ghost" className="h-6 px-1.5 text-[10px]" disabled={restoring} onClick={onRestore}>
+        {restoring ? "Restoring…" : "Restore"}
+      </Button>
+    </div>
   );
 }
 

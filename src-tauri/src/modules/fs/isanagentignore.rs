@@ -149,9 +149,7 @@ pub fn is_ignored(target: &Path, is_dir: bool) -> bool {
     // `matched_path_or_any_parents` walks ancestor components so a file inside
     // an ignored directory (e.g. `build/` matching `a/b/build/out.txt`) is
     // caught — matches `.gitignore` semantics. Plain `matched` would miss it.
-    matcher
-        .matched_path_or_any_parents(rel, is_dir)
-        .is_ignore()
+    matcher.matched_path_or_any_parents(rel, is_dir).is_ignore()
 }
 
 /// Drop every cached matcher so the next call re-reads from disk. Called by
