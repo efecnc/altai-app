@@ -141,8 +141,7 @@ function dirname(path: string | null): string | null {
 }
 
 const SIDEBAR_DEFAULT_WIDTH = 260;
-const SIDEBAR_MIN_WIDTH = 220;
-const SIDEBAR_MAX_WIDTH = 480;
+const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_WIDTH_STORAGE_KEY = "altai.sidebar.width";
 const SIDEBAR_VIEW_STORAGE_KEY = "altai.sidebar.view";
 
@@ -175,10 +174,7 @@ function readTerminalDrawerHeight(): number {
 }
 
 function clampSidebarWidth(width: number): number {
-  return Math.min(
-    SIDEBAR_MAX_WIDTH,
-    Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)),
-  );
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.round(width));
 }
 
 function clampAgentSidebarWidth(width: number): number {
@@ -1975,7 +1971,6 @@ export default function App() {
                 panelRef={sidebarRef}
                 defaultSize={`${sidebarWidthRef.current}px`}
                 minSize={`${SIDEBAR_MIN_WIDTH}px`}
-                maxSize={`${SIDEBAR_MAX_WIDTH}px`}
                 collapsible
                 collapsedSize={0}
                 onResize={(size) => {
