@@ -147,8 +147,7 @@ const SIDEBAR_WIDTH_STORAGE_KEY = "altai.sidebar.width";
 const SIDEBAR_VIEW_STORAGE_KEY = "altai.sidebar.view";
 
 const AGENT_SIDEBAR_DEFAULT_WIDTH = 380;
-const AGENT_SIDEBAR_MIN_WIDTH = 380;
-const AGENT_SIDEBAR_MAX_WIDTH = 640;
+const AGENT_SIDEBAR_MIN_WIDTH = 280;
 const AGENT_SIDEBAR_WIDTH_STORAGE_KEY = "altai.agentSidebar.width";
 const PLAN_REVIEW_DIFF_PREFIX = "plan-review:";
 
@@ -183,10 +182,7 @@ function clampSidebarWidth(width: number): number {
 }
 
 function clampAgentSidebarWidth(width: number): number {
-  return Math.min(
-    AGENT_SIDEBAR_MAX_WIDTH,
-    Math.max(AGENT_SIDEBAR_MIN_WIDTH, Math.round(width)),
-  );
+  return Math.max(AGENT_SIDEBAR_MIN_WIDTH, Math.round(width));
 }
 
 function readSidebarWidth(): number {
@@ -1001,19 +997,6 @@ export default function App() {
       setTerminalDrawerOpen(false);
     }
   }, [tabs]);
-
-  // One-time guard for stale dev-server state: if the persisted/ref width is
-  // below the current min (e.g. after AGENT_SIDEBAR_MIN_WIDTH was bumped while
-  // the app was hot-reloaded), bump the live panel back up to min on mount.
-  useEffect(() => {
-    const panel = agentSidebarRef.current;
-    if (!panel) return;
-    const currentPx = panel.getSize().inPixels;
-    if (currentPx > 0 && currentPx < AGENT_SIDEBAR_MIN_WIDTH) {
-      agentSidebarWidthRef.current = AGENT_SIDEBAR_MIN_WIDTH;
-      panel.resize(`${AGENT_SIDEBAR_MIN_WIDTH}px`);
-    }
-  }, []);
 
   const askFromSelection = useCallback(() => {
     if (!hasComposer) {
@@ -2116,19 +2099,10 @@ export default function App() {
                     : "0px"
                 }
                 minSize={`${AGENT_SIDEBAR_MIN_WIDTH}px`}
-                maxSize={`${AGENT_SIDEBAR_MAX_WIDTH}px`}
                 collapsible
                 collapsedSize={0}
                 onResize={(size) => {
                   const px = size.inPixels;
-                  // Snap partial drags back up to the min width so the panel
-                  // can't be left in a too-narrow state.
-                  if (px > 0 && px < AGENT_SIDEBAR_MIN_WIDTH) {
-                    agentSidebarRef.current?.resize(
-                      `${AGENT_SIDEBAR_MIN_WIDTH}px`,
-                    );
-                    return;
-                  }
                   // Treat the panel's actual size as the source of truth for the
                   // open state. A viewport shrink can collapse the collapsible
                   // panel to 0 on its own; mirroring that into the store keeps the
