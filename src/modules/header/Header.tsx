@@ -26,7 +26,19 @@ import {
   SidebarRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   SearchInline,
   type SearchInlineHandle,
@@ -59,6 +71,23 @@ type Props = {
 };
 
 const COMPACT_WIDTH = 720;
+
+function IconTooltip({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6} className="text-[11px]">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 export function Header({
   tabs,
@@ -115,47 +144,54 @@ export function Header({
   }, []);
 
   const shortcutsButton = (
-    <Button
-      variant="ghost"
-      size="icon"
-      className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-      onClick={onOpenShortcuts}
-      title={shortcutLabel}
-    >
-      <HugeiconsIcon icon={KeyboardIcon} size={16} strokeWidth={1.75} />
-    </Button>
+    <IconTooltip label={shortcutLabel}>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        onClick={onOpenShortcuts}
+        aria-label={shortcutLabel}
+      >
+        <HugeiconsIcon icon={KeyboardIcon} size={16} strokeWidth={1.75} />
+      </Button>
+    </IconTooltip>
   );
 
   const settingsButton = (
-    <Button
-      variant="ghost"
-      size="icon"
-      className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-      onClick={onOpenSettings}
-      title="Settings"
-    >
-      <HugeiconsIcon icon={Settings01Icon} size={15} strokeWidth={1.75} />
-    </Button>
+    <IconTooltip label="Settings">
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        onClick={onOpenSettings}
+        aria-label="Settings"
+      >
+        <HugeiconsIcon icon={Settings01Icon} size={15} strokeWidth={1.75} />
+      </Button>
+    </IconTooltip>
   );
 
   const agentSidebarButton =
     agentSidebarAvailable && onToggleAgentSidebar ? (
-      <Button
-        variant="ghost"
-        size="icon"
-        className={cn(
-          "size-7 shrink-0 rounded-md transition-colors",
-          agentSidebarActive
-            ? "bg-accent text-foreground"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground",
-        )}
-        onClick={onToggleAgentSidebar}
-        title={agentSidebarActive ? "Hide AI agent" : "Show AI agent"}
-        aria-pressed={agentSidebarActive}
-        aria-label={agentSidebarActive ? "Hide AI agent" : "Show AI agent"}
+      <IconTooltip
+        label={agentSidebarActive ? "Hide AI agent" : "Show AI agent"}
       >
-        <HugeiconsIcon icon={SidebarRightIcon} size={15} strokeWidth={1.75} />
-      </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn(
+            "size-7 shrink-0 rounded-md transition-colors",
+            agentSidebarActive
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          )}
+          onClick={onToggleAgentSidebar}
+          aria-pressed={agentSidebarActive}
+          aria-label={agentSidebarActive ? "Hide AI agent" : "Show AI agent"}
+        >
+          <HugeiconsIcon icon={SidebarRightIcon} size={15} strokeWidth={1.75} />
+        </Button>
+      </IconTooltip>
     ) : null;
 
   return (
@@ -169,15 +205,17 @@ export function Header({
       }`}
     >
       <div className="flex shrink-0 items-center gap-0.5">
-        <Button
-          onClick={onToggleSidebar}
-          title="Toggle sidebar"
-          variant="ghost"
-          size="icon-sm"
-          className="shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <HugeiconsIcon icon={SidebarLeftIcon} size={18} strokeWidth={1.75} />
-        </Button>
+        <IconTooltip label="Show or hide sidebar">
+          <Button
+            onClick={onToggleSidebar}
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Show or hide sidebar"
+            className="shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <HugeiconsIcon icon={SidebarLeftIcon} size={18} strokeWidth={1.75} />
+          </Button>
+        </IconTooltip>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
