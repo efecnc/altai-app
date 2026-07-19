@@ -386,38 +386,36 @@ export function AiInputBar() {
                   "block w-full max-h-44 min-h-[24px] resize-none bg-transparent",
                   // Right padding reserves space for the absolutely-positioned
                   // send/stop button so long text never slides under it.
-                  "pr-20 text-[13px] leading-5 text-foreground outline-none",
+                  "pr-8 text-[13px] leading-5 text-foreground outline-none",
                   "placeholder:text-muted-foreground/55",
                   "disabled:cursor-not-allowed",
                 )}
               />
               {/* Send / stop button floats in the textarea's top-right corner.
-                  The visible label makes its purpose clear without relying on
-                  the arrow or stop icon alone. */}
+                  Its accessible label is also exposed as a hover title. */}
               <div className="absolute top-2 right-2.5">
                 {c.isBusy ? (
                   <Button
                     type="button"
-                    size="xs"
+                    size="icon-xs"
                     onClick={c.stop}
                     className={cn(
-                      "h-6 gap-1 rounded-md px-1.5 transition-colors",
+                      "rounded-md p-0 transition-colors",
                       "bg-foreground/10 text-foreground hover:bg-foreground/15",
                     )}
                     aria-label="Stop"
                     title="Stop"
                   >
                     <span className="block size-2 rounded-[2px] bg-foreground" />
-                    Stop
                   </Button>
                 ) : (
                   <Button
                     type="button"
-                    size="xs"
+                    size="icon-xs"
                     onClick={c.submit}
                     disabled={!c.canSend}
                     className={cn(
-                      "h-6 gap-1 rounded-md px-1.5 transition-all",
+                      "rounded-md p-0 transition-all",
                       c.canSend
                         ? "bg-foreground text-background hover:bg-foreground/90 active:scale-95"
                         : "bg-foreground/10 text-foreground/35",
@@ -430,7 +428,6 @@ export function AiInputBar() {
                       size={12}
                       strokeWidth={2.25}
                     />
-                    Send
                   </Button>
                 )}
               </div>
@@ -456,28 +453,24 @@ export function AiInputBar() {
           )}
         </Popover>
 
-        {/* Controls retain their icons as visual cues, but each one is now
-            named so the composer is understandable without hover tooltips. */}
-        <div className="flex items-center gap-0.5 overflow-x-auto px-1.5 pb-1 pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <ToolbarButton
-            label="Attach"
+        <div className="flex items-center gap-0.5 px-1.5 pb-1 pt-0.5">
+          <ToolbarIcon
             title="Attach file or image"
             onClick={() => fileInputRef.current?.click()}
             disabled={c.isBusy}
           >
             <HugeiconsIcon icon={Attachment01Icon} size={14} strokeWidth={1.75} />
-          </ToolbarButton>
+          </ToolbarIcon>
 
           <Popover open={contextOpen} onOpenChange={setContextOpen}>
             <PopoverAnchor asChild>
-              <ToolbarButton
-                label="Context"
+              <ToolbarIcon
                 title="Add workspace context"
                 onClick={() => setContextOpen((open) => !open)}
                 disabled={c.isBusy}
               >
                 <HugeiconsIcon icon={CodeIcon} size={14} strokeWidth={1.75} />
-              </ToolbarButton>
+              </ToolbarIcon>
             </PopoverAnchor>
             <PopoverContent side="top" align="start" sideOffset={6} className="w-56 p-1.5">
               <ContextAction icon={File01Icon} label="Active file" detail="Attach the file open in the editor" disabled={!workspaceRoot || !useChatStore.getState().live.getActiveFile()} onClick={() => void attachActiveFile()} />
@@ -487,21 +480,14 @@ export function AiInputBar() {
             </PopoverContent>
           </Popover>
 
-          <PermissionModeSwitcher variant="toolbar" />
+          <PermissionModeSwitcher variant="toolbar-icon" />
           {agentPickerEnabled && <AgentSwitcher variant="toolbar" />}
           <ModelDropdown />
 
           <div className="flex-1" />
 
           {c.voice.supported && (
-            <ToolbarButton
-              label={
-                c.voice.recording
-                  ? "Stop"
-                  : c.voice.transcribing
-                    ? "Transcribing"
-                    : "Voice"
-              }
+            <ToolbarIcon
               title={
                 !c.voice.hasKey
                   ? "Voice needs an OpenAI key"
@@ -527,7 +513,7 @@ export function AiInputBar() {
               ) : (
                 <HugeiconsIcon icon={Mic01Icon} size={14} strokeWidth={1.75} />
               )}
-            </ToolbarButton>
+            </ToolbarIcon>
           )}
         </div>
       </div>
@@ -555,15 +541,13 @@ export function AiInputBar() {
   );
 }
 
-function ToolbarButton({
-  label,
+function ToolbarIcon({
   title,
   onClick,
   disabled,
   className,
   children,
 }: {
-  label: string;
   title: string;
   onClick: () => void;
   disabled?: boolean;
@@ -574,18 +558,17 @@ function ToolbarButton({
     <Button
       type="button"
       variant="ghost"
-      size="xs"
+      size="icon"
       title={title}
       aria-label={title}
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "h-7 shrink-0 gap-1.5 rounded-md px-2 text-[11.5px] text-muted-foreground hover:bg-accent hover:text-foreground",
+        "size-6 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground",
         className,
       )}
     >
       {children}
-      <span>{label}</span>
     </Button>
   );
 }
