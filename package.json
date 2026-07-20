@@ -1,7 +1,7 @@
 {
   "name": "altai",
   "private": true,
-  "version": "0.5.962",
+  "version": "0.5.963",
   "type": "module",
   "description": "ALTAI — local-first, open-source workspace for AI coding agents",
   "license": "Apache-2.0",
