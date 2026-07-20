@@ -17,7 +17,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentIconId } from "../lib/agents";
 import {
   sendMessage,
@@ -91,10 +91,22 @@ export function AiSidePanel({
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewDismissed, setReviewDismissed] = useState(false);
+  const queueLength = usePlanStore((s) => s.queue.length);
+  const previousQueueLength = useRef(queueLength);
+
+  // A new change deserves a fresh review prompt, while an explicit close
+  // remains respected for the current queue.
+  useEffect(() => {
+    if (queueLength > previousQueueLength.current) setReviewDismissed(false);
+    previousQueueLength.current = queueLength;
+  }, [queueLength]);
 
   useEffect(() => {
     const openReview = () => {
       setReviewOpen(true);
+      setReviewDismissed(false);
+      setHistoryOpen(false);
       setInspectorOpen(false);
       setTasksOpen(false);
     };
@@ -102,12 +114,25 @@ export function AiSidePanel({
     return () => window.removeEventListener("altai:open-change-review", openReview);
   }, []);
 
+  const toggleHistory = () => {
+    const opening = !historyOpen;
+    setHistoryOpen(opening);
+    if (opening) {
+      setInspectorOpen(false);
+      setTasksOpen(false);
+      setReviewOpen(false);
+      setReviewDismissed(true);
+    }
+  };
+
   const toggleInspector = () => {
     const opening = !inspectorOpen;
     setInspectorOpen(opening);
     if (opening) {
       setTasksOpen(false);
       setHistoryOpen(false);
+      setReviewOpen(false);
+      setReviewDismissed(true);
     }
   };
 
@@ -117,11 +142,15 @@ export function AiSidePanel({
     if (opening) {
       setInspectorOpen(false);
       setHistoryOpen(false);
+      setReviewOpen(false);
+      setReviewDismissed(true);
     }
   };
 
   const toggleReview = () => {
-    setReviewOpen((open) => !open);
+    const opening = !reviewOpen;
+    setReviewOpen(opening);
+    setReviewDismissed(!opening);
     setInspectorOpen(false);
     setTasksOpen(false);
     setHistoryOpen(false);
@@ -137,11 +166,7 @@ export function AiSidePanel({
       <WorkspaceTopbar
         onClose={onClose}
         historyOpen={historyOpen}
-        onToggleHistory={() => {
-          setHistoryOpen((open) => !open);
-          setInspectorOpen(false);
-          setTasksOpen(false);
-        }}
+        onToggleHistory={toggleHistory}
         inspectorOpen={inspectorOpen}
         onToggleInspector={toggleInspector}
         tasksOpen={tasksOpen}
@@ -187,8 +212,11 @@ export function AiSidePanel({
         ))}
       <PlanDiffReview
         open={reviewOpen}
-        autoOpen={!historyOpen && !inspectorOpen && !tasksOpen}
-        onClose={() => setReviewOpen(false)}
+        autoOpen={!historyOpen && !inspectorOpen && !tasksOpen && !reviewDismissed}
+        onClose={() => {
+          setReviewOpen(false);
+          setReviewDismissed(true);
+        }}
       />
     </aside>
   );
