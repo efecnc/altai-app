@@ -53,4 +53,3 @@ export function probeMcpServer(
 export function getMcpServerStatus(workspacePath: string) {
   return invoke<McpServerStatus[]>("mcp_server_status", { workspacePath });
 }
-

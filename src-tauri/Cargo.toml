@@ -1,11 +1,11 @@
 [package]
 name = "altai"
-version = "0.5.961"
-description = "ALTAI — open agentic development environment powered by ALTAI"
+version = "0.5.963"
+description = "ALTAI — local-first, open-source workspace for AI coding agents"
 authors = ["ALTAI Dev Team"]
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/efecnc/altai-app"
+repository = "https://github.com/altaidevorg/altai-app"
 
 [lib]
 name = "altai_lib"

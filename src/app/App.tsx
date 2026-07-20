@@ -141,14 +141,12 @@ function dirname(path: string | null): string | null {
 }
 
 const SIDEBAR_DEFAULT_WIDTH = 260;
-const SIDEBAR_MIN_WIDTH = 220;
-const SIDEBAR_MAX_WIDTH = 480;
+const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_WIDTH_STORAGE_KEY = "altai.sidebar.width";
 const SIDEBAR_VIEW_STORAGE_KEY = "altai.sidebar.view";
 
 const AGENT_SIDEBAR_DEFAULT_WIDTH = 380;
-const AGENT_SIDEBAR_MIN_WIDTH = 380;
-const AGENT_SIDEBAR_MAX_WIDTH = 640;
+const AGENT_SIDEBAR_MIN_WIDTH = 280;
 const AGENT_SIDEBAR_WIDTH_STORAGE_KEY = "altai.agentSidebar.width";
 const PLAN_REVIEW_DIFF_PREFIX = "plan-review:";
 
@@ -176,17 +174,11 @@ function readTerminalDrawerHeight(): number {
 }
 
 function clampSidebarWidth(width: number): number {
-  return Math.min(
-    SIDEBAR_MAX_WIDTH,
-    Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)),
-  );
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.round(width));
 }
 
 function clampAgentSidebarWidth(width: number): number {
-  return Math.min(
-    AGENT_SIDEBAR_MAX_WIDTH,
-    Math.max(AGENT_SIDEBAR_MIN_WIDTH, Math.round(width)),
-  );
+  return Math.max(AGENT_SIDEBAR_MIN_WIDTH, Math.round(width));
 }
 
 function readSidebarWidth(): number {
@@ -304,13 +296,13 @@ export default function App() {
   const agentSidebarRef = useRef<PanelImperativeHandle | null>(null);
   const agentSidebarWidthRef = useRef(readAgentSidebarWidth());
   const agentSidebarWidthWriteTimerRef = useRef(0);
-  // Terminal bottom drawer (#61). Open by default so a terminal is visible on
-  // launch (as a drawer now, not a full-screen tab).
-  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(true);
+  // Keep the terminal drawer out of the way on launch. It opens when the user
+  // explicitly toggles it, creates a terminal, or sends a command to it.
+  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(false);
   const terminalDrawerRef = useRef<PanelImperativeHandle | null>(null);
   const terminalDrawerHeightRef = useRef(readTerminalDrawerHeight());
-  // Guards against a 0px ResizeObserver tick on mount spuriously closing the
-  // (default-open) drawer before layout settles — only mirror genuine collapses.
+  // Guards against a 0px ResizeObserver tick on mount — only mirror genuine
+  // user-driven drawer collapses after it has been opened once.
   const terminalDrawerSeenOpenRef = useRef(false);
   // A freshly cloned workspace opens straight into Source Control so the new
   // repo is visible without manually switching views; otherwise restore the
@@ -1001,19 +993,6 @@ export default function App() {
       setTerminalDrawerOpen(false);
     }
   }, [tabs]);
-
-  // One-time guard for stale dev-server state: if the persisted/ref width is
-  // below the current min (e.g. after AGENT_SIDEBAR_MIN_WIDTH was bumped while
-  // the app was hot-reloaded), bump the live panel back up to min on mount.
-  useEffect(() => {
-    const panel = agentSidebarRef.current;
-    if (!panel) return;
-    const currentPx = panel.getSize().inPixels;
-    if (currentPx > 0 && currentPx < AGENT_SIDEBAR_MIN_WIDTH) {
-      agentSidebarWidthRef.current = AGENT_SIDEBAR_MIN_WIDTH;
-      panel.resize(`${AGENT_SIDEBAR_MIN_WIDTH}px`);
-    }
-  }, []);
 
   const askFromSelection = useCallback(() => {
     if (!hasComposer) {
@@ -1992,7 +1971,6 @@ export default function App() {
                 panelRef={sidebarRef}
                 defaultSize={`${sidebarWidthRef.current}px`}
                 minSize={`${SIDEBAR_MIN_WIDTH}px`}
-                maxSize={`${SIDEBAR_MAX_WIDTH}px`}
                 collapsible
                 collapsedSize={0}
                 onResize={(size) => {
@@ -2116,19 +2094,10 @@ export default function App() {
                     : "0px"
                 }
                 minSize={`${AGENT_SIDEBAR_MIN_WIDTH}px`}
-                maxSize={`${AGENT_SIDEBAR_MAX_WIDTH}px`}
                 collapsible
                 collapsedSize={0}
                 onResize={(size) => {
                   const px = size.inPixels;
-                  // Snap partial drags back up to the min width so the panel
-                  // can't be left in a too-narrow state.
-                  if (px > 0 && px < AGENT_SIDEBAR_MIN_WIDTH) {
-                    agentSidebarRef.current?.resize(
-                      `${AGENT_SIDEBAR_MIN_WIDTH}px`,
-                    );
-                    return;
-                  }
                   // Treat the panel's actual size as the source of truth for the
                   // open state. A viewport shrink can collapse the collapsible
                   // panel to 0 on its own; mirroring that into the store keeps the

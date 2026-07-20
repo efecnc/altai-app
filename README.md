@@ -4,12 +4,12 @@
 
 # ALTAI
 
-**The open agentic development environment.**
-A single-binary desktop app that turns your terminal into a hands-on AI engineer — local, keychain-secured, no telemetry, no account.
+**A local-first, open-source workspace for AI coding agents.**
+ALTAI gives agents a real workspace — terminal, editor, files, and explicit permissions — while your code and API keys stay under your control.
 
-[![Release](https://img.shields.io/github/v/release/efecnc/altai-app?label=release&color=6E56CF&style=flat-square)](https://github.com/efecnc/altai-app/releases)
+[![Release](https://img.shields.io/github/v/release/altaidevorg/altai-app?label=release&color=6E56CF&style=flat-square)](https://github.com/altaidevorg/altai-app/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-22c55e?style=flat-square)](LICENSE)
-[![Build](https://img.shields.io/github/actions/workflow/status/efecnc/altai-app/release.yml?label=build&style=flat-square)](https://github.com/efecnc/altai-app/actions/workflows/release.yml)
+[![Build](https://img.shields.io/github/actions/workflow/status/altaidevorg/altai-app/release.yml?label=build&style=flat-square)](https://github.com/altaidevorg/altai-app/actions/workflows/release.yml)
 [![Platforms](https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-lightgrey?style=flat-square)](INSTALL.md)
 
 <p>
@@ -82,7 +82,7 @@ It's a desktop app, not a service. Your code never leaves your machine; only the
 
 ## Install
 
-Grab the binary for your platform from the [Releases page](https://github.com/efecnc/altai-app/releases). One-time platform setup (Gatekeeper / SmartScreen bypass for the unsigned v0.1.0 build) is documented in **[INSTALL.md](INSTALL.md)**.
+Grab the binary for your platform from the [Releases page](https://github.com/altaidevorg/altai-app/releases). One-time platform setup (Gatekeeper / SmartScreen bypass for the unsigned v0.1.0 build) is documented in **[INSTALL.md](INSTALL.md)**.
 
 | Platform                  | File                                  | One-time setup                                              |
 | ------------------------- | ------------------------------------- | ----------------------------------------------------------- |
@@ -295,7 +295,7 @@ src-tauri/
 Requires Rust stable, Node 22+, pnpm 9+, and the platform-specific [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
-git clone https://github.com/efecnc/altai-app.git
+git clone https://github.com/altaidevorg/altai-app.git
 cd altai-app
 pnpm install
 pnpm tauri:dev          # hot-reload dev mode
@@ -332,7 +332,7 @@ GitHub Actions matrix-builds for macOS (Apple Silicon + Intel), Linux (x86_64), 
 - [ ] Self-hosted update channel for air-gapped environments
 - [ ] Code-signing on macOS and Windows (post-v0.1)
 
-Have an idea? Open an [issue](https://github.com/efecnc/altai-app/issues) or start a [discussion](https://github.com/efecnc/altai-app/discussions).
+Have an idea? Open an [issue](https://github.com/altaidevorg/altai-app/issues) or start a [discussion](https://github.com/altaidevorg/altai-app/discussions).
 
 ## Contributing
 

@@ -1,6 +1,6 @@
 # Installing ALTAI
 
-Releases live on the [GitHub Releases page](https://github.com/efecnc/altai-app/releases). Download the file matching your platform from the latest `v*` tag.
+Releases live on the [GitHub Releases page](https://github.com/altaidevorg/altai-app/releases). Download the file matching your platform from the latest `v*` tag.
 
 > **Important.** ALTAI binaries are **unsigned** — they don't carry an Apple Developer or Windows EV certificate. Apple Gatekeeper and Windows SmartScreen will warn you the first time you launch the app. The steps below are a one-time bypass per machine; the app behaves normally afterwards.
 
@@ -149,7 +149,7 @@ The full upstream list lives at [Tauri prerequisites](https://v2.tauri.app/start
 ### Clone and install
 
 ```bash
-git clone https://github.com/efecnc/altai-app
+git clone https://github.com/altaidevorg/altai-app
 cd altai-app
 pnpm install
 ```

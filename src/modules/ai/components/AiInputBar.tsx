@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   ArrowUpIcon,
@@ -11,6 +12,7 @@ import {
   HashtagIcon,
   Key01Icon,
   Mic01Icon,
+  Search01Icon,
   TerminalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -281,8 +283,16 @@ export function AiInputBar() {
     setContextOpen(false);
   };
 
+  const prepareSembleSearch = () => {
+    const prefix = "Use the Semble Scout subagent to search this workspace before answering.";
+    c.setValue((value) =>
+      value.trim() ? `${prefix}\n\n${value}` : `${prefix}\n\n`,
+    );
+    requestAnimationFrame(() => c.textareaRef.current?.focus());
+  };
+
   return (
-    <div className="shrink-0 bg-transparent px-3 pt-1.5 pb-1.5">
+    <div className="shrink-0 bg-transparent px-3 pb-2 pt-5">
       <input
         ref={fileInputRef}
         type="file"
@@ -303,13 +313,13 @@ export function AiInputBar() {
 
       <div
         className={cn(
-          "flex flex-col rounded-xl border border-border/40 bg-card/50",
-          "transition-colors hover:border-border/70 focus-within:border-foreground/30 focus-within:bg-card",
+          "flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card/85 shadow-[0_-12px_32px_-24px_rgba(0,0,0,0.7)] backdrop-blur-xl",
+          "transition-[border-color,box-shadow,background-color] hover:border-border focus-within:border-foreground/40 focus-within:bg-card focus-within:shadow-[0_-16px_40px_-24px_rgba(0,0,0,0.8)]",
           c.isBusy && "opacity-95",
         )}
       >
         {hasChips && (
-          <div className="px-2 pt-1.5">
+          <div className="border-b border-border/40 px-2.5 py-2">
             <ChipsRow
               files={c.files}
               onRemoveFile={c.removeFile}
@@ -330,7 +340,7 @@ export function AiInputBar() {
 
         <Popover open={pickerOpen}>
           <PopoverAnchor asChild>
-            <div className="relative px-2.5 pt-2">
+            <div className="relative px-3 pb-1 pt-2.5">
               <textarea
                 ref={c.textareaRef}
                 value={c.value}
@@ -383,54 +393,54 @@ export function AiInputBar() {
                 rows={1}
                 disabled={c.isBusy}
                 className={cn(
-                  "block w-full max-h-44 min-h-[24px] resize-none bg-transparent",
+                  "block w-full max-h-44 min-h-[28px] resize-none bg-transparent",
                   // Right padding reserves space for the absolutely-positioned
                   // send/stop button so long text never slides under it.
-                  "pr-8 text-[13px] leading-5 text-foreground outline-none",
+                  "pr-10 text-[13px] leading-5 text-foreground outline-none",
                   "placeholder:text-muted-foreground/55",
                   "disabled:cursor-not-allowed",
                 )}
               />
               {/* Send / stop button floats in the textarea's top-right corner.
-                  Lifted out of the bottom toolbar per user direction; the
-                  toolbar keeps the rest (attach / permission / agent / model
-                  / voice). */}
-              <div className="absolute top-2 right-2.5">
+                  Its accessible label is also exposed as a hover title. */}
+              <div className="absolute right-3 top-2.5">
                 {c.isBusy ? (
-                  <Button
-                    type="button"
-                    size="icon-xs"
-                    onClick={c.stop}
-                    className={cn(
-                      "rounded-md p-0 transition-colors",
-                      "bg-foreground/10 text-foreground hover:bg-foreground/15",
-                    )}
-                    aria-label="Stop"
-                    title="Stop"
-                  >
-                    <span className="block size-2 rounded-[2px] bg-foreground" />
-                  </Button>
+                  <HoverTooltip label="Stop">
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      onClick={c.stop}
+                      className={cn(
+                        "rounded-md p-0 transition-colors",
+                        "bg-foreground/10 text-foreground hover:bg-foreground/15",
+                      )}
+                      aria-label="Stop"
+                    >
+                      <span className="block size-2 rounded-[2px] bg-foreground" />
+                    </Button>
+                  </HoverTooltip>
                 ) : (
-                  <Button
-                    type="button"
-                    size="icon-xs"
-                    onClick={c.submit}
-                    disabled={!c.canSend}
-                    className={cn(
-                      "rounded-md p-0 transition-all",
-                      c.canSend
-                        ? "bg-foreground text-background hover:bg-foreground/90 active:scale-95"
-                        : "bg-foreground/10 text-foreground/35",
-                    )}
-                    aria-label="Send"
-                    title="Send (Enter)"
-                  >
-                    <HugeiconsIcon
-                      icon={ArrowUpIcon}
-                      size={12}
-                      strokeWidth={2.25}
-                    />
-                  </Button>
+                  <HoverTooltip label="Send (Enter)">
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      onClick={c.submit}
+                      disabled={!c.canSend}
+                      className={cn(
+                        "rounded-md p-0 transition-all",
+                        c.canSend
+                          ? "bg-foreground text-background hover:bg-foreground/90 active:scale-95"
+                          : "bg-foreground/10 text-foreground/35",
+                      )}
+                      aria-label="Send"
+                    >
+                      <HugeiconsIcon
+                        icon={ArrowUpIcon}
+                        size={12}
+                        strokeWidth={2.25}
+                      />
+                    </Button>
+                  </HoverTooltip>
                 )}
               </div>
             </div>
@@ -455,10 +465,7 @@ export function AiInputBar() {
           )}
         </Popover>
 
-        {/* Single embedded toolbar row inside the card — Cursor pattern.
-            Send/stop now floats in the textarea's top-right corner; the
-            toolbar keeps attach / permission / agent / model / voice. */}
-        <div className="flex items-center gap-0.5 px-1.5 pb-1 pt-0.5">
+        <div className="flex items-center gap-0.5 overflow-x-auto border-t border-border/40 bg-muted/[0.14] px-2.5 pb-1.5 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <ToolbarIcon
             title="Attach file or image"
             onClick={() => fileInputRef.current?.click()}
@@ -485,7 +492,18 @@ export function AiInputBar() {
             </PopoverContent>
           </Popover>
 
-          <PermissionModeSwitcher variant="toolbar-icon" />
+
+          <ToolbarIcon
+            title="Research with Semble Scout"
+            onClick={prepareSembleSearch}
+            disabled={c.isBusy || !workspaceRoot}
+          >
+            <HugeiconsIcon icon={Search01Icon} size={14} strokeWidth={1.75} />
+          </ToolbarIcon>
+
+          <HoverTooltip label="Permission mode">
+            <PermissionModeSwitcher variant="toolbar-icon" />
+          </HoverTooltip>
           {agentPickerEnabled && <AgentSwitcher variant="toolbar" />}
           <ModelDropdown />
 
@@ -531,7 +549,7 @@ export function AiInputBar() {
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.12 }}
-            className="mt-1 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
+            className="mt-1 flex items-center gap-1.5 px-1.5 text-[11px] text-muted-foreground"
           >
             {c.voice.recording ? (
               <span className="size-1.5 animate-pulse rounded-full bg-destructive" />
@@ -560,21 +578,44 @@ function ToolbarIcon({
   children: React.ReactNode;
 }) {
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon"
-      title={title}
-      aria-label={title}
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        "size-6 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground",
-        className,
-      )}
-    >
-      {children}
-    </Button>
+    <HoverTooltip label={title}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-label={title}
+        onClick={onClick}
+        disabled={disabled}
+        className={cn(
+          "size-6 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground",
+          className,
+        )}
+      >
+        {children}
+      </Button>
+    </HoverTooltip>
+  );
+}
+
+/** Opens only while a pointer is over the control, never on click or focus. */
+function HoverTooltip({ label, children }: { label: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Tooltip open={open} onOpenChange={() => undefined}>
+      <TooltipTrigger asChild>
+        <span
+          className="inline-flex shrink-0"
+          onPointerEnter={() => setOpen(true)}
+          onPointerLeave={() => setOpen(false)}
+        >
+          {children}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="text-[11px]">
+        {label}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

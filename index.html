@@ -23,6 +23,14 @@
     </script>
     <script>
       (function () {
+        function isBenignResizeObserverDiagnostic(error) {
+          var message = error && error.message ? String(error.message) : String(error || "");
+          return (
+            message.includes("ResizeObserver loop completed with undelivered notifications") ||
+            message.includes("ResizeObserver loop limit exceeded")
+          );
+        }
+
         function showStartupError(error) {
           var root = document.getElementById("root");
           if (!root || root.dataset.startupError) return;
@@ -42,6 +50,10 @@
             '</pre></section></main>';
         }
         window.addEventListener("error", function (event) {
+          // Chromium emits these diagnostics when layout changes within a
+          // ResizeObserver callback. They are not uncaught application errors
+          // and must never replace the app with the startup-error screen.
+          if (isBenignResizeObserverDiagnostic(event.error || event.message)) return;
           showStartupError(event.error || event.message);
         });
         window.addEventListener("unhandledrejection", function (event) {

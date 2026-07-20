@@ -121,6 +121,7 @@ export function Header({
       className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
       onClick={onOpenShortcuts}
       title={shortcutLabel}
+      aria-label={shortcutLabel}
     >
       <HugeiconsIcon icon={KeyboardIcon} size={16} strokeWidth={1.75} />
     </Button>
@@ -133,6 +134,7 @@ export function Header({
       className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
       onClick={onOpenSettings}
       title="Settings"
+      aria-label="Settings"
     >
       <HugeiconsIcon icon={Settings01Icon} size={15} strokeWidth={1.75} />
     </Button>
@@ -171,9 +173,10 @@ export function Header({
       <div className="flex shrink-0 items-center gap-0.5">
         <Button
           onClick={onToggleSidebar}
-          title="Toggle sidebar"
+          title="Show or hide sidebar"
           variant="ghost"
           size="icon-sm"
+          aria-label="Show or hide sidebar"
           className="shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <HugeiconsIcon icon={SidebarLeftIcon} size={18} strokeWidth={1.75} />

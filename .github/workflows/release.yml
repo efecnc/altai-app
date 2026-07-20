@@ -142,7 +142,7 @@ jobs:
           releaseBody: |
             ## ALTAI ${{ steps.tag.outputs.name }}
 
-            See [INSTALL.md](https://github.com/efecnc/altai-app/blob/main/INSTALL.md) for one-time install instructions per platform — the binaries are unsigned, so macOS Gatekeeper and Windows SmartScreen will warn the first time.
+            See [INSTALL.md](https://github.com/altaidevorg/altai-app/blob/main/INSTALL.md) for one-time install instructions per platform — the binaries are unsigned, so macOS Gatekeeper and Windows SmartScreen will warn the first time.
 
             **macOS:** `xattr -dr com.apple.quarantine /Applications/ALTAI.app`
             **Windows:** Click "More info" → "Run anyway" on the SmartScreen prompt.

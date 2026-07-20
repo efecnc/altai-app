@@ -108,6 +108,25 @@ describe("switchSession — race guard", () => {
   });
 });
 
+describe("reorderSessions", () => {
+  it("moves a session before or after the drop target", () => {
+    const store = useChatStore.getState();
+    store.reorderSessions("C", "A", false);
+    expect(useChatStore.getState().sessions.map((session) => session.id)).toEqual([
+      "C",
+      "A",
+      "B",
+    ]);
+
+    useChatStore.getState().reorderSessions("A", "B", true);
+    expect(useChatStore.getState().sessions.map((session) => session.id)).toEqual([
+      "C",
+      "B",
+      "A",
+    ]);
+  });
+});
+
 describe("deleteSession — race guard", () => {
   it("ignores the next-active load if the user switched away meanwhile", async () => {
     const aFollowUp = deferred<UIMessage[]>();

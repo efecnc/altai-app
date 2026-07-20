@@ -161,6 +161,17 @@ export function AiComposerProvider({ children }: ProviderProps) {
   }, []);
 
   useEffect(() => {
+    const onAttach = (e: Event) => {
+      const path = (e as CustomEvent<string>).detail;
+      if (typeof path === "string" && path.length > 0) void attachFolderByPath(path);
+    };
+    window.addEventListener("altai:ai-attach-folder", onAttach);
+    return () => window.removeEventListener("altai:ai-attach-folder", onAttach);
+    // attachFolderByPath only closes over stable setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     if (pendingSelections.length === 0) return;
     const drained = consumeSelections();
     if (drained.length === 0) return;

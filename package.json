@@ -1,11 +1,11 @@
 {
   "name": "altai",
   "private": true,
-  "version": "0.5.961",
+  "version": "0.5.963",
   "type": "module",
-  "description": "ALTAI — open agentic development environment powered by ALTAI",
+  "description": "ALTAI — local-first, open-source workspace for AI coding agents",
   "license": "Apache-2.0",
-  "repository": "https://github.com/efecnc/altai-app",
+  "repository": "https://github.com/altaidevorg/altai-app",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

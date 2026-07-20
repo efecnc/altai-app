@@ -43,6 +43,7 @@ import type {
 } from "ai";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AiToolApproval } from "./AiToolApproval";
+import { AgentStatusPill } from "./AgentStatusPill";
 import {
   Message,
   MessageActions,
@@ -276,6 +277,11 @@ export function AiChatView({
             onStop={() => void stop?.()}
           />
         ))}
+         {/* Live tool state belongs to the conversation it describes, rather
+            than floating above the composer. */}
+        <div className="flex items-center px-1">
+          <AgentStatusPill hideError />
+        </div>
         {error && (
           // role="alert" => assertive live region. Without this the chat
           // failure was silent to screen readers and the agent appeared
