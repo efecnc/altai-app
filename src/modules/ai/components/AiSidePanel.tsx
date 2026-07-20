@@ -93,10 +93,39 @@ export function AiSidePanel({
   const [reviewOpen, setReviewOpen] = useState(false);
 
   useEffect(() => {
-    const openReview = () => setReviewOpen(true);
+    const openReview = () => {
+      setReviewOpen(true);
+      setInspectorOpen(false);
+      setTasksOpen(false);
+    };
     window.addEventListener("altai:open-change-review", openReview);
     return () => window.removeEventListener("altai:open-change-review", openReview);
   }, []);
+
+  const toggleInspector = () => {
+    const opening = !inspectorOpen;
+    setInspectorOpen(opening);
+    if (opening) {
+      setTasksOpen(false);
+      setHistoryOpen(false);
+    }
+  };
+
+  const toggleTasks = () => {
+    const opening = !tasksOpen;
+    setTasksOpen(opening);
+    if (opening) {
+      setInspectorOpen(false);
+      setHistoryOpen(false);
+    }
+  };
+
+  const toggleReview = () => {
+    setReviewOpen((open) => !open);
+    setInspectorOpen(false);
+    setTasksOpen(false);
+    setHistoryOpen(false);
+  };
 
   return (
     <aside
@@ -108,13 +137,17 @@ export function AiSidePanel({
       <WorkspaceTopbar
         onClose={onClose}
         historyOpen={historyOpen}
-        onToggleHistory={() => setHistoryOpen((o) => !o)}
+        onToggleHistory={() => {
+          setHistoryOpen((open) => !open);
+          setInspectorOpen(false);
+          setTasksOpen(false);
+        }}
         inspectorOpen={inspectorOpen}
-        onToggleInspector={() => setInspectorOpen((o) => !o)}
+        onToggleInspector={toggleInspector}
         tasksOpen={tasksOpen}
-        onToggleTasks={() => setTasksOpen((o) => !o)}
+        onToggleTasks={toggleTasks}
         reviewOpen={reviewOpen}
-        onToggleReview={() => setReviewOpen((o) => !o)}
+        onToggleReview={toggleReview}
         onNewChat={() => setHistoryOpen(false)}
       />
       <div className="relative grid min-h-0 flex-1 grid-cols-1 @[48rem]:grid-cols-[13.5rem_minmax(0,1fr)] @[76rem]:grid-cols-[13.5rem_minmax(0,1fr)_18rem]">

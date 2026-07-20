@@ -282,7 +282,7 @@ export function AiInputBar() {
   };
 
   return (
-    <div className="shrink-0 bg-transparent px-3 pt-1.5 pb-1.5">
+    <div className="shrink-0 bg-gradient-to-t from-background via-background/95 to-transparent px-3 pb-2 pt-5">
       <input
         ref={fileInputRef}
         type="file"
@@ -303,13 +303,13 @@ export function AiInputBar() {
 
       <div
         className={cn(
-          "flex flex-col rounded-xl border border-border/40 bg-card/50",
-          "transition-colors hover:border-border/70 focus-within:border-foreground/30 focus-within:bg-card",
+          "flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card/85 shadow-[0_-12px_32px_-24px_rgba(0,0,0,0.7)] backdrop-blur-xl",
+          "transition-[border-color,box-shadow,background-color] hover:border-border focus-within:border-foreground/40 focus-within:bg-card focus-within:shadow-[0_-16px_40px_-24px_rgba(0,0,0,0.8)]",
           c.isBusy && "opacity-95",
         )}
       >
         {hasChips && (
-          <div className="px-2 pt-1.5">
+          <div className="border-b border-border/40 px-2.5 py-2">
             <ChipsRow
               files={c.files}
               onRemoveFile={c.removeFile}
@@ -330,7 +330,7 @@ export function AiInputBar() {
 
         <Popover open={pickerOpen}>
           <PopoverAnchor asChild>
-            <div className="relative px-2.5 pt-2">
+            <div className="relative px-3 pb-1 pt-2.5">
               <textarea
                 ref={c.textareaRef}
                 value={c.value}
@@ -383,7 +383,7 @@ export function AiInputBar() {
                 rows={1}
                 disabled={c.isBusy}
                 className={cn(
-                  "block w-full max-h-44 min-h-[24px] resize-none bg-transparent",
+                  "block w-full max-h-44 min-h-[28px] resize-none bg-transparent",
                   // Right padding reserves space for the absolutely-positioned
                   // send/stop button so long text never slides under it.
                   "pr-10 text-[13px] leading-5 text-foreground outline-none",
@@ -393,7 +393,7 @@ export function AiInputBar() {
               />
               {/* Send / stop button floats in the textarea's top-right corner.
                   Its accessible label is also exposed as a hover title. */}
-              <div className="absolute top-2 right-2.5">
+              <div className="absolute right-3 top-2.5">
                 {c.isBusy ? (
                   <Button
                     type="button"
@@ -453,7 +453,7 @@ export function AiInputBar() {
           )}
         </Popover>
 
-        <div className="flex items-center gap-0.5 overflow-x-auto px-1.5 pb-1 pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex items-center gap-0.5 overflow-x-auto border-t border-border/40 bg-muted/[0.14] px-2.5 pb-1.5 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <ToolbarIcon
             title="Attach file or image"
             onClick={() => fileInputRef.current?.click()}
@@ -526,7 +526,7 @@ export function AiInputBar() {
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.12 }}
-            className="mt-1 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
+            className="mt-1 flex items-center gap-1.5 px-1.5 text-[11px] text-muted-foreground"
           >
             {c.voice.recording ? (
               <span className="size-1.5 animate-pulse rounded-full bg-destructive" />
