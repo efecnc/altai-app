@@ -24,8 +24,8 @@ use isanagent::tools::ToolRegistry;
 use isanagent::workspace::{resolve_workspace_root, IsanagentWorkspace};
 use isanagent::NodeHandle;
 
-use super::tauri_channel::{map_telemetry_to_event, telemetry_chat_id, TauriChannel};
 use super::commands::DocumentArg;
+use super::tauri_channel::{map_telemetry_to_event, telemetry_chat_id, TauriChannel};
 use crate::modules::mcp;
 
 /// Context-condensing (compaction) configuration received from the JS layer
@@ -105,6 +105,7 @@ pub enum Event {
     },
     ToolCallEnd {
         id: String,
+        name: String,
         output: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
@@ -249,7 +250,10 @@ fn parse_edit_diff(value: &serde_json::Value) -> Option<EditDiffPayload> {
     let obj = value.as_object()?;
     let file = obj.get("file").and_then(|v| v.as_str())?.to_string();
     let diff = obj.get("diff").and_then(|v| v.as_str())?.to_string();
-    let truncated = obj.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+    let truncated = obj
+        .get("truncated")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     Some(EditDiffPayload {
         file,
         diff,
@@ -344,10 +348,9 @@ fn permission_mode_to_edit_mode(mode: Option<&str>) -> Option<ShellPolicyMode> {
         Some("ask") | Some("ask_before_edit") | Some("ask-before-edit") => {
             Some(ShellPolicyMode::Ask)
         }
-        Some("auto-edit")
-        | Some("auto_edit")
-        | Some("auto")
-        | Some("edit_automatically") => Some(ShellPolicyMode::Allow),
+        Some("auto-edit") | Some("auto_edit") | Some("auto") | Some("edit_automatically") => {
+            Some(ShellPolicyMode::Allow)
+        }
         Some("plan") => Some(ShellPolicyMode::Deny),
         Some("bypass") | Some("bypass_permissions") => Some(ShellPolicyMode::Allow),
         _ => None,
@@ -539,7 +542,9 @@ async fn ensure_instance(
     if let Some(mcp_statuses) = runtime.app.try_state::<mcp::McpStatusRegistry>() {
         for root in &stale_workspace_roots {
             if !root.is_empty() {
-                mcp_statuses.clear_workspace(std::path::Path::new(root)).await;
+                mcp_statuses
+                    .clear_workspace(std::path::Path::new(root))
+                    .await;
             }
         }
     }
@@ -640,7 +645,9 @@ pub async fn route_send(
         None => isanagent::agent::set_fallback_providers(Vec::new()),
     }
 
-    channel.inject_user_message(message, images, documents, chat_id).await
+    channel
+        .inject_user_message(message, images, documents, chat_id)
+        .await
 }
 
 /// Cancel a chat's run. Fan out to every live instance rather than tracking a
@@ -1050,15 +1057,13 @@ async fn build_instance(
             // name-keyed and safe under concurrent insert, but keeping it on
             // one task keeps the log lines ordered).
             while let Some(joined) = connect_set.join_next().await {
-                let Ok((server, outcome)) = joined else { continue };
+                let Ok((server, outcome)) = joined else {
+                    continue;
+                };
                 match outcome {
                     Ok(mcp_tools) => {
                         let count = mcp_tools.len();
-                        log::info!(
-                            "MCP '{}' connected with {} tools",
-                            server.name,
-                            count
-                        );
+                        log::info!("MCP '{}' connected with {} tools", server.name, count);
                         let now_ms = now_epoch_ms();
                         mcp_statuses
                             .set(
@@ -1452,10 +1457,7 @@ async fn build_instance(
                     let is_clarification = outbound
                         .metadata
                         .contains_key(isanagent::clarification::METADATA_CLARIFICATION);
-                    let edit_diff = outbound
-                        .metadata
-                        .get("edit_diff")
-                        .and_then(parse_edit_diff);
+                    let edit_diff = outbound.metadata.get("edit_diff").and_then(parse_edit_diff);
                     let event = if is_clarification {
                         let choices = outbound
                             .metadata

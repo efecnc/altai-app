@@ -77,7 +77,7 @@ function ingestTodoWrite(input: unknown, sessionId: string | null): void {
 export type AgentEvent =
   | { type: "agent_message"; content: string; role: string }
   | { type: "tool_call_start"; id: string; name: string; input: unknown }
-  | { type: "tool_call_end"; id: string; output: unknown; error?: string }
+  | { type: "tool_call_end"; id: string; name: string; output: unknown; error?: string }
   | { type: "edit_diff"; file: string; before: string; after: string; hunk_id: string }
   | { type: "approval_request"; id: string; action: string; payload: unknown }
   | { type: "thinking"; content: string }
@@ -251,14 +251,14 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         const mcp = activeMcpCalls.get(payload.id);
         activeMcpCalls.delete(payload.id);
         if (payload.error) {
-          store.patchAgentMeta({ step: `${payload.id} (error)` });
+          store.patchAgentMeta({ step: `${payload.name} (error)` });
         }
         store.addActivity({
           label: mcp
             ? `MCP ${payload.error ? "failed" : "finished"} · ${mcp.server} → ${mcp.tool}`
-            : payload.error ? "Tool call failed" : "Tool call finished",
+            : payload.error ? `${payload.name} failed` : `Finished ${payload.name}`,
           detail: payload.error ?? (mcp ? "MCP result received" : payload.id),
-          kind: mcp ? "mcp" : "tool",
+          kind: mcp ? "mcp" : activityKindForTool(payload.name),
           tone: payload.error ? "error" : "success",
         });
         store.endNativeToolCall(payload.id, payload.output, payload.error);
