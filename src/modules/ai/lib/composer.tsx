@@ -15,7 +15,7 @@ import { useSnippetsStore } from "../store/snippetsStore";
 export type FileAttachment = {
   id: string;
   name: string;
-  kind: "image" | "text" | "selection" | "terminal" | "diff" | "folder";
+  kind: "image" | "pdf" | "text" | "selection" | "terminal" | "diff" | "folder";
   mediaType: string;
   url?: string;
   text?: string;
@@ -213,6 +213,9 @@ export function AiComposerProvider({ children }: ProviderProps) {
   const attachFileByPath = async (path: string) => {
     try {
       if (/\.pdf$/i.test(path)) {
+        // Workspace files are still converted to text so they remain readable
+        // without a provider-specific file API. Browser-uploaded PDFs below
+        // keep their original bytes and go to document-capable models directly.
         const result = await native.extractPdfPath(path);
         const name = path.split("/").pop() || path;
         const id = `path-${path}`;
@@ -386,14 +389,23 @@ export function AiComposerProvider({ children }: ProviderProps) {
     if (!sessionId) return;
     const store = useChatStore.getState();
 
-    // Image attachments ride alongside the text as multimodal parts so
-    // vision-capable models receive them; text/selection files are already
-    // inlined into `composed` above.
+    // Images and PDFs ride alongside the text as native multimodal parts.
     const imageUrls = files
       .filter((f) => f.kind === "image" && f.url)
       .map((f) => f.url as string);
+    const documents = files
+      .filter((f) => f.kind === "pdf" && f.url)
+      .map((f) => ({
+        data: f.url!.slice(f.url!.indexOf(",") + 1),
+        mediaType: f.mediaType,
+        name: f.name,
+      }));
 
-    void sendMessage(composed, imageUrls.length ? imageUrls : undefined);
+    void sendMessage(
+      composed,
+      imageUrls.length ? imageUrls : undefined,
+      documents.length ? documents : undefined,
+    );
 
     if (!store.mini.open) store.openMini();
     setValue("");
@@ -463,13 +475,12 @@ async function readAttachment(file: File): Promise<FileAttachment | null> {
   }
   if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
     if (file.size > 10 * 1024 * 1024) return null;
-    const result = await native.extractPdf(await readAsBase64(file));
     return {
       id,
       name: file.name,
-      kind: "text",
+      kind: "pdf",
       mediaType: "application/pdf",
-      text: result.content,
+      url: await readAsDataURL(file),
       size: file.size,
     };
   }
@@ -492,10 +503,4 @@ function readAsDataURL(file: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
-}
-
-async function readAsBase64(file: Blob): Promise<string> {
-  const dataUrl = await readAsDataURL(file);
-  const comma = dataUrl.indexOf(",");
-  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
 }

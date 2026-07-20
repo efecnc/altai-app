@@ -25,6 +25,7 @@ use isanagent::workspace::{resolve_workspace_root, IsanagentWorkspace};
 use isanagent::NodeHandle;
 
 use super::tauri_channel::{map_telemetry_to_event, telemetry_chat_id, TauriChannel};
+use super::commands::DocumentArg;
 use crate::modules::mcp;
 
 /// Context-condensing (compaction) configuration received from the JS layer
@@ -599,6 +600,7 @@ pub async fn route_send(
     fallback: Option<isanagent::agent::FallbackProviderSpec>,
     message: String,
     images: Vec<String>,
+    documents: Vec<DocumentArg>,
     chat_id: String,
 ) -> Result<(), String> {
     let channel = ensure_instance(
@@ -638,7 +640,7 @@ pub async fn route_send(
         None => isanagent::agent::set_fallback_providers(Vec::new()),
     }
 
-    channel.inject_user_message(message, images, chat_id).await
+    channel.inject_user_message(message, images, documents, chat_id).await
 }
 
 /// Cancel a chat's run. Fan out to every live instance rather than tracking a

@@ -547,6 +547,7 @@ export const native = {
   agentSend: (
     message: string,
     images: string[] | undefined,
+    documents: { data: string; mediaType: string; name: string }[] | undefined,
     chatId: string | undefined,
     // Picks/creates the runtime instance that owns this chat, so different
     // models / personas / permission-modes run concurrently without tearing
@@ -581,6 +582,7 @@ export const native = {
     invoke<void>("agent_send", {
       message,
       images,
+      documents,
       chatId,
       providerName: config.providerName,
       apiKey: config.apiKey,

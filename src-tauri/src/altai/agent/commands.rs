@@ -14,6 +14,16 @@ pub struct FallbackArg {
     pub model_name: String,
 }
 
+/// A model-native document attachment. The desktop host deliberately carries
+/// the original bytes so the selected model can parse/OCR PDFs itself.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentArg {
+    pub data: String,
+    pub media_type: String,
+    pub name: Option<String>,
+}
+
 /// Start (or ensure running) the IsanAgent runtime.
 ///
 /// The caller should pass provider/model info so the runtime can
@@ -92,6 +102,7 @@ pub async fn agent_send(
     state: State<'_, AgentRuntime>,
     message: String,
     images: Option<Vec<String>>,
+    documents: Option<Vec<DocumentArg>>,
     chat_id: Option<String>,
     provider_name: Option<String>,
     api_key: Option<String>,
@@ -139,6 +150,7 @@ pub async fn agent_send(
         fb,
         message,
         images.unwrap_or_default(),
+        documents.unwrap_or_default(),
         chat_id.unwrap_or_default(),
     )
     .await
