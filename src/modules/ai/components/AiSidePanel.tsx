@@ -213,8 +213,20 @@ function WorkspaceTopbar({
   const sessions = useChatStore((s) => s.sessions);
   const newSession = useChatStore((s) => s.newSession);
   const switchSession = useChatStore((s) => s.switchSession);
+  const deleteSession = useChatStore((s) => s.deleteSession);
   const active = sessions.find((s) => s.id === activeId);
   const title = active?.title || "New chat";
+  const orderedSessions = [...sessions].sort(
+    (a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt,
+  );
+
+  const closeTab = (id: string) => {
+    const index = orderedSessions.findIndex((session) => session.id === id);
+    const next = orderedSessions[index + 1] ?? orderedSessions[index - 1];
+    const wasActive = id === activeId;
+    deleteSession(id);
+    if (wasActive && next) switchSession(next.id);
+  };
 
   return (
     <div className="shrink-0 border-b border-border/50 bg-card/90 backdrop-blur">
@@ -307,26 +319,44 @@ function WorkspaceTopbar({
           aria-label="Chat sessions"
           className="flex h-8 items-center gap-1 overflow-x-auto border-t border-border/40 px-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
-          {sessions.map((session) => {
+          {orderedSessions.map((session) => {
             const activeTab = session.id === activeId;
             const label = session.title || "New chat";
             return (
-              <button
+              <div
                 key={session.id}
-                type="button"
-                role="tab"
-                aria-selected={activeTab}
-                title={label}
-                onClick={() => switchSession(session.id)}
                 className={cn(
-                  "flex h-6 max-w-40 shrink-0 items-center rounded-md px-2 text-[10.5px] transition-colors",
+                  "group flex h-6 max-w-40 shrink-0 items-center rounded-md pr-0.5 text-[10.5px] transition-colors",
                   activeTab
                     ? "bg-foreground/[0.09] font-medium text-foreground"
                     : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
                 )}
               >
-                <span className="truncate">{label}</span>
-              </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab}
+                  title={label}
+                  onClick={() => switchSession(session.id)}
+                  className="min-w-0 truncate px-2 text-left outline-none"
+                >
+                  {label}
+                </button>
+                <button
+                  type="button"
+                  title={`Close ${label}`}
+                  aria-label={`Close ${label}`}
+                  onClick={() => closeTab(session.id)}
+                  className={cn(
+                    "flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition-opacity hover:bg-foreground/[0.1] hover:text-foreground focus:opacity-100",
+                    activeTab
+                      ? "opacity-70"
+                      : "opacity-0 group-hover:opacity-70 group-focus-within:opacity-70",
+                  )}
+                >
+                  <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
+                </button>
+              </div>
             );
           })}
         </div>
