@@ -6,7 +6,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import { SourceCodeIcon, ViewIcon } from "@hugeicons/core-free-icons";
+import { PlayIcon, SourceCodeIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Fragment,
@@ -19,6 +19,8 @@ import {
 } from "react";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 import { ImagePreviewPane } from "./ImagePreviewPane";
+import { dirnameForPath, runCommandForPath } from "./lib/runFile";
+import { runInTerminal } from "@/modules/terminal/runInTerminal";
 import { pruneDocumentCache } from "./lib/useDocument";
 import {
   allLeaves,
@@ -300,6 +302,7 @@ export function EditorStack({
     if (!t) return null;
     const isMd = isMarkdownPath(t.path);
     const showPreview = previewIds.has(t.id);
+    const runCommand = runCommandForPath(t.path);
     return (
       <div
         key={t.id}
@@ -349,6 +352,17 @@ export function EditorStack({
                 strokeWidth={1.75}
               />
               <span>{showPreview ? "Source" : "Preview"}</span>
+            </button>
+          )}
+          {runCommand && !showPreview && (
+            <button
+              type="button"
+              onClick={() => runInTerminal(runCommand, { cwd: dirnameForPath(t.path), immediate: true })}
+              className={cn("absolute top-2 z-10 flex h-7 items-center gap-1.5 rounded-md border border-border/60 bg-background/90 px-2 text-[11px] font-medium text-muted-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground", isMd ? "right-24" : "right-2")}
+              title={`Run ${runCommand}`}
+            >
+              <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={1.75} />
+              <span>Run</span>
             </button>
           )}
         </div>

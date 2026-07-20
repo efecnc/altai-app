@@ -24,6 +24,7 @@ import {
   useState,
 } from "react";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { native, type GrepHit } from "@/modules/ai/lib/native";
 import { fileIconUrl } from "./lib/iconResolver";
 import { copyToClipboard, revealInFinder } from "./lib/contextActions";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
@@ -75,6 +76,8 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
   const showHidden = usePreferencesStore((s) => s.showHidden);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchHit[]>([]);
+  const [contentResults, setContentResults] = useState<GrepHit[]>([]);
+  const [mode, setMode] = useState<"files" | "content">("files");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [searching, setSearching] = useState(false);
   const [truncated, setTruncated] = useState(false);
@@ -94,6 +97,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
     } else {
       setQuery("");
       setResults([]);
+      setContentResults([]);
       setSelectedIndex(0);
       setSearching(false);
       setTruncated(false);
@@ -104,6 +108,7 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
     const q = query.trim();
     if (q.length < MIN_QUERY_LEN) {
       setResults([]);
+      setContentResults([]);
       setSelectedIndex(0);
       setSearching(false);
       setTruncated(false);
@@ -113,16 +118,26 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
     let alive = true;
     const handle = setTimeout(async () => {
       try {
-        const res = await invoke<SearchResult>("fs_search", {
-          root: rootPath,
-          query: q,
-          limit: 200,
-          showHidden,
-          workspace: currentWorkspaceEnv(),
-        });
+        const res = mode === "files"
+          ? await invoke<SearchResult>("fs_search", {
+              root: rootPath, query: q, limit: 200, showHidden,
+              workspace: currentWorkspaceEnv(),
+            })
+          : null;
         if (alive) {
-          setResults(res.hits);
-          setTruncated(res.truncated);
+          if (res) {
+            setResults(res.hits);
+            setContentResults([]);
+            setTruncated(res.truncated);
+          } else {
+            // fs_grep accepts regex; search UX is literal by default.
+            const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const content = await native.grepWorkspace(rootPath, escaped);
+            if (!alive) return;
+            setContentResults(content.hits);
+            setResults([]);
+            setTruncated(content.truncated);
+          }
           setSelectedIndex(0);
         }
       } catch (e) {
@@ -141,7 +156,9 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
       alive = false;
       clearTimeout(handle);
     };
-  }, [query, rootPath, showHidden]);
+  }, [query, rootPath, showHidden, mode]);
+
+  const visibleCount = mode === "files" ? results.length : contentResults.length;
 
   useImperativeHandle(
     ref,
@@ -157,17 +174,19 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
   );
 
   useEffect(() => {
-    if (active && results.length > 0) {
+    if (active && visibleCount > 0) {
       const el = scrollRef.current?.querySelector(`[data-index="${selectedIndex}"]`);
       el?.scrollIntoView({ block: "nearest" });
     }
-  }, [selectedIndex, results, active]);
+  }, [selectedIndex, visibleCount, active]);
 
   const handleSelect = (hit: SearchHit) => {
     if (!hit.is_dir) {
       onOpenFile(hit.path);
     }
   };
+
+  const handleContentSelect = (hit: GrepHit) => onOpenFile(hit.path);
 
   return (
     <div className="flex flex-col">
@@ -195,20 +214,21 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
                 onRequestClose();
                 return;
               }
-              if (results.length > 0) {
+              if (visibleCount > 0) {
                 if (e.key === "ArrowDown") {
                   e.preventDefault();
                   lastKeyboardNavAt.current = Date.now();
-                  setSelectedIndex((prev) => (prev + 1) % results.length);
+                  setSelectedIndex((prev) => (prev + 1) % visibleCount);
                 } else if (e.key === "ArrowUp") {
                   e.preventDefault();
                   lastKeyboardNavAt.current = Date.now();
                   setSelectedIndex(
-                    (prev) => (prev - 1 + results.length) % results.length,
+                    (prev) => (prev - 1 + visibleCount) % visibleCount,
                   );
                 } else if (e.key === "Enter") {
                   e.preventDefault();
-                  handleSelect(results[selectedIndex]);
+                  if (mode === "files") handleSelect(results[selectedIndex]);
+                  else handleContentSelect(contentResults[selectedIndex]);
                 }
               }
             }}
@@ -228,17 +248,39 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
         </motion.div>
       ) : null}
 
+      {open ? (
+        <div className="flex gap-1 border-b border-border/40 px-2 pb-1">
+          <button type="button" onClick={() => setMode("files")} className={cn("rounded px-1.5 py-0.5 text-[10px]", mode === "files" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60")}>Files</button>
+          <button type="button" onClick={() => setMode("content")} className={cn("rounded px-1.5 py-0.5 text-[10px]", mode === "content" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60")}>Contents</button>
+        </div>
+      ) : null}
+
       {active ? (
         <ScrollArea className="min-h-0 flex-1">
           <div className="py-1" ref={scrollRef}>
-            {searching && results.length === 0 ? (
+            {searching && visibleCount === 0 ? (
               <div className="px-3 py-2 text-[11px] text-muted-foreground">
                 Searching…
               </div>
-            ) : results.length === 0 ? (
+            ) : visibleCount === 0 ? (
               <div className="px-3 py-2 text-[11px] text-muted-foreground">
                 No matches
               </div>
+            ) : mode === "content" ? (
+              contentResults.map((hit, index) => (
+                <button
+                  key={`${hit.path}:${hit.line}:${index}`}
+                  type="button"
+                  data-index={index}
+                  onClick={() => handleContentSelect(hit)}
+                  onMouseEnter={() => setSelectedIndex(index)}
+                  className={cn("flex w-full flex-col gap-0.5 px-2 py-1.5 text-left text-xs", index === selectedIndex ? "bg-accent text-foreground" : "hover:bg-accent/50 text-foreground/80")}
+                  title={`${hit.path}:${hit.line}`}
+                >
+                  <span className="truncate text-[10px] text-muted-foreground">{hit.rel}:{hit.line}</span>
+                  <span className="truncate font-mono text-[11px]">{hit.text}</span>
+                </button>
+              ))
             ) : (
               results.map((hit, index) => {
                 const url = hit.is_dir ? null : fileIconUrl(hit.name);

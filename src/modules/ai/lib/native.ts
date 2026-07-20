@@ -198,6 +198,8 @@ export type CheckpointInfo = {
 
 export type InstalledSkillInfo = { name: string; description: string | null };
 
+export type PdfExtractResult = { content: string; truncated: boolean };
+
 export const native = {
   workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
   /** Mirror the recent-folders list into the OS taskbar/Dock menu. */
@@ -221,6 +223,21 @@ export const native = {
       path,
       workspace: currentWorkspaceEnv(),
       enforceIsanagentignore: opts?.enforceIsanagentignore ?? false,
+    }),
+  extractPdf: (dataBase64: string) =>
+    invoke<PdfExtractResult>("fs_extract_pdf", { dataBase64 }),
+  extractPdfPath: (path: string) =>
+    invoke<PdfExtractResult>("fs_extract_pdf_path", {
+      path,
+      workspace: currentWorkspaceEnv(),
+    }),
+  grepWorkspace: (root: string, pattern: string) =>
+    invoke<GrepResponse>("fs_grep", {
+      root,
+      pattern,
+      caseInsensitive: true,
+      maxResults: 200,
+      workspace: currentWorkspaceEnv(),
     }),
   writeFile: (
     path: string,
@@ -530,6 +547,7 @@ export const native = {
   agentSend: (
     message: string,
     images: string[] | undefined,
+    documents: { data: string; mediaType: string; name: string }[] | undefined,
     chatId: string | undefined,
     // Picks/creates the runtime instance that owns this chat, so different
     // models / personas / permission-modes run concurrently without tearing
@@ -564,6 +582,7 @@ export const native = {
     invoke<void>("agent_send", {
       message,
       images,
+      documents,
       chatId,
       providerName: config.providerName,
       apiKey: config.apiKey,

@@ -790,15 +790,15 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   const closeTab = useCallback((id: number) => {
     let toDispose: number[] = [];
     setTabs((curr) => {
-      if (curr.length <= 1) return curr;
       const idx = curr.findIndex((t) => t.id === id);
+      if (idx < 0) return curr;
       const target = curr[idx];
       if (target && target.kind === "terminal") {
         toDispose = leafIds(target.paneTree);
       }
       const next = curr.filter((t) => t.id !== id);
       setActiveId((active) =>
-        id === active ? next[Math.max(0, idx - 1)].id : active,
+        id === active ? (next[Math.max(0, idx - 1)]?.id ?? -1) : active,
       );
       return next;
     });

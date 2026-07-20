@@ -8,6 +8,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 
 use super::runtime::Event;
+use super::commands::DocumentArg;
 
 /// A Tauri-native channel that bridges IsanAgent's bus system to the
 /// frontend via the Tauri event bus (`agent://event`).
@@ -42,16 +43,26 @@ impl TauriChannel {
         &self,
         content: String,
         image_urls: Vec<String>,
+        documents: Vec<DocumentArg>,
         chat_id: String,
     ) -> Result<(), String> {
         let guard = self.bus_tx.lock().await;
         let tx = guard.as_ref().ok_or("TauriChannel not started")?;
-        let attachments = image_urls
+        let mut attachments: Vec<_> = image_urls
             .into_iter()
             .map(|url| isanagent::utils::ContentPart::ImageUrl {
                 image_url: isanagent::utils::ImageUrl { url, detail: None },
             })
             .collect();
+        attachments.extend(documents.into_iter().map(|document| {
+            isanagent::utils::ContentPart::Document {
+                document: isanagent::utils::Document {
+                    data: document.data,
+                    media_type: document.media_type,
+                    name: document.name,
+                },
+            }
+        }));
         let chat_id = if chat_id.is_empty() {
             self.chat_id.clone()
         } else {

@@ -15,7 +15,7 @@ import { useSnippetsStore } from "../store/snippetsStore";
 export type FileAttachment = {
   id: string;
   name: string;
-  kind: "image" | "text" | "selection" | "terminal" | "diff" | "folder";
+  kind: "image" | "pdf" | "text" | "selection" | "terminal" | "diff" | "folder";
   mediaType: string;
   url?: string;
   text?: string;
@@ -26,7 +26,7 @@ export type FileAttachment = {
 
 export const MAX_TEXT_INLINE = 200_000;
 export const ACCEPTED_FILES =
-  "image/*,.txt,.md,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cpp,.h,.hpp,.html,.css,.csv,.log,.env,.config,.conf,.ini,Dockerfile,.dockerfile";
+  "image/*,.pdf,.txt,.md,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cpp,.h,.hpp,.html,.css,.csv,.log,.env,.config,.conf,.ini,Dockerfile,.dockerfile";
 
 type Voice = ReturnType<typeof useWhisperRecording>;
 
@@ -84,6 +84,16 @@ export function AiComposerProvider({ children }: ProviderProps) {
   const [pickedCommands, setPickedCommands] = useState<SlashCommandMeta[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const addFiles = async (list: FileList | null) => {
+    if (!list) return;
+    const next: FileAttachment[] = [];
+    for (const f of Array.from(list)) {
+      const att = await readAttachment(f);
+      if (att) next.push(att);
+    }
+    if (next.length) setFiles((prev) => [...prev, ...next]);
+  };
+
   const focusSignal = useChatStore((s) => s.focusSignal);
   const pendingPrefill = useChatStore((s) => s.pendingPrefill);
   const consumePrefill = useChatStore((s) => s.consumePrefill);
@@ -110,6 +120,32 @@ export function AiComposerProvider({ children }: ProviderProps) {
     window.addEventListener("altai:ai-attach-file", onAttach);
     return () => window.removeEventListener("altai:ai-attach-file", onAttach);
     // attachFileByPath is stable for our purposes (closes over setFiles only)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Tauri's webview surfaces OS file drags as normal HTML5 `FileList`s. Keep
+  // this listener at document scope so a drop in either the workspace or the
+  // chat attaches the files instead of letting the webview navigate away.
+  useEffect(() => {
+    const hasFiles = (event: DragEvent) =>
+      Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    const onDragOver = (event: DragEvent) => {
+      if (hasFiles(event)) event.preventDefault();
+    };
+    const onDrop = (event: DragEvent) => {
+      if (!hasFiles(event) || !event.dataTransfer?.files.length) return;
+      event.preventDefault();
+      void addFiles(event.dataTransfer.files);
+      useChatStore.getState().openMini();
+      useChatStore.getState().focusInput();
+    };
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("drop", onDrop);
+    return () => {
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("drop", onDrop);
+    };
+    // addFiles only closes over React's stable setter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -157,16 +193,6 @@ export function AiComposerProvider({ children }: ProviderProps) {
     },
   });
 
-  const addFiles = async (list: FileList | null) => {
-    if (!list) return;
-    const next: FileAttachment[] = [];
-    for (const f of Array.from(list)) {
-      const att = await readAttachment(f);
-      if (att) next.push(att);
-    }
-    if (next.length) setFiles((prev) => [...prev, ...next]);
-  };
-
   const removeFile = (id: string) =>
     setFiles((prev) => prev.filter((f) => f.id !== id));
 
@@ -186,6 +212,21 @@ export function AiComposerProvider({ children }: ProviderProps) {
 
   const attachFileByPath = async (path: string) => {
     try {
+      if (/\.pdf$/i.test(path)) {
+        // Workspace files are still converted to text so they remain readable
+        // without a provider-specific file API. Browser-uploaded PDFs below
+        // keep their original bytes and go to document-capable models directly.
+        const result = await native.extractPdfPath(path);
+        const name = path.split("/").pop() || path;
+        const id = `path-${path}`;
+        setFiles((prev) => prev.some((f) => f.id === id) ? prev : [...prev, {
+          id, name, kind: "text", mediaType: "application/pdf",
+          text: result.content, size: result.content.length,
+        }]);
+        useChatStore.getState().openMini();
+        useChatStore.getState().focusInput();
+        return;
+      }
       const result = await native.readFile(path);
       if (result.kind !== "text") {
         // Binary/oversize files: skip (could surface a toast in future).
@@ -206,7 +247,9 @@ export function AiComposerProvider({ children }: ProviderProps) {
         };
         return [...prev, att];
       });
-      // Open the AI panel & focus the input so the user sees the chip.
+      // Open the AI panel before focusing: on narrow windows it is an overlay,
+      // so focusing a hidden composer made “Attach to Agent” look unresponsive.
+      useChatStore.getState().openMini();
       useChatStore.getState().focusInput();
     } catch (e) {
       console.error("attachFileByPath failed:", e);
@@ -253,6 +296,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
       next[existing] = attachment;
       return next;
     });
+    useChatStore.getState().openMini();
     useChatStore.getState().focusInput();
   };
 
@@ -345,14 +389,23 @@ export function AiComposerProvider({ children }: ProviderProps) {
     if (!sessionId) return;
     const store = useChatStore.getState();
 
-    // Image attachments ride alongside the text as multimodal parts so
-    // vision-capable models receive them; text/selection files are already
-    // inlined into `composed` above.
+    // Images and PDFs ride alongside the text as native multimodal parts.
     const imageUrls = files
       .filter((f) => f.kind === "image" && f.url)
       .map((f) => f.url as string);
+    const documents = files
+      .filter((f) => f.kind === "pdf" && f.url)
+      .map((f) => ({
+        data: f.url!.slice(f.url!.indexOf(",") + 1),
+        mediaType: f.mediaType,
+        name: f.name,
+      }));
 
-    void sendMessage(composed, imageUrls.length ? imageUrls : undefined);
+    void sendMessage(
+      composed,
+      imageUrls.length ? imageUrls : undefined,
+      documents.length ? documents : undefined,
+    );
 
     if (!store.mini.open) store.openMini();
     setValue("");
@@ -417,6 +470,17 @@ async function readAttachment(file: File): Promise<FileAttachment | null> {
       kind: "image",
       mediaType: file.type || "image/png",
       url,
+      size: file.size,
+    };
+  }
+  if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
+    if (file.size > 10 * 1024 * 1024) return null;
+    return {
+      id,
+      name: file.name,
+      kind: "pdf",
+      mediaType: "application/pdf",
+      url: await readAsDataURL(file),
       size: file.size,
     };
   }

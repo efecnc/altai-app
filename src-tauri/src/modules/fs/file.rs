@@ -5,12 +5,68 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 use tauri::Emitter;
 use tempfile::NamedTempFile;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 use super::isanagentignore;
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
 const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+const MAX_PDF_EXTRACT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_PDF_TEXT_CHARS: usize = 400_000;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfExtractResult {
+    pub content: String,
+    pub truncated: bool,
+}
+
+fn extract_pdf(bytes: &[u8]) -> Result<PdfExtractResult, String> {
+    if bytes.len() > MAX_PDF_EXTRACT_BYTES {
+        return Err(format!("PDF exceeds the {} MB extraction limit", MAX_PDF_EXTRACT_BYTES / 1024 / 1024));
+    }
+    if !bytes.starts_with(b"%PDF-") {
+        return Err("The uploaded file is not a valid PDF".into());
+    }
+    // Some malformed PDFs make third-party parsers panic. An attachment must
+    // never take down the desktop process, so convert that into a normal error.
+    let extracted = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes))
+        .map_err(|_| "The PDF parser could not read this document".to_string())?
+        .map_err(|e| format!("Could not extract PDF text: {e}"))?;
+    let mut content = extracted.trim().to_string();
+    let truncated = content.chars().count() > MAX_PDF_TEXT_CHARS;
+    if truncated {
+        content = content.chars().take(MAX_PDF_TEXT_CHARS).collect();
+        content.push_str("\n…[PDF text truncated]");
+    }
+    if content.is_empty() {
+        return Err("No selectable text was found in this PDF. Scanned PDFs need OCR support.".into());
+    }
+    Ok(PdfExtractResult { content, truncated })
+}
+
+/// Extract selectable text from a chat-uploaded PDF. Base64 keeps Tauri IPC
+/// portable across webview implementations and avoids exposing a host path.
+#[tauri::command]
+pub fn fs_extract_pdf(data_base64: String) -> Result<PdfExtractResult, String> {
+    let bytes = BASE64
+        .decode(data_base64)
+        .map_err(|_| "The PDF upload could not be decoded".to_string())?;
+    extract_pdf(&bytes)
+}
+
+/// Same parser for a PDF selected from the workspace explorer.
+#[tauri::command]
+pub fn fs_extract_pdf_path(
+    path: String,
+    workspace: Option<WorkspaceEnv>,
+) -> Result<PdfExtractResult, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let path = resolve_path(&path, &workspace);
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    extract_pdf(&bytes)
+}
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]

@@ -1088,6 +1088,7 @@ export function hasKeyForModel(modelId: ModelId): boolean {
 export async function sendMessage(
   text: string,
   images?: string[],
+  documents?: { data: string; mediaType: string; name: string }[],
 ): Promise<boolean> {
   const state = useChatStore.getState();
   const sessionId = state.activeSessionId;
@@ -1105,13 +1106,14 @@ export async function sendMessage(
 
   // The ALTAI session id IS the runtime chat_id — keeps each tab's
   // conversation isolated and lets the event bridge route by chat.
-  return sendViaIsanAgent(text, sessionId, images);
+  return sendViaIsanAgent(text, sessionId, images, documents);
 }
 
 async function sendViaIsanAgent(
   text: string,
   chatId: string,
   images?: string[],
+  documents?: { data: string; mediaType: string; name: string }[],
 ): Promise<boolean> {
   const store = useChatStore.getState();
 
@@ -1244,7 +1246,7 @@ async function sendViaIsanAgent(
   try {
     // Carry the same config the pre-warm used, so the runtime routes this
     // message to that instance (route_send keys instances by this config).
-    await native.agentSend(payload, images, chatId, {
+    await native.agentSend(payload, images, documents, chatId, {
       providerName,
       apiKey,
       modelName,
@@ -1349,7 +1351,7 @@ export async function dispatchToSession(
   const envBlock = buildEnvBlock(store.live);
   const payload = envBlock ? `${envBlock}\n\n${text}` : text;
   try {
-    await native.agentSend(payload, undefined, chatId, config);
+    await native.agentSend(payload, undefined, undefined, chatId, config);
     return true;
   } catch {
     return false;
