@@ -276,6 +276,7 @@ pub fn run() {
             state
         })
         .manage(os_menu::RecentFolders::default())
+        .manage(mcp::McpStatusRegistry::new())
         .setup(|app| {
             altai::agent::runtime::init(app.handle().clone())?;
             // We use workspaceFallbackPath in frontend which depends on this
@@ -380,6 +381,7 @@ pub fn run() {
             mcp::mcp_get_servers,
             mcp::mcp_save_servers,
             mcp::mcp_probe_server,
+            mcp::mcp_server_status,
             // ALTAI — managed LSP installer (Phase 1: rust-analyzer working;
             // TS/Python/Go stubbed until Phase 4 lands bundled Node + Go detect)
             lsp_install::lsp_registry_list,

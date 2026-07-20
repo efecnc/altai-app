@@ -20,6 +20,7 @@ import {
   ArrowDown01Icon,
   CheckmarkCircle02Icon,
   Edit02Icon,
+  Route01Icon,
   Settings01Icon,
   ShieldEnergyIcon,
   Tick02Icon,
@@ -29,6 +30,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 const ICONS: Record<PermissionMode, typeof CheckmarkCircle02Icon> = {
   ask: CheckmarkCircle02Icon,
   "auto-edit": Edit02Icon,
+  plan: Route01Icon,
   bypass: ShieldEnergyIcon,
 };
 
@@ -46,6 +48,11 @@ const MODE_COLORS: Record<
     icon: "text-sky-600 dark:text-sky-400",
     label: "text-sky-700 dark:text-sky-300",
   },
+  plan: {
+    trigger: "text-amber-600 hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-400",
+    icon: "text-amber-600 dark:text-amber-400",
+    label: "text-amber-700 dark:text-amber-300",
+  },
   bypass: {
     trigger: "text-destructive hover:text-destructive",
     icon: "text-destructive",
@@ -53,7 +60,7 @@ const MODE_COLORS: Record<
   },
 };
 
-const VISIBLE_MODES: readonly PermissionMode[] = ["ask", "auto-edit"];
+const VISIBLE_MODES: readonly PermissionMode[] = ["ask", "auto-edit", "plan"];
 
 type Variant = "toolbar" | "toolbar-icon";
 

@@ -1,5 +1,6 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { z } from "zod";
+import { PERMISSION_MODES, type PermissionMode } from "@/modules/settings/store";
 
 /** What an agent run was assigned to work on. */
 export type AssignmentSource =
@@ -23,7 +24,7 @@ export type AssignmentRunConfig = {
   agentId?: string;
   modelId?: string;
   skills?: string[];
-  permissionMode?: "ask" | "auto-edit" | "bypass";
+  permissionMode?: PermissionMode;
 };
 
 /** One assignment = one ALTAI session = one IsanAgent chat_id (1:1). */
@@ -76,7 +77,7 @@ const assignmentSchema = z.object({
       agentId: z.string().optional(),
       modelId: z.string().optional(),
       skills: z.array(z.string().min(1)).max(20).optional(),
-      permissionMode: z.enum(["ask", "auto-edit", "bypass"]).optional(),
+      permissionMode: z.enum(PERMISSION_MODES).optional(),
     })
     .optional(),
   createdAt: z.number(),

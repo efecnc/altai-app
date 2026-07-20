@@ -81,7 +81,16 @@ export type AgentEvent =
   | { type: "edit_diff"; file: string; before: string; after: string; hunk_id: string }
   | { type: "approval_request"; id: string; action: string; payload: unknown }
   | { type: "thinking"; content: string }
-  | { type: "clarification"; content: string; choices: string[] }
+  | {
+      type: "clarification";
+      content: string;
+      choices: string[];
+      edit_diff?: {
+        file: string;
+        diff: string;
+        truncated: boolean;
+      };
+    }
   | {
       type: "usage";
       prompt_tokens: number;
@@ -266,11 +275,20 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         // the turn yields back to the user (idle) until they reply.
         store.appendNativeMessage(payload.content, "assistant");
         store.setPendingChoices(payload.choices);
+        // When the clarification is actually a file-edit approval, the crate
+        // attaches a structured diff so the UI can render a diff-review card
+        // instead of the plain chips. Stash it alongside the choices; the
+        // reply path ("approve"/"deny" as a normal message) is identical.
+        store.setPendingEditDiff(payload.edit_diff ?? null);
         store.addActivity({
-          label: "Agent requested clarification",
-          detail: payload.choices.length
-            ? `${payload.choices.length} suggested answer${payload.choices.length === 1 ? "" : "s"}`
-            : undefined,
+          label: payload.edit_diff
+            ? `Edit approval: ${payload.edit_diff.file}`
+            : "Agent requested clarification",
+          detail: payload.edit_diff
+            ? "Review the diff, then approve or deny"
+            : payload.choices.length
+              ? `${payload.choices.length} suggested answer${payload.choices.length === 1 ? "" : "s"}`
+              : undefined,
           kind: "agent",
           tone: "warning",
         });

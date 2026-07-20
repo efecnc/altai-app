@@ -209,6 +209,29 @@ type StoreState = {
   setPendingChoices: (choices: string[] | null) => void;
 
   /**
+   * Structured file-edit diff attached to a clarification when the agent's
+   * edit gate requests approval (crate `interactive_edit_mode = Ask`). When
+   * present, the chat renders a diff-review card instead of the plain choice
+   * chips. The reply path is identical to a normal clarification — the user
+   * sends `approve` / `deny` as a message and the `ClarificationHub` routes it
+   * back to the waiting tool.
+   */
+  pendingEditDiff: {
+    file: string;
+    diff: string;
+    truncated: boolean;
+  } | null;
+  setPendingEditDiff: (
+    diff: { file: string; diff: string; truncated: boolean } | null,
+  ) => void;
+  /** Clear BOTH `pendingChoices` and `pendingEditDiff` in one step. The two
+   *  are always set together from a clarification event and resolve together
+   *  when the user replies — this is the single chokepoint so every reset
+   *  site (session switch, rewind, send) clears both atomically instead of
+   *  each site re-stating the two-field reset by hand (drift-prone). */
+  resetPendingClarification: () => void;
+
+  /**
    * Id of the assistant `UIMessage` that is currently accumulating parts
    * for the in-flight turn. Tool calls + interleaved text from the native
    * runtime collapse into this message so the UI renders one bubble with
@@ -659,8 +682,23 @@ export const useChatStore = create<StoreState>((set, get) => ({
     set({ nativeMessages: [], currentAssistantTurnId: null }),
 
   pendingChoices: null,
-  setPendingChoices: (choices) =>
-    set({ pendingChoices: choices && choices.length > 0 ? choices : null }),
+  setPendingChoices: (choices) => {
+    const next = choices && choices.length > 0 ? choices : null;
+    // Clearing the choices also clears the edit-diff card — the two are
+    // always set together from a clarification event and resolve together
+    // when the user replies. Routed through `resetPendingClarification` so
+    // there is exactly one chokepoint for the two-field reset.
+    if (next === null) {
+      set({ pendingChoices: null, pendingEditDiff: null });
+    } else {
+      set({ pendingChoices: next });
+    }
+  },
+
+  pendingEditDiff: null,
+  setPendingEditDiff: (diff) => set({ pendingEditDiff: diff }),
+  resetPendingClarification: () =>
+    set({ pendingChoices: null, pendingEditDiff: null }),
 
   paperImportOpen: false,
   setPaperImportOpen: (open) => set({ paperImportOpen: open }),
@@ -760,6 +798,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
       nativeMessages: [],
       currentAssistantTurnId: null,
       pendingChoices: null,
+      pendingEditDiff: null,
     });
     void saveSessionsList(next);
     void saveActiveId(id);
@@ -798,6 +837,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
       nativeMessages: [],
       currentAssistantTurnId: null,
       pendingChoices: null,
+      pendingEditDiff: null,
     });
     void saveActiveId(id);
 
@@ -837,6 +877,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
         nativeMessages: [],
         currentAssistantTurnId: null,
         pendingChoices: null,
+        pendingEditDiff: null,
       });
       void saveSessionsList([fresh]);
       void saveActiveId(fresh.id);
@@ -857,6 +898,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
         nativeMessages: [],
         currentAssistantTurnId: null,
         pendingChoices: null,
+        pendingEditDiff: null,
       });
     } else {
       set({ sessions: remaining });
@@ -971,6 +1013,7 @@ async function rewindAndResend(
     nativeMessages: cut,
     currentAssistantTurnId: null,
     pendingChoices: null,
+    pendingEditDiff: null,
     agentMeta: IDLE_META,
   });
   // Force-flush so a crash before the debounce can't leave the frontend store
@@ -1051,7 +1094,14 @@ export async function sendMessage(
   if (!sessionId) return false;
 
   // Sending any message resolves an open clarification, so clear its chips.
-  if (state.pendingChoices) state.setPendingChoices(null);
+  // Clear any pending clarification (choices and/or an edit-approval diff
+  // card) — sending a message resolves the `ask_user` wait in the crate, so
+  // the chip/diff state must go away regardless of which kind it was. The
+  // guard fires on either field so an edit-approval clarification that
+  // carried no preset choices still unmounts the EditApprovalCard.
+  if (state.pendingChoices || state.pendingEditDiff) {
+    state.setPendingChoices(null);
+  }
 
   // The ALTAI session id IS the runtime chat_id — keeps each tab's
   // conversation isolated and lets the event bridge route by chat.

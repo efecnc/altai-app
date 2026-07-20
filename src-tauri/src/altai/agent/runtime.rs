@@ -73,6 +73,21 @@ impl CompactionArg {
     }
 }
 
+/// Structured file-edit diff attached to a clarification when the crate's edit
+/// gate requests approval. Mirrors the `metadata.edit_diff` object the crate
+/// attaches to the `ask_user` outbound (`builtin.rs` edit gate). The UI uses
+/// this to render a diff-review card; the `before`/`after` are derived from
+/// the crate's unified `diff` so the frontend doesn't need to re-read files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditDiffPayload {
+    /// Workspace-relative path of the file being mutated (e.g. `src/lib.rs`).
+    pub file: String,
+    /// Unified-diff preview of the proposed change.
+    pub diff: String,
+    /// Whether the diff was truncated to stay under the crate's display cap.
+    pub truncated: bool,
+}
+
 /// Serializable agent event surface sent to the frontend.
 /// Stabilize this enum — every change is a breaking downstream contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,9 +126,17 @@ pub enum Event {
     /// `content` is the question; `choices` are optional preset answers the UI
     /// can render as buttons. Replying with a normal message resolves it (the
     /// runtime routes the next inbound message to the pending wait).
+    ///
+    /// `edit_diff` is present when the clarification is actually a file-edit
+    /// approval request (the crate's edit gate attaches a structured diff to
+    /// the `ask_user` outbound metadata). The UI renders a richer diff-review
+    /// card in that case instead of the plain choice chips; the reply path
+    /// (`approve` / `deny` as a normal message) is identical.
     Clarification {
         content: String,
         choices: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        edit_diff: Option<EditDiffPayload>,
     },
     /// Per-LLM-call token accounting forwarded from IsanAgent's `AgentUsage`
     /// telemetry. The frontend accumulates these into the run's token meter.
@@ -205,6 +228,34 @@ fn emit_event(app: &AppHandle, chat_id: &str, event: &Event) {
     let _ = app.emit("agent://event", &AgentEventEnvelope { chat_id, event });
 }
 
+/// Wall-clock epoch millis. Used to stamp MCP status transitions so the
+/// Settings UI can hint at staleness (`updated 2m ago`). `SystemTime::now`
+/// is good enough here — this is advisory metadata, not a monotonic clock.
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Parse the crate's `metadata.edit_diff` object into the structured
+/// [`EditDiffPayload`] the frontend renders. The crate attaches this to
+/// `ask_user` outbounds from the edit gate (`builtin.rs`); the shape is
+/// `{ file, diff, truncated }`. We validate defensively (model-produced
+/// metadata is untrusted) and drop malformed values rather than failing the
+/// whole clarification — the user can still approve/deny from the text prompt.
+fn parse_edit_diff(value: &serde_json::Value) -> Option<EditDiffPayload> {
+    let obj = value.as_object()?;
+    let file = obj.get("file").and_then(|v| v.as_str())?.to_string();
+    let diff = obj.get("diff").and_then(|v| v.as_str())?.to_string();
+    let truncated = obj.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+    Some(EditDiffPayload {
+        file,
+        diff,
+        truncated,
+    })
+}
+
 /// Identifies a particular `(provider, model, key, base_url, persona)`
 /// configuration of the running runtime. When `start_agent` is called
 /// with a different fingerprint we tear down the existing bus and
@@ -243,13 +294,15 @@ struct RuntimeFingerprint {
 
 /// Map the ALTAI UI permission mode to an IsanAgent shell-policy mode for interactive sessions.
 ///
-/// The runtime gate is exec/code-only — it does NOT gate file edits — so this maps only the
-/// shell/code-execution dimension:
-/// - `ask` and `auto-edit` → `Ask`: code-exec / destructive-shell still require approval. This
-///   honors the UI contract that "Edit automatically" auto-approves file *edits* (which the
-///   runtime never gates) while **shell commands still require approval**. Only `bypass` (which
-///   the UI gates behind an explicit Settings toggle + warning) auto-approves shell.
-/// - `bypass` → `Allow`: no prompts.
+/// This maps only the **shell / code-execution** dimension. File edits are
+/// gated separately via [`permission_mode_to_edit_mode`]; the two are
+/// independent because "auto-edit" should auto-apply file changes while still
+/// prompting for shell commands.
+/// - `ask`, `auto-edit`, and `plan` → `Ask`: code-exec / destructive-shell still
+///   require approval. `plan` keeps shell read-only-with-approval so the agent
+///   can run `git status` / `ls` while planning but cannot silently mutate.
+/// - `bypass` → `Allow`: no prompts (UI-gated behind an explicit Settings
+///   toggle + warning).
 /// - unknown / None → leaves the on-disk config default untouched (which defaults to `Ask`).
 ///
 /// Fail-safe: any unrecognized value returns `None`, so it can never silently downgrade to
@@ -262,7 +315,39 @@ fn permission_mode_to_shell_mode(mode: Option<&str>) -> Option<ShellPolicyMode> 
         | Some("auto-edit")
         | Some("auto_edit")
         | Some("auto")
-        | Some("edit_automatically") => Some(ShellPolicyMode::Ask),
+        | Some("edit_automatically")
+        | Some("plan") => Some(ShellPolicyMode::Ask),
+        Some("bypass") | Some("bypass_permissions") => Some(ShellPolicyMode::Allow),
+        _ => None,
+    }
+}
+
+/// Map the UI permission mode to the **file-edit** policy mode.
+///
+/// This is independent from [`permission_mode_to_shell_mode`] because the two
+/// surfaces have different risk profiles:
+/// - `ask` → `Ask`: edits require an approval card with a diff preview.
+/// - `auto-edit` → `Allow`: edits apply silently. Shell still requires approval
+///   (see [`permission_mode_to_shell_mode`]) — "auto-edit" never auto-approves
+///   shell. This is the Cursor-style default for users who trust file changes
+///   but want to keep a human in the loop on commands.
+/// - `plan` → `Deny`: no mutations at all. The crate's gate surfaces the
+///   `plan mode active — finalize or apply the plan first` error to the model,
+///   which keeps it read-only.
+/// - `bypass` → `Allow`: no prompts (UI-gated behind an explicit Settings toggle).
+/// - unknown / None → returns `None` so the on-disk config default is preserved
+///   (which is `Ask`). Fail-safe: an unrecognized value can never silently
+///   downgrade to `Allow`.
+fn permission_mode_to_edit_mode(mode: Option<&str>) -> Option<ShellPolicyMode> {
+    match mode.map(str::trim) {
+        Some("ask") | Some("ask_before_edit") | Some("ask-before-edit") => {
+            Some(ShellPolicyMode::Ask)
+        }
+        Some("auto-edit")
+        | Some("auto_edit")
+        | Some("auto")
+        | Some("edit_automatically") => Some(ShellPolicyMode::Allow),
+        Some("plan") => Some(ShellPolicyMode::Deny),
         Some("bypass") | Some("bypass_permissions") => Some(ShellPolicyMode::Allow),
         _ => None,
     }
@@ -421,7 +506,9 @@ async fn ensure_instance(
     // Remove them under the lock, but defer the async teardown until the lock
     // is released. Firing `shutdown` stops the bus-router task (so `agent_node`
     // drops and the `bus_tx` cycle unwinds); `stop()` then closes the channel.
-    let stale: Vec<Instance> = {
+    // We keep the fingerprint alongside each stale instance so the MCP status
+    // registry (keyed by workspace) can be cleared for exactly those roots.
+    let stale: Vec<(RuntimeFingerprint, Instance)> = {
         let mut instances = runtime.instances.lock().await;
         let keys: Vec<RuntimeFingerprint> = instances
             .keys()
@@ -429,7 +516,7 @@ async fn ensure_instance(
             .cloned()
             .collect();
         keys.into_iter()
-            .filter_map(|k| instances.remove(&k))
+            .filter_map(|k| instances.remove(&k).map(|inst| (k, inst)))
             .collect()
     };
     runtime
@@ -437,10 +524,23 @@ async fn ensure_instance(
         .lock()
         .await
         .retain(|k, _| k == &workspace_root);
-    for inst in stale {
+    // Clear MCP runtime status for the workspaces we're tearing down so a
+    // stale "connected" badge doesn't survive a workspace switch.
+    let stale_workspace_roots: Vec<String> = stale
+        .iter()
+        .map(|(fp, _)| fp.workspace_root.clone())
+        .collect();
+    for (_, inst) in stale {
         let _ = inst.shutdown.send(());
         let _ = inst.channel.cancel(String::new()).await;
         let _ = inst.channel.stop().await;
+    }
+    if let Some(mcp_statuses) = runtime.app.try_state::<mcp::McpStatusRegistry>() {
+        for root in &stale_workspace_roots {
+            if !root.is_empty() {
+                mcp_statuses.clear_workspace(std::path::Path::new(root)).await;
+            }
+        }
     }
 
     // Build the (heavy) instance WITHOUT holding the instances lock.
@@ -906,26 +1006,100 @@ async fn build_instance(
     // tools through `tools/list`; those tools are registered like ALTAI's
     // built-ins and therefore participate in the model's native tool-calling
     // loop. One unavailable optional server must never prevent the agent from
-    // starting, so failures are logged and visible from the MCP settings card.
-    match mcp::load_servers(&sandbox_dir) {
-        Ok(servers) => {
-            for server in servers.into_iter().filter(|server| server.enabled) {
-                match mcp::connect_server(&server, &sandbox_dir).await {
+    // starting, so failures are logged AND surfaced to the Settings UI via
+    // the process-global MCP status registry.
+    //
+    // Servers connect CONCURRENTLY so a single slow server (e.g. an `npx`
+    // spawn that takes 10s to initialize) doesn't gate every other server
+    // behind it — total MCP startup latency is max(connect) rather than sum.
+    // Each task owns its full Starting → Connected/Error status transition;
+    // the registry mutex is fine for concurrent callers (brief critical
+    // sections, no awaits held under the lock).
+    let mcp_statuses = app.state::<mcp::McpStatusRegistry>();
+    if let Ok(servers) = mcp::load_servers(&sandbox_dir) {
+        let enabled: Vec<mcp::McpServerConfig> =
+            servers.into_iter().filter(|s| s.enabled).collect();
+        if !enabled.is_empty() {
+            let mut connect_set = tokio::task::JoinSet::new();
+            for server in enabled {
+                let sandbox = sandbox_dir.clone();
+                let statuses = mcp_statuses.inner().clone();
+                connect_set.spawn(async move {
+                    let now_ms_start = now_epoch_ms();
+                    statuses
+                        .set(
+                            &sandbox,
+                            mcp::McpServerStatus {
+                                server_id: server.id.clone(),
+                                state: mcp::McpState::Starting,
+                                tool_count: None,
+                                last_error: None,
+                                updated_at_ms: now_ms_start,
+                            },
+                            now_ms_start,
+                        )
+                        .await;
+                    let outcome = mcp::connect_server(&server, &sandbox).await;
+                    (server, outcome)
+                });
+            }
+            // Await every connect; registration happens on the main task so
+            // `ToolRegistry` insertion order is deterministic (the registry is
+            // name-keyed and safe under concurrent insert, but keeping it on
+            // one task keeps the log lines ordered).
+            while let Some(joined) = connect_set.join_next().await {
+                let Ok((server, outcome)) = joined else { continue };
+                match outcome {
                     Ok(mcp_tools) => {
+                        let count = mcp_tools.len();
                         log::info!(
                             "MCP '{}' connected with {} tools",
                             server.name,
-                            mcp_tools.len()
+                            count
                         );
+                        let now_ms = now_epoch_ms();
+                        mcp_statuses
+                            .set(
+                                &sandbox_dir,
+                                mcp::McpServerStatus {
+                                    server_id: server.id.clone(),
+                                    state: mcp::McpState::Connected,
+                                    tool_count: Some(count),
+                                    last_error: None,
+                                    updated_at_ms: now_ms,
+                                },
+                                now_ms,
+                            )
+                            .await;
                         for tool in mcp_tools {
                             tools.register(Box::new(tool));
                         }
                     }
-                    Err(error) => log::warn!("MCP '{}' unavailable: {error}", server.name),
+                    Err(error) => {
+                        let msg = error.to_string();
+                        log::warn!("MCP '{}' unavailable: {msg}", server.name);
+                        let now_ms = now_epoch_ms();
+                        mcp_statuses
+                            .set(
+                                &sandbox_dir,
+                                mcp::McpServerStatus {
+                                    server_id: server.id.clone(),
+                                    state: mcp::McpState::Error,
+                                    tool_count: None,
+                                    last_error: Some(msg),
+                                    updated_at_ms: now_ms,
+                                },
+                                now_ms,
+                            )
+                            .await;
+                    }
                 }
             }
         }
-        Err(error) => log::warn!("MCP configuration skipped: {error}"),
+    } else {
+        // load_servers itself failed — log and continue. Doesn't block the
+        // agent (built-in tools already registered above).
+        log::warn!("MCP configuration skipped");
     }
 
     // Compaction overhaul (upstream isanagent — altaidevorg/isanagent#39). The agent can
@@ -1148,12 +1322,27 @@ async fn build_instance(
             Some(c) => c.to_logic_params(),
             None => (5, 20, 100_000),
         };
-    // Start from the on-disk shell policy, then let the active UI permission mode override the
-    // interactive gate so the toolbar toggle actually governs code-exec/destructive-shell. The
-    // mode is baked into `AgentLogic` here, which is why it is part of the instance fingerprint.
+    // Start from the on-disk shell policy, then let the active UI permission
+    // mode override BOTH the interactive shell gate and the file-edit gate.
+    //
+    // The two surfaces are mapped independently (see `permission_mode_to_*_mode`)
+    // because their risk profiles differ: "auto-edit" auto-applies file changes
+    // but still prompts for shell commands, while "plan" blocks edits entirely
+    // but lets read-only shell runs through with approval. Without overriding
+    // `interactive_edit_mode` here, edits would always fall back to the on-disk
+    // default (`Ask`) and the toolbar toggle would silently do nothing for the
+    // edit surface — which was the core ITEM 1 wiring gap.
     let mut shell_policy = workspace.config.resolved_shell_policy();
     if let Some(mode) = permission_mode_to_shell_mode(permission_mode) {
         shell_policy.interactive_mode = mode;
+    }
+    if let Some(mode) = permission_mode_to_edit_mode(permission_mode) {
+        shell_policy.interactive_edit_mode = mode;
+        // `unattended_*_mode` only matters for autonomous/background sessions,
+        // but keep it in lockstep with the interactive setting so a background
+        // turn doesn't silently use the on-disk default (which is `Deny`) while
+        // the user picked `auto-edit` in the toolbar.
+        shell_policy.unattended_edit_mode = mode;
     }
     let default_harness = isanagent::config::HarnessConfig::default();
     let harness_ref = workspace
@@ -1251,11 +1440,21 @@ async fn build_instance(
                     // Clarifications (`ask_user`) ride on outbound metadata —
                     // surface them as a distinct event so the UI can render the
                     // preset choices as buttons. A normal reply resolves them.
+                    //
+                    // The crate's edit gate additionally attaches a structured
+                    // `edit_diff` to the same outbound when the clarification is
+                    // really a file-mutation approval. We extract it here so the
+                    // frontend can render a diff-review card instead of the plain
+                    // "approve / deny" chips — the reply path is identical.
                     let chat_id = outbound.chat_id.clone();
-                    let event = if outbound
+                    let is_clarification = outbound
                         .metadata
-                        .contains_key(isanagent::clarification::METADATA_CLARIFICATION)
-                    {
+                        .contains_key(isanagent::clarification::METADATA_CLARIFICATION);
+                    let edit_diff = outbound
+                        .metadata
+                        .get("edit_diff")
+                        .and_then(parse_edit_diff);
+                    let event = if is_clarification {
                         let choices = outbound
                             .metadata
                             .get(isanagent::clarification::METADATA_CLARIFICATION_CHOICES)
@@ -1269,6 +1468,7 @@ async fn build_instance(
                         Event::Clarification {
                             content: outbound.content,
                             choices,
+                            edit_diff,
                         }
                     } else {
                         Event::AgentMessage {

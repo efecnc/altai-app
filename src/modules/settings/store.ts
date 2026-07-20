@@ -13,7 +13,18 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 
 export type ThemePref = "system" | "light" | "dark";
 
-export type PermissionMode = "ask" | "auto-edit" | "bypass";
+/** Canonical, ordered list of permission modes. The single source of truth —
+ *  the `PermissionMode` union, the `Record<PermissionMode,…>` label/desc maps,
+ *  and the zod schema in `github/lib/assignments.ts` all derive from this so
+ *  a new mode lands in every site at once instead of being hand-copied. */
+export const PERMISSION_MODES = [
+  "ask",
+  "auto-edit",
+  "plan",
+  "bypass",
+] as const;
+
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
 /**
  * The permission mode actually in effect for read-side consumers: a stale `"bypass"` selection
@@ -31,6 +42,7 @@ export function effectivePermissionMode(
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   ask: "Ask before edit",
   "auto-edit": "Edit automatically",
+  plan: "Plan mode",
   bypass: "Bypass permissions",
 };
 
@@ -64,6 +76,7 @@ export const PERMISSION_MODE_DESCRIPTIONS: Record<PermissionMode, string> = {
   ask: "Approve every file edit, write, and shell command before it runs.",
   "auto-edit":
     "Auto-approve file edits and writes. Shell commands still require approval.",
+  plan: "Read-only: the agent can explore, search, and plan, but cannot edit files. Shell commands still require approval.",
   bypass:
     "Auto-approve everything, including shell commands. Use only in sandboxed environments.",
 };

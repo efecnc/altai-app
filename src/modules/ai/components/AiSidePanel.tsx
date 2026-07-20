@@ -19,6 +19,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import type { AgentIconId } from "../lib/agents";
+import { EditApprovalCard } from "./EditApprovalCard";
 import {
   sendMessage,
   stop as stopAgent,
@@ -837,6 +838,15 @@ function Body() {
 
 function ClarificationChoices() {
   const choices = useChatStore((s) => s.pendingChoices);
+  const editDiff = useChatStore((s) => s.pendingEditDiff);
+
+  // A file-edit approval (from the crate's edit gate) takes precedence over
+  // the plain choice chips: it renders a richer diff-review card with
+  // Approve / Deny actions. The reply still rides the clarification channel.
+  if (editDiff) {
+    return <EditApprovalCard diff={editDiff} />;
+  }
+
   if (!choices || choices.length === 0) return null;
   return (
     <div

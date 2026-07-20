@@ -201,6 +201,7 @@ export function TaskRunsPanel({ onClose }: { onClose: () => void }) {
             <select value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as typeof permissionMode)} className="mt-1 h-7 w-full rounded-md border border-border/60 bg-background px-1.5 text-[10.5px] text-foreground outline-none focus:border-sky-500/60">
               <option value="ask">Ask before changes</option>
               <option value="auto-edit">Auto-edit workspace</option>
+              <option value="plan">Plan mode (read-only)</option>
               {bypassEnabled ? <option value="bypass">Bypass approvals</option> : null}
             </select>
           </label>
