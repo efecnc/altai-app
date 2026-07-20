@@ -152,33 +152,31 @@ export function TabBar({
                       />
                     ) : null}
                   </span>
-                  {tabs.length > 1 && (
-                    <button
-                      type="button"
-                      aria-label={`Close tab ${labelFor(t)}`}
-                      onClick={(e) => {
+                  <button
+                    type="button"
+                    aria-label={`Close tab ${labelFor(t)}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClose(t.id);
+                    }}
+                    onKeyDown={(e) => {
+                      // Don't let the parent Radix TabsTrigger steal
+                      // Space/Enter and switch tabs instead of closing.
+                      if (e.key === "Enter" || e.key === " ") {
                         e.stopPropagation();
-                        onClose(t.id);
-                      }}
-                      onKeyDown={(e) => {
-                        // Don't let the parent Radix TabsTrigger steal
-                        // Space/Enter and switch tabs instead of closing.
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.stopPropagation();
-                        }
-                      }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      // 24x24 hit area (WCAG 2.5.8 / audit M5); the icon
-                      // itself stays at 11px for visual density.
-                      className="inline-flex size-6 shrink-0 items-center justify-center rounded p-0.5 opacity-0 transition-opacity hover:bg-accent hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-60"
-                    >
-                      <HugeiconsIcon
-                        icon={Cancel01Icon}
-                        size={11}
-                        strokeWidth={2}
-                      />
-                    </button>
-                  )}
+                      }
+                    }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    // 24x24 hit area (WCAG 2.5.8 / audit M5); the icon
+                    // itself stays at 11px for visual density.
+                    className="inline-flex size-6 shrink-0 items-center justify-center rounded p-0.5 opacity-0 transition-opacity hover:bg-accent hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-60"
+                  >
+                    <HugeiconsIcon
+                      icon={Cancel01Icon}
+                      size={11}
+                      strokeWidth={2}
+                    />
+                  </button>
                 </TabsTrigger>
               );
             })}

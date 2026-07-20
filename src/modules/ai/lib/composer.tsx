@@ -84,6 +84,16 @@ export function AiComposerProvider({ children }: ProviderProps) {
   const [pickedCommands, setPickedCommands] = useState<SlashCommandMeta[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const addFiles = async (list: FileList | null) => {
+    if (!list) return;
+    const next: FileAttachment[] = [];
+    for (const f of Array.from(list)) {
+      const att = await readAttachment(f);
+      if (att) next.push(att);
+    }
+    if (next.length) setFiles((prev) => [...prev, ...next]);
+  };
+
   const focusSignal = useChatStore((s) => s.focusSignal);
   const pendingPrefill = useChatStore((s) => s.pendingPrefill);
   const consumePrefill = useChatStore((s) => s.consumePrefill);
@@ -110,6 +120,32 @@ export function AiComposerProvider({ children }: ProviderProps) {
     window.addEventListener("altai:ai-attach-file", onAttach);
     return () => window.removeEventListener("altai:ai-attach-file", onAttach);
     // attachFileByPath is stable for our purposes (closes over setFiles only)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Tauri's webview surfaces OS file drags as normal HTML5 `FileList`s. Keep
+  // this listener at document scope so a drop in either the workspace or the
+  // chat attaches the files instead of letting the webview navigate away.
+  useEffect(() => {
+    const hasFiles = (event: DragEvent) =>
+      Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    const onDragOver = (event: DragEvent) => {
+      if (hasFiles(event)) event.preventDefault();
+    };
+    const onDrop = (event: DragEvent) => {
+      if (!hasFiles(event) || !event.dataTransfer?.files.length) return;
+      event.preventDefault();
+      void addFiles(event.dataTransfer.files);
+      useChatStore.getState().openMini();
+      useChatStore.getState().focusInput();
+    };
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("drop", onDrop);
+    return () => {
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("drop", onDrop);
+    };
+    // addFiles only closes over React's stable setter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -156,16 +192,6 @@ export function AiComposerProvider({ children }: ProviderProps) {
       requestAnimationFrame(() => textareaRef.current?.focus());
     },
   });
-
-  const addFiles = async (list: FileList | null) => {
-    if (!list) return;
-    const next: FileAttachment[] = [];
-    for (const f of Array.from(list)) {
-      const att = await readAttachment(f);
-      if (att) next.push(att);
-    }
-    if (next.length) setFiles((prev) => [...prev, ...next]);
-  };
 
   const removeFile = (id: string) =>
     setFiles((prev) => prev.filter((f) => f.id !== id));
