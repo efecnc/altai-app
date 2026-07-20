@@ -47,6 +47,8 @@ sha2 = "0.10"
 flate2 = "1"
 hex = "0.4"
 tar = "0.4"
+base64 = "0.22"
+pdf-extract = "0.12"
 
 # İsanAgent — embedded as Rust crate (direct API, no sidecar)
 # Temporarily pinned to the IsanAgent edit-approval PR. Revert to

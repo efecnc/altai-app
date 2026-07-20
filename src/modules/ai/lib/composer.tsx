@@ -26,7 +26,7 @@ export type FileAttachment = {
 
 export const MAX_TEXT_INLINE = 200_000;
 export const ACCEPTED_FILES =
-  "image/*,.txt,.md,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cpp,.h,.hpp,.html,.css,.csv,.log,.env,.config,.conf,.ini,Dockerfile,.dockerfile";
+  "image/*,.pdf,.txt,.md,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cpp,.h,.hpp,.html,.css,.csv,.log,.env,.config,.conf,.ini,Dockerfile,.dockerfile";
 
 type Voice = ReturnType<typeof useWhisperRecording>;
 
@@ -212,6 +212,17 @@ export function AiComposerProvider({ children }: ProviderProps) {
 
   const attachFileByPath = async (path: string) => {
     try {
+      if (/\.pdf$/i.test(path)) {
+        const result = await native.extractPdfPath(path);
+        const name = path.split("/").pop() || path;
+        const id = `path-${path}`;
+        setFiles((prev) => prev.some((f) => f.id === id) ? prev : [...prev, {
+          id, name, kind: "text", mediaType: "application/pdf",
+          text: result.content, size: result.content.length,
+        }]);
+        useChatStore.getState().focusInput();
+        return;
+      }
       const result = await native.readFile(path);
       if (result.kind !== "text") {
         // Binary/oversize files: skip (could surface a toast in future).
@@ -446,6 +457,18 @@ async function readAttachment(file: File): Promise<FileAttachment | null> {
       size: file.size,
     };
   }
+  if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
+    if (file.size > 10 * 1024 * 1024) return null;
+    const result = await native.extractPdf(await readAsBase64(file));
+    return {
+      id,
+      name: file.name,
+      kind: "text",
+      mediaType: "application/pdf",
+      text: result.content,
+      size: file.size,
+    };
+  }
   if (file.size > MAX_TEXT_INLINE) return null;
   const text = await file.text();
   return {
@@ -465,4 +488,10 @@ function readAsDataURL(file: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+async function readAsBase64(file: Blob): Promise<string> {
+  const dataUrl = await readAsDataURL(file);
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
 }
