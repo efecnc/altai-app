@@ -386,7 +386,7 @@ export function AiInputBar() {
                   "block w-full max-h-44 min-h-[24px] resize-none bg-transparent",
                   // Right padding reserves space for the absolutely-positioned
                   // send/stop button so long text never slides under it.
-                  "pr-8 text-[13px] leading-5 text-foreground outline-none",
+                  "pr-10 text-[13px] leading-5 text-foreground outline-none",
                   "placeholder:text-muted-foreground/55",
                   "disabled:cursor-not-allowed",
                 )}
@@ -453,7 +453,7 @@ export function AiInputBar() {
           )}
         </Popover>
 
-        <div className="flex items-center gap-0.5 px-1.5 pb-1 pt-0.5">
+        <div className="flex items-center gap-0.5 overflow-x-auto px-1.5 pb-1 pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <ToolbarIcon
             title="Attach file or image"
             onClick={() => fileInputRef.current?.click()}
