@@ -244,6 +244,8 @@ type StoreState = {
    *  no transcript reset) — for background agent dispatch from the board. */
   createBackgroundSession: (title: string) => string;
   switchSession: (id: string) => void;
+  /** Move a session immediately before or after another session. */
+  reorderSessions: (id: string, targetId: string, after: boolean) => void;
   deleteSession: (id: string) => void;
   renameSession: (id: string, title: string) => void;
 };
@@ -807,6 +809,22 @@ export const useChatStore = create<StoreState>((set, get) => ({
       loadedMessagesRefs.add(loaded);
       set({ nativeMessages: loaded });
     });
+  },
+
+  reorderSessions: (id, targetId, after) => {
+    if (id === targetId) return;
+    const current = get().sessions;
+    const moved = current.find((session) => session.id === id);
+    if (!moved || !current.some((session) => session.id === targetId)) return;
+
+    const withoutMoved = current.filter((session) => session.id !== id);
+    const targetIndex = withoutMoved.findIndex(
+      (session) => session.id === targetId,
+    );
+    const next = [...withoutMoved];
+    next.splice(targetIndex + (after ? 1 : 0), 0, moved);
+    set({ sessions: next });
+    void saveSessionsList(next);
   },
 
   deleteSession: (id) => {

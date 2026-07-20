@@ -213,16 +213,16 @@ function WorkspaceTopbar({
   const sessions = useChatStore((s) => s.sessions);
   const newSession = useChatStore((s) => s.newSession);
   const switchSession = useChatStore((s) => s.switchSession);
+  const reorderSessions = useChatStore((s) => s.reorderSessions);
   const deleteSession = useChatStore((s) => s.deleteSession);
   const active = sessions.find((s) => s.id === activeId);
   const title = active?.title || "New chat";
-  const orderedSessions = [...sessions].sort(
-    (a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt,
-  );
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
   const closeTab = (id: string) => {
-    const index = orderedSessions.findIndex((session) => session.id === id);
-    const next = orderedSessions[index + 1] ?? orderedSessions[index - 1];
+    const index = sessions.findIndex((session) => session.id === id);
+    const next = sessions[index + 1] ?? sessions[index - 1];
     const wasActive = id === activeId;
     deleteSession(id);
     if (wasActive && next) switchSession(next.id);
@@ -319,17 +319,47 @@ function WorkspaceTopbar({
           aria-label="Chat sessions"
           className="flex h-8 items-center gap-1 overflow-x-auto border-t border-border/40 px-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
-          {orderedSessions.map((session) => {
+          {sessions.map((session) => {
             const activeTab = session.id === activeId;
             const label = session.title || "New chat";
             return (
               <div
                 key={session.id}
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("application/altai-chat-tab", session.id);
+                  setDraggedId(session.id);
+                }}
+                onDragEnd={() => {
+                  setDraggedId(null);
+                  setDropTargetId(null);
+                }}
+                onDragOver={(event) => {
+                  if (!draggedId || draggedId === session.id) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDropTargetId(session.id);
+                }}
+                onDragLeave={() => {
+                  if (dropTargetId === session.id) setDropTargetId(null);
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const id = event.dataTransfer.getData("application/altai-chat-tab");
+                  if (!id || id === session.id) return;
+                  const bounds = event.currentTarget.getBoundingClientRect();
+                  reorderSessions(id, session.id, event.clientX > bounds.left + bounds.width / 2);
+                  setDraggedId(null);
+                  setDropTargetId(null);
+                }}
                 className={cn(
-                  "group flex h-6 max-w-40 shrink-0 items-center rounded-md pr-0.5 text-[10.5px] transition-colors",
+                  "group flex h-6 max-w-40 shrink-0 cursor-grab items-center rounded-md pr-0.5 text-[10.5px] transition-colors active:cursor-grabbing",
                   activeTab
                     ? "bg-foreground/[0.09] font-medium text-foreground"
                     : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
+                  draggedId === session.id && "opacity-45",
+                  dropTargetId === session.id && "ring-1 ring-foreground/35",
                 )}
               >
                 <button
