@@ -68,6 +68,9 @@ export function AiSidePanel({
   hasComposer?: boolean;
 }) {
   const sessionId = useChatStore((s) => s.activeSessionId);
+  const chatSessions = useChatStore((s) => s.sessions);
+  const switchSession = useChatStore((s) => s.switchSession);
+  const newSession = useChatStore((s) => s.newSession);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -94,6 +97,7 @@ export function AiSidePanel({
   }, [onClose]);
 
   const [activeSurface, setActiveSurface] = useState<PanelSurface>(null);
+  const [openChatIds, setOpenChatIds] = useState<string[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
   const historyOpen = activeSurface === "history";
   const inspectorOpen = activeSurface === "inspector";
@@ -103,6 +107,40 @@ export function AiSidePanel({
   const toggleSurface = (surface: Exclude<PanelSurface, null>) => {
     setReviewOpen(false);
     setActiveSurface((current) => (current === surface ? null : surface));
+  };
+
+  // Session history and open chat tabs are deliberately separate. Selecting a
+  // conversation from history opens it in a tab; closing that tab keeps the
+  // local conversation available in history instead of deleting it.
+  useEffect(() => {
+    setOpenChatIds((current) => {
+      const valid = current.filter((id) => chatSessions.some((session) => session.id === id));
+      if (sessionId && !valid.includes(sessionId)) valid.push(sessionId);
+      return valid;
+    });
+  }, [chatSessions, sessionId]);
+
+  const createChatTab = () => {
+    const id = newSession();
+    setOpenChatIds((current) => (current.includes(id) ? current : [...current, id]));
+    setActiveSurface(null);
+  };
+
+  const closeChatTab = (chatId: string) => {
+    const index = openChatIds.indexOf(chatId);
+    if (index < 0) return;
+    const remaining = openChatIds.filter((id) => id !== chatId);
+    if (remaining.length === 0) {
+      const id = newSession();
+      setOpenChatIds([id]);
+      setActiveSurface(null);
+      return;
+    }
+    if (sessionId === chatId) {
+      switchSession(remaining[Math.min(index, remaining.length - 1)]);
+    }
+    setOpenChatIds(remaining);
+    setActiveSurface(null);
   };
 
   useEffect(() => {
@@ -149,7 +187,12 @@ export function AiSidePanel({
             <ChatHistoryPanel onClose={() => setActiveSurface(null)} />
           ) : sessionId ? (
             <>
-              <ChatTabStrip onSelect={() => setActiveSurface(null)} />
+              <ChatTabStrip
+                openChatIds={openChatIds}
+                onSelect={() => setActiveSurface(null)}
+                onCloseChat={closeChatTab}
+                onNewChat={createChatTab}
+              />
               <div className="relative flex min-h-0 flex-1">
                 <Body />
                 {automationsOpen ? (
@@ -216,19 +259,26 @@ function RuntimeStatusRow() {
  * matches the mental model used by coding-agent chat editors: tabs switch
  * context; the header opens auxiliary surfaces.
  */
-function ChatTabStrip({ onSelect }: { onSelect: () => void }) {
+function ChatTabStrip({
+  openChatIds,
+  onSelect,
+  onCloseChat,
+  onNewChat,
+}: {
+  openChatIds: string[];
+  onSelect: () => void;
+  onCloseChat: (id: string) => void;
+  onNewChat: () => void;
+}) {
   const activeId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
   const switchSession = useChatStore((s) => s.switchSession);
-  const newSession = useChatStore((s) => s.newSession);
+  const openSessions = openChatIds
+    .map((id) => sessions.find((session) => session.id === id))
+    .filter((session): session is NonNullable<typeof session> => Boolean(session));
 
   const select = (id: string) => {
     switchSession(id);
-    onSelect();
-  };
-
-  const create = () => {
-    newSession();
     onSelect();
   };
 
@@ -239,30 +289,43 @@ function ChatTabStrip({ onSelect }: { onSelect: () => void }) {
         aria-label="Open chats"
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
       >
-        {sessions.map((session) => (
-          <button
+        {openSessions.map((session) => (
+          <div
             key={session.id}
-            id={`altai-chat-tab-${session.id}`}
-            type="button"
-            role="tab"
-            aria-controls="altai-active-chat"
-            aria-selected={session.id === activeId}
-            onClick={() => select(session.id)}
-            title={session.title || "New chat"}
             className={cn(
-              "max-w-40 shrink-0 truncate rounded-md px-2 py-1 text-[10.5px] transition-colors",
+              "group flex max-w-40 shrink-0 items-center rounded-md text-[10.5px] transition-colors",
               session.id === activeId
                 ? "bg-foreground/[0.1] font-medium text-foreground"
                 : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
             )}
           >
-            {session.title || "New chat"}
-          </button>
+            <button
+              id={`altai-chat-tab-${session.id}`}
+              type="button"
+              role="tab"
+              aria-controls="altai-active-chat"
+              aria-selected={session.id === activeId}
+              onClick={() => select(session.id)}
+              title={session.title || "New chat"}
+              className="min-w-0 truncate px-2 py-1 text-left outline-none"
+            >
+              {session.title || "New chat"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onCloseChat(session.id)}
+              title="Close chat"
+              aria-label={`Close ${session.title || "new chat"}`}
+              className="mr-1 inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-foreground/[0.1] hover:text-foreground"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
+            </button>
+          </div>
         ))}
       </div>
       <button
         type="button"
-        onClick={create}
+        onClick={onNewChat}
         title="New chat"
         aria-label="New chat"
         className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
