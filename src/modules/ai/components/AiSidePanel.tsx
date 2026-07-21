@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { MOD_KEY, fmtShortcut } from "@/lib/platform";
 import { Kbd } from "@/components/ui/kbd";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AbsoluteIcon,
   Add01Icon,
@@ -19,7 +20,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import type { AgentIconId } from "../lib/agents";
 import { EditApprovalCard } from "./EditApprovalCard";
 import {
@@ -254,6 +255,22 @@ function RuntimeStatusRow() {
 }
 
 /**
+ * Native `title` popovers are inconsistent in the desktop webview. Keep the
+ * compact icon controls discoverable with the same Radix tooltip used by the
+ * rest of the app instead.
+ */
+function IconTooltip({ label, children }: { label: string; children: ReactElement }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6} className="text-[10.5px]">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
  * Conversation tabs are a stable navigation layer, separate from workspace
  * actions and session history. Keeping the trailing new-chat action here
  * matches the mental model used by coding-agent chat editors: tabs switch
@@ -311,27 +328,29 @@ function ChatTabStrip({
             >
               {session.title || "New chat"}
             </button>
-            <button
-              type="button"
-              onClick={() => onCloseChat(session.id)}
-              title="Close chat"
-              aria-label={`Close ${session.title || "new chat"}`}
-              className="mr-1 inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-foreground/[0.1] hover:text-foreground"
-            >
-              <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
-            </button>
+            <IconTooltip label={`Close ${session.title || "new chat"}`}>
+              <button
+                type="button"
+                onClick={() => onCloseChat(session.id)}
+                aria-label={`Close ${session.title || "new chat"}`}
+                className="mr-1 inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-foreground/[0.1] hover:text-foreground"
+              >
+                <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
+              </button>
+            </IconTooltip>
           </div>
         ))}
       </div>
-      <button
-        type="button"
-        onClick={onNewChat}
-        title="New chat"
-        aria-label="New chat"
-        className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-      >
-        <HugeiconsIcon icon={Add01Icon} size={14} strokeWidth={1.75} />
-      </button>
+      <IconTooltip label="New chat">
+        <button
+          type="button"
+          onClick={onNewChat}
+          aria-label="New chat"
+          className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+        >
+          <HugeiconsIcon icon={Add01Icon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
     </div>
   );
 }
@@ -383,19 +402,20 @@ function WorkspaceTopbar({
 
   return (
     <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border/50 bg-card/90 px-2.5 backdrop-blur">
-      <button
-        type="button"
-        onClick={onToggleHistory}
-        title={historyOpen ? "Back to task" : "Chat sessions"}
-        aria-label={historyOpen ? "Back to task" : "Chat sessions"}
-        aria-pressed={historyOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground @[48rem]:hidden",
-          historyOpen && "bg-foreground/[0.09] text-foreground",
-        )}
-      >
-        <HugeiconsIcon icon={Clock01Icon} size={14} strokeWidth={1.75} />
-      </button>
+      <IconTooltip label={historyOpen ? "Back to task" : "Chat sessions"}>
+        <button
+          type="button"
+          onClick={onToggleHistory}
+          aria-label={historyOpen ? "Back to task" : "Chat sessions"}
+          aria-pressed={historyOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground @[48rem]:hidden",
+            historyOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={Clock01Icon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[12px] font-medium text-foreground/90">
           {historyOpen ? "Chat sessions" : title}
@@ -417,82 +437,86 @@ function WorkspaceTopbar({
       {!historyOpen && activeId ? (
         <TodoSummaryChip sessionId={activeId} />
       ) : null}
-      <button
-        type="button"
-        onClick={onToggleReview}
-        title={reviewOpen ? "Close change review" : "Review changes"}
-        aria-label={reviewOpen ? "Close change review" : "Review changes"}
-        aria-pressed={reviewOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
-          reviewOpen && "bg-foreground/[0.09] text-foreground",
-        )}
-      >
-        <HugeiconsIcon icon={FileEditIcon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleInspector}
-        title={inspectorOpen ? "Close run inspector" : "Open run inspector"}
-        aria-label={inspectorOpen ? "Close run inspector" : "Open run inspector"}
-        aria-pressed={inspectorOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground @[76rem]:hidden",
-          inspectorOpen
-            ? "bg-foreground/[0.09] text-foreground"
-            : "",
-        )}
-      >
-        <HugeiconsIcon icon={SparklesIcon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleTasks}
-        title={tasksOpen ? "Close background tasks" : "Background tasks"}
-        aria-label={tasksOpen ? "Close background tasks" : "Background tasks"}
-        aria-pressed={tasksOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
-          tasksOpen && "bg-foreground/[0.09] text-foreground",
-        )}
-      >
-        <HugeiconsIcon icon={Notebook01Icon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleInbox}
-        title={inboxOpen ? "Close inbox" : "Open inbox"}
-        aria-label={inboxOpen ? "Close inbox" : "Open inbox"}
-        aria-pressed={inboxOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
-          inboxOpen && "bg-foreground/[0.09] text-foreground",
-        )}
-      >
-        <HugeiconsIcon icon={Notification01Icon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleAutomations}
-        title={automationsOpen ? "Close automations" : "Open automations"}
-        aria-label={automationsOpen ? "Close automations" : "Open automations"}
-        aria-pressed={automationsOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
-          automationsOpen && "bg-foreground/[0.09] text-foreground",
-        )}
-      >
-        <HugeiconsIcon icon={CalendarSyncIcon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onClose}
-        title="Close panel"
-        aria-label="Close panel"
-        className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-      >
-        <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
-      </button>
+      <IconTooltip label={reviewOpen ? "Close change review" : "Review changes"}>
+        <button
+          type="button"
+          onClick={onToggleReview}
+          aria-label={reviewOpen ? "Close change review" : "Review changes"}
+          aria-pressed={reviewOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
+            reviewOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={FileEditIcon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label={inspectorOpen ? "Close run inspector" : "Open run inspector"}>
+        <button
+          type="button"
+          onClick={onToggleInspector}
+          aria-label={inspectorOpen ? "Close run inspector" : "Open run inspector"}
+          aria-pressed={inspectorOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground @[76rem]:hidden",
+            inspectorOpen ? "bg-foreground/[0.09] text-foreground" : "",
+          )}
+        >
+          <HugeiconsIcon icon={SparklesIcon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label={tasksOpen ? "Close background tasks" : "Background tasks"}>
+        <button
+          type="button"
+          onClick={onToggleTasks}
+          aria-label={tasksOpen ? "Close background tasks" : "Background tasks"}
+          aria-pressed={tasksOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
+            tasksOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={Notebook01Icon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label={inboxOpen ? "Close inbox" : "Open inbox"}>
+        <button
+          type="button"
+          onClick={onToggleInbox}
+          aria-label={inboxOpen ? "Close inbox" : "Open inbox"}
+          aria-pressed={inboxOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
+            inboxOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={Notification01Icon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label={automationsOpen ? "Close automations" : "Open automations"}>
+        <button
+          type="button"
+          onClick={onToggleAutomations}
+          aria-label={automationsOpen ? "Close automations" : "Open automations"}
+          aria-pressed={automationsOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
+            automationsOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={CalendarSyncIcon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label="Close panel">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close panel"
+          className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+        >
+          <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
     </div>
   );
 }
@@ -566,14 +590,16 @@ function RunInspector({ className, onClose }: { className?: string; onClose?: ()
           </div>
         </div>
         {onClose ? (
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
-            aria-label="Close run inspector"
-          >
-            <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
-          </button>
+          <IconTooltip label="Close run inspector">
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
+              aria-label="Close run inspector"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+            </button>
+          </IconTooltip>
         ) : null}
       </div>
 
