@@ -1470,7 +1470,7 @@ pub async fn create_automation(
     if message.len() > 10_000 {
         return Err("Automation message is too long".to_string());
     }
-    let now_ms = SystemTime::now()
+    let now_ms: i64 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "System clock is before the Unix epoch".to_string())?
         .as_millis()
@@ -1537,7 +1537,7 @@ pub async fn remove_automation(
     let job = automation_store(&workspace_root)?
         .find_job(automation_id)?
         .ok_or_else(|| "Automation was not found".to_string())?;
-    if job.channel != "tauri" || job.chat_id != chat_id || validate_tauri_chat_id(&job.chat_id).is_err() {
+    if job.channel != "tauri" || job.chat_id != chat_id {
         return Err("Automation does not belong to this Tauri chat".to_string());
     }
     let command = CronCommand::Remove {
