@@ -1,10 +1,12 @@
 import { cn } from "@/lib/utils";
 import { MOD_KEY, fmtShortcut } from "@/lib/platform";
 import { Kbd } from "@/components/ui/kbd";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AbsoluteIcon,
   Add01Icon,
   BookSearchIcon,
+  CalendarSyncIcon,
   Cancel01Icon,
   Clock01Icon,
   CodeIcon,
@@ -18,7 +20,7 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import type { AgentIconId } from "../lib/agents";
 import { EditApprovalCard } from "./EditApprovalCard";
 import {
@@ -37,6 +39,7 @@ import { AgentStatusPill } from "./AgentStatusPill";
 import { ChatHistoryPanel } from "./ChatHistoryPanel";
 import { PlanDiffReview } from "./PlanDiffReview";
 import { NotificationInboxPanel } from "./NotificationInboxPanel";
+import { AutomationsPanel } from "./AutomationsPanel";
 import { TaskRunsPanel } from "./TaskRunsPanel";
 import { TodoSummaryChip } from "./TodoStrip";
 
@@ -56,6 +59,7 @@ const AGENT_ICONS: Record<AgentIconId, typeof CodeIcon> = {
 // todos yet; allocating `[]` inside the selector triggers React's external
 // store loop detector and can blank the whole renderer.
 const EMPTY_TODOS: Array<{ id: string; title: string; status: string }> = [];
+type PanelSurface = "history" | "inspector" | "tasks" | "inbox" | "automations" | null;
 
 export function AiSidePanel({
   onClose,
@@ -65,6 +69,9 @@ export function AiSidePanel({
   hasComposer?: boolean;
 }) {
   const sessionId = useChatStore((s) => s.activeSessionId);
+  const chatSessions = useChatStore((s) => s.sessions);
+  const switchSession = useChatStore((s) => s.switchSession);
+  const newSession = useChatStore((s) => s.newSession);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -90,11 +97,52 @@ export function AiSidePanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [tasksOpen, setTasksOpen] = useState(false);
-  const [inboxOpen, setInboxOpen] = useState(false);
+  const [activeSurface, setActiveSurface] = useState<PanelSurface>(null);
+  const [openChatIds, setOpenChatIds] = useState<string[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const historyOpen = activeSurface === "history";
+  const inspectorOpen = activeSurface === "inspector";
+  const tasksOpen = activeSurface === "tasks";
+  const inboxOpen = activeSurface === "inbox";
+  const automationsOpen = activeSurface === "automations";
+  const toggleSurface = (surface: Exclude<PanelSurface, null>) => {
+    setReviewOpen(false);
+    setActiveSurface((current) => (current === surface ? null : surface));
+  };
+
+  // Session history and open chat tabs are deliberately separate. Selecting a
+  // conversation from history opens it in a tab; closing that tab keeps the
+  // local conversation available in history instead of deleting it.
+  useEffect(() => {
+    setOpenChatIds((current) => {
+      const valid = current.filter((id) => chatSessions.some((session) => session.id === id));
+      if (sessionId && !valid.includes(sessionId)) valid.push(sessionId);
+      return valid;
+    });
+  }, [chatSessions, sessionId]);
+
+  const createChatTab = () => {
+    const id = newSession();
+    setOpenChatIds((current) => (current.includes(id) ? current : [...current, id]));
+    setActiveSurface(null);
+  };
+
+  const closeChatTab = (chatId: string) => {
+    const index = openChatIds.indexOf(chatId);
+    if (index < 0) return;
+    const remaining = openChatIds.filter((id) => id !== chatId);
+    if (remaining.length === 0) {
+      const id = newSession();
+      setOpenChatIds([id]);
+      setActiveSurface(null);
+      return;
+    }
+    if (sessionId === chatId) {
+      switchSession(remaining[Math.min(index, remaining.length - 1)]);
+    }
+    setOpenChatIds(remaining);
+    setActiveSurface(null);
+  };
 
   useEffect(() => {
     const openReview = () => setReviewOpen(true);
@@ -112,15 +160,20 @@ export function AiSidePanel({
       <WorkspaceTopbar
         onClose={onClose}
         historyOpen={historyOpen}
-        onToggleHistory={() => setHistoryOpen((o) => !o)}
+        onToggleHistory={() => toggleSurface("history")}
         inspectorOpen={inspectorOpen}
-        onToggleInspector={() => setInspectorOpen((o) => !o)}
+        onToggleInspector={() => toggleSurface("inspector")}
         tasksOpen={tasksOpen}
-        onToggleTasks={() => setTasksOpen((o) => !o)}
+        onToggleTasks={() => toggleSurface("tasks")}
         inboxOpen={inboxOpen}
-        onToggleInbox={() => setInboxOpen((open) => !open)}
+        onToggleInbox={() => toggleSurface("inbox")}
+        automationsOpen={automationsOpen}
+        onToggleAutomations={() => toggleSurface("automations")}
         reviewOpen={reviewOpen}
-        onToggleReview={() => setReviewOpen((o) => !o)}
+        onToggleReview={() => {
+          setActiveSurface(null);
+          setReviewOpen((open) => !open);
+        }}
       />
       <div className="relative grid min-h-0 flex-1 grid-cols-1 @[48rem]:grid-cols-[13.5rem_minmax(0,1fr)] @[76rem]:grid-cols-[13.5rem_minmax(0,1fr)_18rem]">
         <nav
@@ -132,9 +185,31 @@ export function AiSidePanel({
 
         <main className="relative flex min-h-0 min-w-0 flex-col bg-background/30">
           {historyOpen ? (
-            <ChatHistoryPanel onClose={() => setHistoryOpen(false)} />
+            <ChatHistoryPanel onClose={() => setActiveSurface(null)} />
           ) : sessionId ? (
-            <Body />
+            <>
+              <ChatTabStrip
+                openChatIds={openChatIds}
+                onSelect={() => setActiveSurface(null)}
+                onCloseChat={closeChatTab}
+                onNewChat={createChatTab}
+              />
+              <div className="relative flex min-h-0 flex-1">
+                <Body />
+                {automationsOpen ? (
+                  <AutomationsPanel onClose={() => setActiveSurface(null)} />
+                ) : null}
+                {tasksOpen ? <TaskRunsPanel onClose={() => setActiveSurface(null)} /> : null}
+                {inboxOpen ? (
+                  <NotificationInboxPanel onClose={() => setActiveSurface(null)} />
+                ) : null}
+                {inspectorOpen ? (
+                  <div className="absolute inset-0 z-20 flex bg-background/92 backdrop-blur-sm @[76rem]:hidden">
+                    <RunInspector className="flex w-full" onClose={() => setActiveSurface(null)} />
+                  </div>
+                ) : null}
+              </div>
+            </>
           ) : (
             <div className="flex flex-1 items-center justify-center text-[11px] text-muted-foreground">
               Loading sessions…
@@ -144,18 +219,9 @@ export function AiSidePanel({
 
         <RunInspector className="hidden @[76rem]:flex" />
 
-        {inspectorOpen ? (
-          <div className="absolute inset-0 z-20 flex bg-background/92 backdrop-blur-sm @[76rem]:hidden">
-            <RunInspector className="flex w-full" onClose={() => setInspectorOpen(false)} />
-          </div>
-        ) : null}
-        {tasksOpen ? <TaskRunsPanel onClose={() => setTasksOpen(false)} /> : null}
-        {inboxOpen ? (
-          <NotificationInboxPanel onClose={() => setInboxOpen(false)} />
-        ) : null}
       </div>
-      {!historyOpen && !inspectorOpen && !tasksOpen && !inboxOpen && <RuntimeStatusRow />}
-      {!historyOpen && !inspectorOpen && !tasksOpen && !inboxOpen &&
+      {!historyOpen && !inspectorOpen && !tasksOpen && !inboxOpen && !automationsOpen && <RuntimeStatusRow />}
+      {!historyOpen && !inspectorOpen && !tasksOpen && !inboxOpen && !automationsOpen &&
         (hasComposer ? (
           <AiInputBar />
         ) : (
@@ -189,6 +255,107 @@ function RuntimeStatusRow() {
 }
 
 /**
+ * Native `title` popovers are inconsistent in the desktop webview. Keep the
+ * compact icon controls discoverable with the same Radix tooltip used by the
+ * rest of the app instead.
+ */
+function IconTooltip({ label, children }: { label: string; children: ReactElement }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6} className="text-[10.5px]">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * Conversation tabs are a stable navigation layer, separate from workspace
+ * actions and session history. Keeping the trailing new-chat action here
+ * matches the mental model used by coding-agent chat editors: tabs switch
+ * context; the header opens auxiliary surfaces.
+ */
+function ChatTabStrip({
+  openChatIds,
+  onSelect,
+  onCloseChat,
+  onNewChat,
+}: {
+  openChatIds: string[];
+  onSelect: () => void;
+  onCloseChat: (id: string) => void;
+  onNewChat: () => void;
+}) {
+  const activeId = useChatStore((s) => s.activeSessionId);
+  const sessions = useChatStore((s) => s.sessions);
+  const switchSession = useChatStore((s) => s.switchSession);
+  const openSessions = openChatIds
+    .map((id) => sessions.find((session) => session.id === id))
+    .filter((session): session is NonNullable<typeof session> => Boolean(session));
+
+  const select = (id: string) => {
+    switchSession(id);
+    onSelect();
+  };
+
+  return (
+    <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/50 bg-card/75 px-2">
+      <div
+        role="tablist"
+        aria-label="Open chats"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+      >
+        {openSessions.map((session) => (
+          <div
+            key={session.id}
+            className={cn(
+              "group flex max-w-40 shrink-0 items-center rounded-md text-[10.5px] transition-colors",
+              session.id === activeId
+                ? "bg-foreground/[0.1] font-medium text-foreground"
+                : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
+            )}
+          >
+            <button
+              id={`altai-chat-tab-${session.id}`}
+              type="button"
+              role="tab"
+              aria-controls="altai-active-chat"
+              aria-selected={session.id === activeId}
+              onClick={() => select(session.id)}
+              title={session.title || "New chat"}
+              className="min-w-0 truncate px-2 py-1 text-left outline-none"
+            >
+              {session.title || "New chat"}
+            </button>
+            <IconTooltip label={`Close ${session.title || "new chat"}`}>
+              <button
+                type="button"
+                onClick={() => onCloseChat(session.id)}
+                aria-label={`Close ${session.title || "new chat"}`}
+                className="mr-1 inline-flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground/70 hover:bg-foreground/[0.1] hover:text-foreground"
+              >
+                <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
+              </button>
+            </IconTooltip>
+          </div>
+        ))}
+      </div>
+      <IconTooltip label="New chat">
+        <button
+          type="button"
+          onClick={onNewChat}
+          aria-label="New chat"
+          className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+        >
+          <HugeiconsIcon icon={Add01Icon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+    </div>
+  );
+}
+
+/**
  * The workspace topbar keeps the task context visible instead of treating the
  * chat as an isolated message list. The permanent session navigator and run
  * inspector appear when the panel is wide enough; buttons open those surfaces
@@ -204,6 +371,8 @@ function WorkspaceTopbar({
   onToggleTasks,
   inboxOpen,
   onToggleInbox,
+  automationsOpen,
+  onToggleAutomations,
   reviewOpen,
   onToggleReview,
 }: {
@@ -216,12 +385,13 @@ function WorkspaceTopbar({
   onToggleTasks: () => void;
   inboxOpen: boolean;
   onToggleInbox: () => void;
+  automationsOpen: boolean;
+  onToggleAutomations: () => void;
   reviewOpen: boolean;
   onToggleReview: () => void;
 }) {
   const activeId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
-  const newSession = useChatStore((s) => s.newSession);
   const active = sessions.find((s) => s.id === activeId);
   const agentMeta = useChatStore((s) => s.agentMeta);
   const activeAgentId = useAgentsStore((s) => s.activeId);
@@ -232,28 +402,20 @@ function WorkspaceTopbar({
 
   return (
     <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border/50 bg-card/90 px-2.5 backdrop-blur">
-      <button
-        type="button"
-        onClick={() => newSession()}
-        title="New chat"
-        aria-label="New chat"
-        className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-      >
-        <HugeiconsIcon icon={Add01Icon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleHistory}
-        title={historyOpen ? "Back to task" : "Chat sessions"}
-        aria-label={historyOpen ? "Back to task" : "Chat sessions"}
-        aria-pressed={historyOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground @[48rem]:hidden",
-          historyOpen && "bg-foreground/[0.09] text-foreground",
-        )}
-      >
-        <HugeiconsIcon icon={Clock01Icon} size={14} strokeWidth={1.75} />
-      </button>
+      <IconTooltip label={historyOpen ? "Back to task" : "Chat sessions"}>
+        <button
+          type="button"
+          onClick={onToggleHistory}
+          aria-label={historyOpen ? "Back to task" : "Chat sessions"}
+          aria-pressed={historyOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground @[48rem]:hidden",
+            historyOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={Clock01Icon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[12px] font-medium text-foreground/90">
           {historyOpen ? "Chat sessions" : title}
@@ -275,69 +437,86 @@ function WorkspaceTopbar({
       {!historyOpen && activeId ? (
         <TodoSummaryChip sessionId={activeId} />
       ) : null}
-      <button
-        type="button"
-        onClick={onToggleReview}
-        title={reviewOpen ? "Close change review" : "Review changes"}
-        aria-label={reviewOpen ? "Close change review" : "Review changes"}
-        aria-pressed={reviewOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
-          reviewOpen && "bg-foreground/[0.09] text-foreground",
-        )}
-      >
-        <HugeiconsIcon icon={FileEditIcon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleInspector}
-        title={inspectorOpen ? "Close run inspector" : "Open run inspector"}
-        aria-label={inspectorOpen ? "Close run inspector" : "Open run inspector"}
-        aria-pressed={inspectorOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground @[76rem]:hidden",
-          inspectorOpen
-            ? "bg-foreground/[0.09] text-foreground"
-            : "",
-        )}
-      >
-        <HugeiconsIcon icon={SparklesIcon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleTasks}
-        title={tasksOpen ? "Close background tasks" : "Background tasks"}
-        aria-label={tasksOpen ? "Close background tasks" : "Background tasks"}
-        aria-pressed={tasksOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
-          tasksOpen && "bg-foreground/[0.09] text-foreground",
-        )}
-      >
-        <HugeiconsIcon icon={Notebook01Icon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onToggleInbox}
-        title={inboxOpen ? "Close inbox" : "Open inbox"}
-        aria-label={inboxOpen ? "Close inbox" : "Open inbox"}
-        aria-pressed={inboxOpen}
-        className={cn(
-          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
-          inboxOpen && "bg-foreground/[0.09] text-foreground",
-        )}
-      >
-        <HugeiconsIcon icon={Notification01Icon} size={14} strokeWidth={1.75} />
-      </button>
-      <button
-        type="button"
-        onClick={onClose}
-        title="Close panel"
-        aria-label="Close panel"
-        className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
-      >
-        <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
-      </button>
+      <IconTooltip label={reviewOpen ? "Close change review" : "Review changes"}>
+        <button
+          type="button"
+          onClick={onToggleReview}
+          aria-label={reviewOpen ? "Close change review" : "Review changes"}
+          aria-pressed={reviewOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
+            reviewOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={FileEditIcon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label={inspectorOpen ? "Close run inspector" : "Open run inspector"}>
+        <button
+          type="button"
+          onClick={onToggleInspector}
+          aria-label={inspectorOpen ? "Close run inspector" : "Open run inspector"}
+          aria-pressed={inspectorOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground @[76rem]:hidden",
+            inspectorOpen ? "bg-foreground/[0.09] text-foreground" : "",
+          )}
+        >
+          <HugeiconsIcon icon={SparklesIcon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label={tasksOpen ? "Close background tasks" : "Background tasks"}>
+        <button
+          type="button"
+          onClick={onToggleTasks}
+          aria-label={tasksOpen ? "Close background tasks" : "Background tasks"}
+          aria-pressed={tasksOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
+            tasksOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={Notebook01Icon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label={inboxOpen ? "Close inbox" : "Open inbox"}>
+        <button
+          type="button"
+          onClick={onToggleInbox}
+          aria-label={inboxOpen ? "Close inbox" : "Open inbox"}
+          aria-pressed={inboxOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
+            inboxOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={Notification01Icon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label={automationsOpen ? "Close automations" : "Open automations"}>
+        <button
+          type="button"
+          onClick={onToggleAutomations}
+          aria-label={automationsOpen ? "Close automations" : "Open automations"}
+          aria-pressed={automationsOpen}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
+            automationsOpen && "bg-foreground/[0.09] text-foreground",
+          )}
+        >
+          <HugeiconsIcon icon={CalendarSyncIcon} size={14} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
+      <IconTooltip label="Close panel">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close panel"
+          className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+        >
+          <HugeiconsIcon icon={Cancel01Icon} size={13} strokeWidth={1.75} />
+        </button>
+      </IconTooltip>
     </div>
   );
 }
@@ -411,14 +590,16 @@ function RunInspector({ className, onClose }: { className?: string; onClose?: ()
           </div>
         </div>
         {onClose ? (
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
-            aria-label="Close run inspector"
-          >
-            <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
-          </button>
+          <IconTooltip label="Close run inspector">
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
+              aria-label="Close run inspector"
+            >
+              <HugeiconsIcon icon={Cancel01Icon} size={12} strokeWidth={1.75} />
+            </button>
+          </IconTooltip>
         ) : null}
       </div>
 
@@ -830,6 +1011,7 @@ function Body() {
 
   return (
     <div
+      id="altai-active-chat"
       role="tabpanel"
       aria-label="Active chat session"
       tabIndex={-1}

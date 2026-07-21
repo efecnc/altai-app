@@ -228,6 +228,20 @@ export type AgentBackgroundJobInfo = {
   updatedAtMs: number;
 };
 
+export type AgentAutomationSchedule =
+  | { kind: "at"; atMs: number }
+  | { kind: "every"; everyMs: number }
+  | { kind: "cron"; cronExpr: string };
+
+/** Host-sanitized automation record; scheduler webhook secrets stay in Rust. */
+export type AgentAutomationInfo = {
+  id: string;
+  schedule: AgentAutomationSchedule;
+  message: string;
+  chatId: string;
+  lastRunAtMs: number | null;
+};
+
 export type AgentClarificationTicketInfo = {
   id: string;
   jobId: string;
@@ -773,6 +787,32 @@ export const native = {
       chatId,
       response,
       workspacePath: workspacePath ?? null,
+    }),
+  agentListAutomations: (workspacePath?: string) =>
+    invoke<AgentAutomationInfo[]>("agent_list_automations", {
+      workspacePath: workspacePath ?? null,
+    }),
+  agentAutomationCreate: (
+    chatId: string,
+    schedule: Extract<AgentAutomationSchedule, { kind: "at" | "every" }>,
+    message: string,
+    workspacePath?: string,
+  ) =>
+    invoke<AgentAutomationInfo>("agent_automation_create", {
+      workspacePath: workspacePath ?? null,
+      chatId,
+      schedule,
+      message,
+    }),
+  agentAutomationRemove: (
+    automationId: string,
+    chatId: string,
+    workspacePath?: string,
+  ) =>
+    invoke<void>("agent_automation_remove", {
+      workspacePath: workspacePath ?? null,
+      automationId,
+      chatId,
     }),
 
   agentApprove: (approvalId: string, approved: boolean) =>

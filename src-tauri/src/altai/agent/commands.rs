@@ -45,6 +45,33 @@ pub struct DocumentArg {
     pub name: Option<String>,
 }
 
+/// The direct Automations UI intentionally exposes only simple schedules.
+/// Advanced cron expressions remain available to the agent's trusted CronTool
+/// and are never accepted as opaque renderer input.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationScheduleArg {
+    pub kind: String,
+    pub at_ms: Option<i64>,
+    pub every_ms: Option<i64>,
+}
+
+impl AutomationScheduleArg {
+    fn into_schedule(self) -> Result<isanagent::scheduler::ScheduleKind, String> {
+        match self.kind.trim() {
+            "at" => self
+                .at_ms
+                .map(|at_ms| isanagent::scheduler::ScheduleKind::At { at_ms })
+                .ok_or_else(|| "schedule.atMs is required".to_string()),
+            "every" => self
+                .every_ms
+                .map(|every_ms| isanagent::scheduler::ScheduleKind::Every { every_ms })
+                .ok_or_else(|| "schedule.everyMs is required".to_string()),
+            _ => Err("schedule.kind must be at or every".to_string()),
+        }
+    }
+}
+
 /// Start (or ensure running) the IsanAgent runtime.
 ///
 /// The caller should pass provider/model info so the runtime can
@@ -428,6 +455,50 @@ pub async fn agent_clarification_ticket_reply(
     runtime::reply_to_clarification_ticket(&state, Some(&workspace), chat, id, &response).await
 }
 
+/// List host-managed local automations. The workspace must be one the desktop
+/// app explicitly authorized; records from other channels are filtered by the
+/// runtime before serialization.
+#[tauri::command]
+pub async fn agent_list_automations(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+) -> Result<Vec<runtime::AgentAutomationInfo>, String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::list_automations(&state, Some(&workspace)).await
+}
+
+/// Create an automation for the active ALTAI root chat. Its transport is
+/// fixed in the runtime to `tauri`, so a caller cannot schedule work into a
+/// model-selected channel or another workspace.
+#[tauri::command]
+pub async fn agent_automation_create(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+    schedule: AutomationScheduleArg,
+    message: String,
+) -> Result<runtime::AgentAutomationInfo, String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    let schedule = schedule.into_schedule()?;
+    runtime::create_automation(&state, Some(&workspace), &chat_id, schedule, &message).await
+}
+
+/// Remove an automation only if its persisted owner matches the supplied
+/// active chat. This check happens before the CronActor receives the removal.
+#[tauri::command]
+pub async fn agent_automation_remove(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+    automation_id: String,
+) -> Result<(), String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::remove_automation(&state, Some(&workspace), &chat_id, &automation_id).await
+}
+
 /// Fetch paper metadata directly from the arXiv Atom API.
 /// Returns `{ title, authors, abstract, url }` for the confirmation card.
 /// Does NOT require the IsanAgent runtime to be running.
@@ -728,6 +799,38 @@ mod tests {
                 .to_string_lossy()
                 .to_string()
         );
+    }
+
+    #[test]
+    fn direct_automation_schedule_accepts_only_typed_simple_forms() {
+        let at = AutomationScheduleArg {
+            kind: "at".to_string(),
+            at_ms: Some(42),
+            every_ms: None,
+        }
+        .into_schedule()
+        .expect("one-time schedule");
+        assert!(matches!(at, isanagent::scheduler::ScheduleKind::At { at_ms: 42 }));
+
+        let every = AutomationScheduleArg {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60_000),
+        }
+        .into_schedule()
+        .expect("repeating schedule");
+        assert!(matches!(
+            every,
+            isanagent::scheduler::ScheduleKind::Every { every_ms: 60_000 }
+        ));
+
+        assert!(AutomationScheduleArg {
+            kind: "cron".to_string(),
+            at_ms: None,
+            every_ms: None,
+        }
+        .into_schedule()
+        .is_err());
     }
 
     #[test]

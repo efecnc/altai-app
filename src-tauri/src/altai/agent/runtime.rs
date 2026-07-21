@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
@@ -14,7 +14,7 @@ use isanagent::config::ShellPolicyMode;
 use isanagent::provider;
 use isanagent::session::SessionManager;
 use isanagent::skills::SkillRegistry;
-use isanagent::scheduler::{CronActor, CronSchedulingMode};
+use isanagent::scheduler::{CronActor, CronCommand, CronSchedulingMode, CronStore, ScheduleKind};
 use isanagent::tools::builtin::{
     CronTool, EditFileTool, FetchMemoryByDateTool, GitWorktreeTool, GlobFilesTool, ListDirTool,
     ReadFileTool, SearchMemoryTool, SearchTextTool, ShellExecTool, WebFetchTool, WebSearchTool,
@@ -1180,6 +1180,36 @@ pub struct AgentClarificationTicketInfo {
     pub updated_at_ms: i64,
 }
 
+/// Renderer-safe view of a workspace automation. The scheduler's webhook
+/// token deliberately remains host-only.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAutomationInfo {
+    pub id: String,
+    pub schedule: AgentAutomationScheduleInfo,
+    pub message: String,
+    pub chat_id: String,
+    pub last_run_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentAutomationScheduleInfo {
+    At { at_ms: i64 },
+    Every { every_ms: i64 },
+    Cron { cron_expr: String },
+}
+
+impl From<ScheduleKind> for AgentAutomationScheduleInfo {
+    fn from(schedule: ScheduleKind) -> Self {
+        match schedule {
+            ScheduleKind::At { at_ms } => Self::At { at_ms },
+            ScheduleKind::Every { every_ms } => Self::Every { every_ms },
+            ScheduleKind::Cron { cron_expr } => Self::Cron { cron_expr },
+        }
+    }
+}
+
 impl From<isanagent::memory::ClarificationTicketRecord> for AgentClarificationTicketInfo {
     fn from(record: isanagent::memory::ClarificationTicketRecord) -> Self {
         let choices = record
@@ -1374,6 +1404,154 @@ pub fn validate_tauri_chat_id(chat_id: &str) -> Result<&str, String> {
         return Err("chatId contains an invalid delimiter".to_string());
     }
     Ok(chat_id)
+}
+
+fn automation_workspace_root(workspace_path: Option<&str>) -> String {
+    workspace_path
+        .map(|path| format!("{}/.isanagent", path.trim_end_matches('/')))
+        .unwrap_or_default()
+}
+
+fn automation_store(workspace_root: &str) -> Result<CronStore, String> {
+    let workspace_dir = if workspace_root.is_empty() {
+        resolve_workspace_root(None)
+    } else {
+        resolve_workspace_root(Some(workspace_root))
+    };
+    let db_path = workspace_dir.join(".system_generated").join("agent_memory.db");
+    CronStore::new(
+        db_path
+            .to_str()
+            .ok_or("workspace automation DB path is not valid UTF-8")?,
+    )
+}
+
+/// List only ALTAI-owned root-chat automations in one authorized workspace.
+/// The scheduler's cross-channel records and webhook secret never leave the
+/// host process.
+pub async fn list_automations(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+) -> Result<Vec<AgentAutomationInfo>, String> {
+    let workspace_root = automation_workspace_root(workspace_path);
+    let _services = ensure_workspace_services(runtime, &workspace_root).await?;
+    let mut jobs: Vec<_> = automation_store(&workspace_root)?
+        .load_jobs()?
+        .into_iter()
+        .filter(|job| {
+            job.channel == "tauri" && validate_tauri_chat_id(&job.chat_id).is_ok()
+        })
+        .map(|job| AgentAutomationInfo {
+            id: job.id,
+            schedule: job.schedule.into(),
+            message: job.message,
+            chat_id: job.chat_id,
+            last_run_at_ms: job.last_run_at_ms,
+        })
+        .collect();
+    jobs.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(jobs)
+}
+
+/// Add a direct-host automation. The destination is fixed to the current
+/// ALTAI Tauri root chat; callers cannot select another transport/channel.
+pub async fn create_automation(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: &str,
+    schedule: ScheduleKind,
+    message: &str,
+) -> Result<AgentAutomationInfo, String> {
+    let chat_id = validate_tauri_chat_id(chat_id)?.to_string();
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("Automation message is required".to_string());
+    }
+    if message.len() > 10_000 {
+        return Err("Automation message is too long".to_string());
+    }
+    let now_ms: i64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "System clock is before the Unix epoch".to_string())?
+        .as_millis()
+        .try_into()
+        .map_err(|_| "System clock is out of range".to_string())?;
+    match &schedule {
+        ScheduleKind::At { at_ms } if *at_ms <= now_ms => {
+            return Err("One-time automation must be scheduled in the future".to_string())
+        }
+        ScheduleKind::Every { every_ms } if *every_ms < 60_000 => {
+            return Err("Repeating automation interval must be at least one minute".to_string())
+        }
+        ScheduleKind::Every { every_ms } if *every_ms > 366 * 24 * 60 * 60 * 1_000 => {
+            return Err("Repeating automation interval is too long".to_string())
+        }
+        ScheduleKind::Cron { .. } => {
+            return Err("Direct automations support one-time or repeating schedules only".to_string())
+        }
+        _ => {}
+    }
+    let workspace_root = automation_workspace_root(workspace_path);
+    let services = ensure_workspace_services(runtime, &workspace_root).await?;
+    let id = format!("altai:{}", uuid::Uuid::new_v4());
+    let command = CronCommand::Add {
+        id: id.clone(),
+        schedule: schedule.clone(),
+        message: message.to_string(),
+        chat_id: chat_id.clone(),
+        channel: "tauri".to_string(),
+    };
+    services
+        .cron
+        .node
+        .send_packet(
+            serde_json::to_string(&command)
+                .map_err(|error| format!("Failed to serialize automation: {error}"))?,
+        )
+        .await
+        .map_err(|error| format!("Failed to add automation: {error}"))?;
+    Ok(AgentAutomationInfo {
+        id,
+        schedule: schedule.into(),
+        message: message.to_string(),
+        chat_id,
+        last_run_at_ms: None,
+    })
+}
+
+/// Remove an automation only after checking its persisted owner. A renderer
+/// cannot use a schedule id from a different ALTAI conversation to remove it.
+pub async fn remove_automation(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: &str,
+    automation_id: &str,
+) -> Result<(), String> {
+    let chat_id = validate_tauri_chat_id(chat_id)?;
+    let automation_id = automation_id.trim();
+    if automation_id.is_empty() || automation_id.len() > 512 {
+        return Err("automationId is invalid".to_string());
+    }
+    let workspace_root = automation_workspace_root(workspace_path);
+    let services = ensure_workspace_services(runtime, &workspace_root).await?;
+    let job = automation_store(&workspace_root)?
+        .find_job(automation_id)?
+        .ok_or_else(|| "Automation was not found".to_string())?;
+    if job.channel != "tauri" || job.chat_id != chat_id {
+        return Err("Automation does not belong to this Tauri chat".to_string());
+    }
+    let command = CronCommand::Remove {
+        id: automation_id.to_string(),
+    };
+    services
+        .cron
+        .node
+        .send_packet(
+            serde_json::to_string(&command)
+                .map_err(|error| format!("Failed to serialize automation removal: {error}"))?,
+        )
+        .await
+        .map_err(|error| format!("Failed to remove automation: {error}"))
 }
 
 fn is_tauri_root_identity(

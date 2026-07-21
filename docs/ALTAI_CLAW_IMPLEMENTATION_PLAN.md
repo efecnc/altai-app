@@ -201,8 +201,11 @@ ALTAI integration:
    workspace and origin conversation. **Implemented via IsanAgent #67.**
 4. Do not accept arbitrary model-selected channel/chat destinations.
 5. Add schedule list/add/remove Tauri commands for direct UI use.
-6. Add an Automations store and panel.
+   **Implemented:** the host authorizes the workspace, fixes the destination
+   to the active Tauri root chat, and checks persisted ownership before remove.
+6. Add an Automations store and panel. **Implemented.**
 7. Surface next run, last run, state, owner conversation, and failure.
+   **Implemented for direct one-time/repeating schedules.**
 8. Route a triggered job to its persisted owner runtime. **Implemented for a
    live owner; after restart, the persisted running job is recovered once when
    its chat next binds an explicit runtime configuration.**

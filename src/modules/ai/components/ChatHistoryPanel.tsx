@@ -63,11 +63,23 @@ function extractSnippet(messages: UIMessage[]): string {
   return "";
 }
 
+function hasConversationContent(messages: UIMessage[]): boolean {
+  return messages.some((message) =>
+    message.parts.some((part) => {
+      if (part.type === "text") {
+        return Boolean((part as { text?: string }).text?.trim());
+      }
+      // A non-text user attachment is still a meaningful conversation start.
+      return message.role === "user";
+    }),
+  );
+}
+
 /**
  * Inline, Kilo-Code-style chat history view. Renders in place of the
  * conversation when toggled open: search + a "New chat" action + sessions
- * grouped by recency. Sessions are durable — they live here until explicitly
- * deleted; the trash icon is the only way to remove one permanently.
+ * grouped by recency. Untouched drafts deliberately stay only in the tab
+ * strip; history starts at the first real user message.
  */
 export function ChatHistoryPanel({ onClose }: { onClose: () => void }) {
   const sessions = useChatStore((s) => s.sessions);
@@ -79,7 +91,8 @@ export function ChatHistoryPanel({ onClose }: { onClose: () => void }) {
 
   const [search, setSearch] = useState("");
   const [snippets, setSnippets] = useState<Record<string, string>>({});
-  const loadedRef = useRef<Set<string>>(new Set());
+  const [hasContent, setHasContent] = useState<Record<string, boolean>>({});
+  const loadedRef = useRef<Map<string, number>>(new Map());
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -94,13 +107,19 @@ export function ChatHistoryPanel({ onClose }: { onClose: () => void }) {
     let cancelled = false;
     const load = async () => {
       for (const s of sessions) {
-        if (loadedRef.current.has(s.id)) continue;
-        loadedRef.current.add(s.id);
+        if (loadedRef.current.get(s.id) === s.updatedAt) continue;
+        loadedRef.current.set(s.id, s.updatedAt);
         const msgs = await loadMessages(s.id);
         if (cancelled) return;
         const snippet = extractSnippet(msgs ?? []);
+        const containsContent = hasConversationContent(msgs ?? []);
         setSnippets((prev) =>
           prev[s.id] === snippet ? prev : { ...prev, [s.id]: snippet },
+        );
+        setHasContent((prev) =>
+          prev[s.id] === containsContent
+            ? prev
+            : { ...prev, [s.id]: containsContent },
         );
       }
     };
@@ -124,14 +143,17 @@ export function ChatHistoryPanel({ onClose }: { onClose: () => void }) {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return sessions;
     return sessions.filter((s) => {
+      // Wait for the local transcript read rather than briefly rendering an
+      // empty draft and removing it a frame later.
+      if (!hasContent[s.id]) return false;
+      if (!q) return true;
       const title = (s.title || "New chat").toLowerCase();
       if (title.includes(q)) return true;
       const snippet = snippets[s.id] ?? "";
       return snippet.toLowerCase().includes(q);
     });
-  }, [sessions, search, snippets]);
+  }, [hasContent, sessions, search, snippets]);
 
   const groups = useMemo<DateGroup[]>(() => {
     const nowDay = startOfDay(Date.now());
