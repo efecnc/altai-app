@@ -58,6 +58,7 @@ const AGENT_ICONS: Record<AgentIconId, typeof CodeIcon> = {
 // todos yet; allocating `[]` inside the selector triggers React's external
 // store loop detector and can blank the whole renderer.
 const EMPTY_TODOS: Array<{ id: string; title: string; status: string }> = [];
+type PanelSurface = "history" | "inspector" | "tasks" | "inbox" | "automations" | null;
 
 export function AiSidePanel({
   onClose,
@@ -92,12 +93,17 @@ export function AiSidePanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [tasksOpen, setTasksOpen] = useState(false);
-  const [inboxOpen, setInboxOpen] = useState(false);
-  const [automationsOpen, setAutomationsOpen] = useState(false);
+  const [activeSurface, setActiveSurface] = useState<PanelSurface>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const historyOpen = activeSurface === "history";
+  const inspectorOpen = activeSurface === "inspector";
+  const tasksOpen = activeSurface === "tasks";
+  const inboxOpen = activeSurface === "inbox";
+  const automationsOpen = activeSurface === "automations";
+  const toggleSurface = (surface: Exclude<PanelSurface, null>) => {
+    setReviewOpen(false);
+    setActiveSurface((current) => (current === surface ? null : surface));
+  };
 
   useEffect(() => {
     const openReview = () => setReviewOpen(true);
@@ -114,18 +120,22 @@ export function AiSidePanel({
     >
       <WorkspaceTopbar
         onClose={onClose}
+        onSelectSession={() => setActiveSurface(null)}
         historyOpen={historyOpen}
-        onToggleHistory={() => setHistoryOpen((o) => !o)}
+        onToggleHistory={() => toggleSurface("history")}
         inspectorOpen={inspectorOpen}
-        onToggleInspector={() => setInspectorOpen((o) => !o)}
+        onToggleInspector={() => toggleSurface("inspector")}
         tasksOpen={tasksOpen}
-        onToggleTasks={() => setTasksOpen((o) => !o)}
+        onToggleTasks={() => toggleSurface("tasks")}
         inboxOpen={inboxOpen}
-        onToggleInbox={() => setInboxOpen((open) => !open)}
+        onToggleInbox={() => toggleSurface("inbox")}
         automationsOpen={automationsOpen}
-        onToggleAutomations={() => setAutomationsOpen((open) => !open)}
+        onToggleAutomations={() => toggleSurface("automations")}
         reviewOpen={reviewOpen}
-        onToggleReview={() => setReviewOpen((o) => !o)}
+        onToggleReview={() => {
+          setActiveSurface(null);
+          setReviewOpen((open) => !open);
+        }}
       />
       <div className="relative grid min-h-0 flex-1 grid-cols-1 @[48rem]:grid-cols-[13.5rem_minmax(0,1fr)] @[76rem]:grid-cols-[13.5rem_minmax(0,1fr)_18rem]">
         <nav
@@ -137,7 +147,7 @@ export function AiSidePanel({
 
         <main className="relative flex min-h-0 min-w-0 flex-col bg-background/30">
           {historyOpen ? (
-            <ChatHistoryPanel onClose={() => setHistoryOpen(false)} />
+            <ChatHistoryPanel onClose={() => setActiveSurface(null)} />
           ) : sessionId ? (
             <Body />
           ) : (
@@ -146,7 +156,7 @@ export function AiSidePanel({
             </div>
           )}
           {automationsOpen ? (
-            <AutomationsPanel onClose={() => setAutomationsOpen(false)} />
+            <AutomationsPanel onClose={() => setActiveSurface(null)} />
           ) : null}
         </main>
 
@@ -154,12 +164,12 @@ export function AiSidePanel({
 
         {inspectorOpen ? (
           <div className="absolute inset-0 z-20 flex bg-background/92 backdrop-blur-sm @[76rem]:hidden">
-            <RunInspector className="flex w-full" onClose={() => setInspectorOpen(false)} />
+            <RunInspector className="flex w-full" onClose={() => setActiveSurface(null)} />
           </div>
         ) : null}
-        {tasksOpen ? <TaskRunsPanel onClose={() => setTasksOpen(false)} /> : null}
+        {tasksOpen ? <TaskRunsPanel onClose={() => setActiveSurface(null)} /> : null}
         {inboxOpen ? (
-          <NotificationInboxPanel onClose={() => setInboxOpen(false)} />
+          <NotificationInboxPanel onClose={() => setActiveSurface(null)} />
         ) : null}
       </div>
       {!historyOpen && !inspectorOpen && !tasksOpen && !inboxOpen && !automationsOpen && <RuntimeStatusRow />}
@@ -204,6 +214,7 @@ function RuntimeStatusRow() {
  */
 function WorkspaceTopbar({
   onClose,
+  onSelectSession,
   historyOpen,
   onToggleHistory,
   inspectorOpen,
@@ -218,6 +229,7 @@ function WorkspaceTopbar({
   onToggleReview,
 }: {
   onClose: () => void;
+  onSelectSession: () => void;
   historyOpen: boolean;
   onToggleHistory: () => void;
   inspectorOpen: boolean;
@@ -234,19 +246,47 @@ function WorkspaceTopbar({
   const activeId = useChatStore((s) => s.activeSessionId);
   const sessions = useChatStore((s) => s.sessions);
   const newSession = useChatStore((s) => s.newSession);
-  const active = sessions.find((s) => s.id === activeId);
-  const agentMeta = useChatStore((s) => s.agentMeta);
-  const activeAgentId = useAgentsStore((s) => s.activeId);
-  const agents = useAgentsStore.getState().all();
-  const activeAgent = agents.find((agent) => agent.id === activeAgentId);
-  const planActive = usePlanStore((s) => s.active);
-  const title = active?.title || "New chat";
+  const switchSession = useChatStore((s) => s.switchSession);
+
+  const selectSession = (id: string) => {
+    switchSession(id);
+    onSelectSession();
+  };
+
+  const createSession = () => {
+    newSession();
+    onSelectSession();
+  };
 
   return (
     <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border/50 bg-card/90 px-2.5 backdrop-blur">
+      <div
+        role="tablist"
+        aria-label="Open chats"
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto py-1"
+      >
+        {sessions.map((session) => (
+          <button
+            key={session.id}
+            type="button"
+            role="tab"
+            aria-selected={session.id === activeId}
+            onClick={() => selectSession(session.id)}
+            title={session.title || "New chat"}
+            className={cn(
+              "max-w-36 shrink-0 truncate rounded-md px-2 py-1 text-[10.5px] transition-colors",
+              session.id === activeId
+                ? "bg-foreground/[0.1] font-medium text-foreground"
+                : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
+            )}
+          >
+            {session.title || "New chat"}
+          </button>
+        ))}
+      </div>
       <button
         type="button"
-        onClick={() => newSession()}
+        onClick={createSession}
         title="New chat"
         aria-label="New chat"
         className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
@@ -266,24 +306,6 @@ function WorkspaceTopbar({
       >
         <HugeiconsIcon icon={Clock01Icon} size={14} strokeWidth={1.75} />
       </button>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[12px] font-medium text-foreground/90">
-          {historyOpen ? "Chat sessions" : title}
-        </div>
-        {!historyOpen ? (
-          <div className="mt-0.5 flex items-center gap-1.5 truncate text-[10px] text-muted-foreground">
-            <span className="truncate">{activeAgent?.name ?? "Agent"}</span>
-            <span aria-hidden="true">·</span>
-            <span>{planActive ? "Plan" : "Build"}</span>
-            {agentMeta.status !== "idle" ? (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="truncate">{agentMeta.step ?? "Working"}</span>
-              </>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
       {!historyOpen && activeId ? (
         <TodoSummaryChip sessionId={activeId} />
       ) : null}
