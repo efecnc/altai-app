@@ -1,6 +1,27 @@
 use super::runtime::{self, AgentRuntime, CompactionArg};
+use crate::modules::workspace::WorkspaceRegistry;
 use serde::{Deserialize, Serialize};
 use tauri::State;
+
+/// The inbox exposes persisted prompts, notifications, and job errors. Unlike
+/// the generic agent startup path, it must never open an arbitrary renderer-
+/// supplied directory just to inspect a SQLite database.
+fn authorized_inbox_workspace(
+    workspace_path: Option<&str>,
+    registry: &WorkspaceRegistry,
+) -> Result<String, String> {
+    let raw = workspace_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "workspacePath is required for agent inbox access".to_string())?;
+    let canonical = registry
+        .canonicalize_cached(raw)
+        .map_err(|error| format!("Workspace is not accessible: {error}"))?;
+    if !canonical.is_dir() || !registry.is_authorized(&canonical) {
+        return Err("Workspace is not authorized.".to_string());
+    }
+    Ok(canonical.to_string_lossy().replace('\\', "/"))
+}
 
 /// Cross-provider failover spec sent from JS (camelCase) — the model the agent
 /// retries on when the primary provider is exhausted. Maps to the isanagent
@@ -248,6 +269,163 @@ pub async fn agent_truncate_after_user_message(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     runtime::truncate_after_user_message(&state, ws, &chat_id, keep_user_messages).await
+}
+
+#[tauri::command]
+pub async fn agent_list_notifications(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: Option<String>,
+    unseen_only: Option<bool>,
+    limit: Option<usize>,
+) -> Result<Vec<runtime::AgentNotificationInfo>, String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    let chat = chat_id
+        .as_deref()
+        .map(runtime::validate_tauri_chat_id)
+        .transpose()?;
+    runtime::list_notifications(
+        &state,
+        Some(&workspace),
+        chat,
+        unseen_only.unwrap_or(false),
+        limit.unwrap_or(100),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_notification_mark_seen(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+    notification_id: String,
+) -> Result<(), String> {
+    let chat = runtime::validate_tauri_chat_id(&chat_id)?;
+    let id = notification_id.trim();
+    if id.is_empty() {
+        return Err("notificationId is required".to_string());
+    }
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::mark_notification_seen(&state, Some(&workspace), chat, id).await
+}
+
+#[tauri::command]
+pub async fn agent_notification_resolve(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+    notification_id: String,
+) -> Result<(), String> {
+    let chat = runtime::validate_tauri_chat_id(&chat_id)?;
+    let id = notification_id.trim();
+    if id.is_empty() {
+        return Err("notificationId is required".to_string());
+    }
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::resolve_notification(&state, Some(&workspace), chat, id).await
+}
+
+#[tauri::command]
+pub async fn agent_list_background_jobs(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<runtime::AgentBackgroundJobInfo>, String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    let chat = chat_id
+        .as_deref()
+        .map(runtime::validate_tauri_chat_id)
+        .transpose()?;
+    runtime::list_background_jobs(&state, Some(&workspace), chat, limit.unwrap_or(100)).await
+}
+
+#[tauri::command]
+pub async fn agent_background_job_dismiss(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+    job_id: String,
+) -> Result<(), String> {
+    let chat = runtime::validate_tauri_chat_id(&chat_id)?;
+    let id = job_id.trim();
+    if id.is_empty() {
+        return Err("jobId is required".to_string());
+    }
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::dismiss_background_job(&state, Some(&workspace), chat, id).await
+}
+
+#[tauri::command]
+pub async fn agent_list_clarification_tickets(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: Option<String>,
+    status: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<runtime::AgentClarificationTicketInfo>, String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    let chat = chat_id
+        .as_deref()
+        .map(runtime::validate_tauri_chat_id)
+        .transpose()?;
+    let ticket_status = status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    runtime::list_clarification_tickets(
+        &state,
+        Some(&workspace),
+        chat,
+        ticket_status,
+        limit.unwrap_or(100),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_clarification_ticket_dismiss(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+    ticket_id: String,
+) -> Result<(), String> {
+    let chat = runtime::validate_tauri_chat_id(&chat_id)?;
+    let id = ticket_id.trim();
+    if id.is_empty() {
+        return Err("ticketId is required".to_string());
+    }
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::dismiss_clarification_ticket(&state, Some(&workspace), chat, id).await
+}
+
+/// Reply to a persisted background clarification. The runtime validates the
+/// ticket's workspace/chat ownership before routing a trusted synthetic
+/// inbound to exactly one bound agent instance.
+#[tauri::command]
+pub async fn agent_clarification_ticket_reply(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+    ticket_id: String,
+    response: String,
+) -> Result<(), String> {
+    let chat = runtime::validate_tauri_chat_id(&chat_id)?;
+    let id = ticket_id.trim();
+    if id.is_empty() {
+        return Err("ticketId is required".to_string());
+    }
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::reply_to_clarification_ticket(&state, Some(&workspace), chat, id, &response).await
 }
 
 /// Fetch paper metadata directly from the arXiv Atom API.
@@ -530,6 +708,27 @@ fn extract_nested_tag(xml: &str, outer: &str, inner: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inbox_workspace_must_be_explicit_and_authorized() {
+        let root = tempfile::tempdir().expect("temp workspace");
+        let registry = WorkspaceRegistry::default();
+        let path = root.path().to_string_lossy().to_string();
+
+        assert!(authorized_inbox_workspace(None, &registry).is_err());
+        assert!(authorized_inbox_workspace(Some(&path), &registry).is_err());
+
+        registry.authorize(root.path()).expect("authorize workspace");
+        let canonical = authorized_inbox_workspace(Some(&path), &registry)
+            .expect("authorized workspace");
+        assert_eq!(
+            canonical,
+            std::fs::canonicalize(root.path())
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        );
+    }
 
     #[test]
     fn checkpoint_entry_maps_to_camel_case_info() {

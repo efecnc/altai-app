@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter, Manager};
@@ -14,15 +14,17 @@ use isanagent::config::ShellPolicyMode;
 use isanagent::provider;
 use isanagent::session::SessionManager;
 use isanagent::skills::SkillRegistry;
+use isanagent::scheduler::{CronActor, CronSchedulingMode};
 use isanagent::tools::builtin::{
-    EditFileTool, GlobFilesTool, ListDirTool, ReadFileTool, SearchTextTool, ShellExecTool,
-    WebFetchTool, WebSearchTool, WriteFileTool,
+    CronTool, EditFileTool, FetchMemoryByDateTool, GitWorktreeTool, GlobFilesTool, ListDirTool,
+    ReadFileTool, SearchMemoryTool, SearchTextTool, ShellExecTool, WebFetchTool, WebSearchTool,
+    WriteFileTool,
 };
 use isanagent::tools::ml_domain::{ArxivFetchTool, ArxivSearchTool, HfHubFileFetchTool};
-use isanagent::tools::workflow::TodoWriteTool;
+use isanagent::tools::workflow::{AskUserTool, TodoWriteTool, ToolSearchTool};
 use isanagent::tools::ToolRegistry;
 use isanagent::workspace::{resolve_workspace_root, IsanagentWorkspace};
-use isanagent::NodeHandle;
+use isanagent::{NodeHandle, Supervisor, SupervisorPolicy};
 
 use super::commands::DocumentArg;
 use super::tauri_channel::{map_telemetry_to_event, telemetry_chat_id, TauriChannel};
@@ -186,6 +188,17 @@ pub enum Event {
         state: String,
         kind: String,
         detail: Option<String>,
+    },
+    /// A persisted notification was created for this Tauri conversation.
+    NotificationCreated {
+        notification_id: String,
+        kind: String,
+        title: String,
+    },
+    /// A persisted notification changed state.
+    NotificationUpdated {
+        notification_id: String,
+        state: String,
     },
     /// A subagent task was spawned by the main agent (via `subagent_spawn`).
     SubagentSpawned {
@@ -359,11 +372,163 @@ fn permission_mode_to_edit_mode(mode: Option<&str>) -> Option<ShellPolicyMode> {
 /// One running IsanAgent instance — its own channel + agent node + bus routers.
 struct Instance {
     channel: Arc<TauriChannel>,
+    /// The instance-local bus. Workspace ingress routes only trusted synthetic
+    /// inbound work through this sender after a chat has been explicitly bound
+    /// by a successful user send.
+    bus_tx: mpsc::Sender<BusMessage>,
     /// Fires the bus router's shutdown so its task exits and drops `agent_node`.
     /// Needed because `agent_node` holds `bus_tx` clones (execution-job manager,
     /// subagent harness), so `channel.stop()` alone can't make `bus_rx.recv()`
     /// return `None` — the task would otherwise leak on teardown.
     shutdown: tokio::sync::oneshot::Sender<()>,
+    /// Retained so workspace teardown can wait for the task to release its
+    /// agent node and `bus_tx` clones instead of merely fire-and-forget a
+    /// shutdown signal.
+    bus_router: async_runtime::JoinHandle<()>,
+    /// The outbound router owns the event receiver. It must finish after the
+    /// bus router drops the agent node and its outbound sender clones.
+    outbound_router: async_runtime::JoinHandle<()>,
+}
+
+const INSTANCE_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+async fn stop_instance(instance: Instance) {
+    let Instance {
+        channel,
+        shutdown,
+        mut bus_router,
+        mut outbound_router,
+        ..
+    } = instance;
+
+    // Give the agent an opportunity to cancel active work before releasing its
+    // router. A blank ID is IsanAgent's established all-session cancellation
+    // signal for this channel.
+    let _ = channel.cancel(String::new()).await;
+    let _ = shutdown.send(());
+
+    if tokio::time::timeout(INSTANCE_TASK_SHUTDOWN_TIMEOUT, &mut bus_router)
+        .await
+        .is_err()
+    {
+        bus_router.abort();
+        let _ = bus_router.await;
+    }
+    if tokio::time::timeout(INSTANCE_TASK_SHUTDOWN_TIMEOUT, &mut outbound_router)
+        .await
+        .is_err()
+    {
+        outbound_router.abort();
+        let _ = outbound_router.await;
+    }
+    let _ = channel.stop().await;
+}
+
+/// Services that must have exactly one owner for a workspace, independent of
+/// how many provider/persona instances happen to serve that workspace.
+///
+/// Cron, reflection, a retained logger bridge, and the synthetic ingress
+/// dispatcher join this record in the next A2 steps. Establishing the shared
+/// memory actor and clarification hub first prevents model switches from
+/// orphaning an in-flight `ask_user` wait.
+struct WorkspaceServices {
+    memory_node: NodeHandle<isanagent::memory::MemoryMessage>,
+    clarification_hub: Arc<ClarificationHub>,
+    logger: WorkspaceLogger,
+    dispatcher: Arc<WorkspaceDispatcher>,
+    cron: WorkspaceCron,
+}
+
+struct WorkspaceIngress {
+    chat_id: String,
+    inbound: isanagent::bus::InboundMessage,
+    reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+}
+
+/// A workspace-owned synthetic-inbound dispatcher. It never accepts a model
+/// selected destination: a chat must first be bound by `route_send`, and each
+/// route is replaced only after another successful send for that same chat.
+struct WorkspaceDispatcher {
+    #[allow(dead_code)] // consumed by cron/background adapters added after I4/I5
+    tx: mpsc::Sender<WorkspaceIngress>,
+    routes: Arc<tokio::sync::Mutex<HashMap<String, mpsc::Sender<BusMessage>>>>,
+    #[allow(dead_code)]
+    task: async_runtime::JoinHandle<()>,
+}
+
+impl WorkspaceDispatcher {
+    fn new() -> Self {
+        let routes = Arc::new(tokio::sync::Mutex::new(HashMap::<
+            String,
+            mpsc::Sender<BusMessage>,
+        >::new()));
+        let (tx, mut rx) = mpsc::channel::<WorkspaceIngress>(100);
+        let routes_for_task = routes.clone();
+        let task = async_runtime::spawn(async move {
+            while let Some(ingress) = rx.recv().await {
+                let bus_tx = routes_for_task
+                    .lock()
+                    .await
+                    .get(&ingress.chat_id)
+                    .cloned();
+                let result = match bus_tx {
+                    Some(bus_tx) => bus_tx
+                        .send(BusMessage::Inbound(ingress.inbound))
+                        .await
+                        .map_err(|_| "The owning agent runtime is no longer available".to_string()),
+                    None => Err("No owning agent runtime is registered for this chat".to_string()),
+                };
+                let _ = ingress.reply.send(result);
+            }
+        });
+        Self { tx, routes, task }
+    }
+
+    async fn bind(&self, chat_id: &str, bus_tx: mpsc::Sender<BusMessage>) {
+        self.routes
+            .lock()
+            .await
+            .insert(chat_id.to_string(), bus_tx);
+    }
+
+    #[allow(dead_code)] // exercised in tests; production callers arrive with cron/resume adapters
+    async fn dispatch(
+        &self,
+        chat_id: String,
+        inbound: isanagent::bus::InboundMessage,
+    ) -> Result<(), String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(WorkspaceIngress {
+                chat_id,
+                inbound,
+                reply: tx,
+            })
+            .await
+            .map_err(|_| "The workspace ingress dispatcher is no longer available".to_string())?;
+        rx.await
+            .map_err(|_| "The workspace ingress dispatcher stopped before routing".to_string())?
+    }
+}
+
+/// Retains both ends of IsanAgent's blocking logger channel. The prior
+/// embedded runtime kept only the sender, so every log event was immediately
+/// dropped because its receiver had been destroyed.
+struct WorkspaceLogger {
+    handle: isanagent::logging::LoggerHandle,
+    #[allow(dead_code)]
+    node: NodeHandle<BusMessage>,
+    #[allow(dead_code)]
+    forwarder: StdMutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+/// One local IsanAgent cron actor per workspace. Its bus is deliberately not
+/// connected to an arbitrary model instance: a tiny bridge validates the
+/// persisted Tauri root identity then uses the workspace dispatcher.
+struct WorkspaceCron {
+    node: NodeHandle<String>,
+    #[allow(dead_code)]
+    forwarder: async_runtime::JoinHandle<()>,
 }
 
 /// Runtime state managed by Tauri. Instead of a single runtime, holds a
@@ -375,18 +540,23 @@ pub struct AgentRuntime {
     /// One instance per distinct config. All emit to `agent://event` tagged by
     /// chat_id, which the frontend routes on.
     instances: tokio::sync::Mutex<HashMap<RuntimeFingerprint, Instance>>,
-    /// One shared SQLite memory actor per workspace root — reused across the
-    /// workspace's model-instances so history transfers and a single actor
-    /// serializes DB access (no contention).
-    memory_by_workspace:
-        tokio::sync::Mutex<HashMap<String, NodeHandle<isanagent::memory::MemoryMessage>>>,
+    /// One service record per workspace root. Provider/persona instances share
+    /// this record instead of reconstructing workspace-owned state.
+    workspace_services_by_root:
+        tokio::sync::Mutex<HashMap<String, Arc<WorkspaceServices>>>,
+    /// Last successfully delivered model/persona runtime for each workspace
+    /// chat. This is only an ownership record today; A2's dispatcher will use
+    /// it to route synthetic work and ticket resumes to exactly one instance.
+    chat_owner_by_workspace:
+        tokio::sync::Mutex<HashMap<(String, String), RuntimeFingerprint>>,
 }
 
 pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(AgentRuntime {
         app: app.clone(),
         instances: tokio::sync::Mutex::new(HashMap::new()),
-        memory_by_workspace: tokio::sync::Mutex::new(HashMap::new()),
+        workspace_services_by_root: tokio::sync::Mutex::new(HashMap::new()),
+        chat_owner_by_workspace: tokio::sync::Mutex::new(HashMap::new()),
     });
 
     Ok(())
@@ -428,12 +598,14 @@ fn make_fingerprint(
     }
 }
 
-/// Get-or-create the shared memory actor for a workspace root (`""` = default).
-async fn ensure_memory(
+/// Get-or-create workspace-owned services (`""` = the default IsanAgent
+/// workspace). This is intentionally the only constructor for shared
+/// workspace state.
+async fn ensure_workspace_services(
     runtime: &AgentRuntime,
     workspace_root: &str,
-) -> Result<NodeHandle<isanagent::memory::MemoryMessage>, String> {
-    let mut guard = runtime.memory_by_workspace.lock().await;
+) -> Result<Arc<WorkspaceServices>, String> {
+    let mut guard = runtime.workspace_services_by_root.lock().await;
     if let Some(existing) = guard.get(workspace_root) {
         return Ok(existing.clone());
     }
@@ -458,8 +630,97 @@ async fn ensure_memory(
         1,
         Duration::from_millis(5),
     );
-    guard.insert(workspace_root.to_string(), node.clone());
-    Ok(node)
+    let (logger_handle, logger_rx) = isanagent::logging::create_logger_channel(
+        isanagent::logging::LOGGER_QUEUE_CAPACITY,
+    );
+    let logger_factory = {
+        let workspace_dir = dir.clone();
+        move || isanagent::logging::create_logging_actor_or_fallback(workspace_dir.clone())
+    };
+    let logger_node = NodeHandle::<BusMessage>::new(
+        Supervisor::new(SupervisorPolicy::Restart, logger_factory),
+        1_000,
+        1,
+        Duration::from_millis(10),
+    );
+    let logger_forward = logger_node.clone();
+    let runtime_handle = tokio::runtime::Handle::current();
+    let forwarder = std::thread::Builder::new()
+        .name("altai-isanagent-logger".to_string())
+        .spawn(move || {
+            while let Ok(message) = logger_rx.recv() {
+                if runtime_handle
+                    .block_on(logger_forward.send_packet(message))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .map_err(|error| format!("Failed to start workspace logger forwarder: {error}"))?;
+
+    let dispatcher = Arc::new(WorkspaceDispatcher::new());
+    let (cron_bus_tx, mut cron_bus_rx) = mpsc::channel::<BusMessage>(100);
+    let cron_logic = CronActor::new(
+        "AltaiWorkspaceCron",
+        db_path_str,
+        logger_handle.clone(),
+        CronSchedulingMode::Local,
+        cron_bus_tx,
+    )
+    .map_err(|error| format!("Failed to initialize workspace cron actor: {error}"))?;
+    let cron_node = NodeHandle::new(cron_logic, 100, 1, Duration::from_millis(50));
+    let dispatcher_for_cron = dispatcher.clone();
+    let cron_forwarder = async_runtime::spawn(async move {
+        while let Some(message) = cron_bus_rx.recv().await {
+            let BusMessage::Inbound(inbound) = message else {
+                continue;
+            };
+            let chat_id = inbound.chat_id.clone();
+            if inbound.channel != "tauri"
+                || inbound.thread_id.is_some()
+                || validate_tauri_chat_id(&chat_id).is_err()
+            {
+                log::warn!("Dropped cron delivery with an invalid ALTAI destination");
+                continue;
+            }
+            // A missing owner is expected after app restart. CronActor has
+            // already persisted its running job, and `route_send` performs a
+            // one-shot recovery when the user next reopens that conversation.
+            if let Err(error) = dispatcher_for_cron.dispatch(chat_id, inbound).await {
+                log::info!("Deferred cron delivery until its ALTAI chat is active: {error}");
+            }
+        }
+    });
+
+    let services = Arc::new(WorkspaceServices {
+        memory_node: node,
+        clarification_hub: ClarificationHub::shared(),
+        logger: WorkspaceLogger {
+            handle: logger_handle,
+            node: logger_node,
+            forwarder: StdMutex::new(Some(forwarder)),
+        },
+        dispatcher,
+        cron: WorkspaceCron {
+            node: cron_node,
+            forwarder: cron_forwarder,
+        },
+    });
+    guard.insert(workspace_root.to_string(), services.clone());
+    Ok(services)
+}
+
+/// Compatibility helper for history/inbox calls while they are migrated to
+/// consume the full workspace service record.
+async fn ensure_memory(
+    runtime: &AgentRuntime,
+    workspace_root: &str,
+) -> Result<NodeHandle<isanagent::memory::MemoryMessage>, String> {
+    Ok(ensure_workspace_services(runtime, workspace_root)
+        .await?
+        .memory_node
+        .clone())
 }
 
 /// Ensure an instance exists for this config and return its channel. The app
@@ -522,11 +783,6 @@ async fn ensure_instance(
             .filter_map(|k| instances.remove(&k).map(|inst| (k, inst)))
             .collect()
     };
-    runtime
-        .memory_by_workspace
-        .lock()
-        .await
-        .retain(|k, _| k == &workspace_root);
     // Clear MCP runtime status for the workspaces we're tearing down so a
     // stale "connected" badge doesn't survive a workspace switch.
     let stale_workspace_roots: Vec<String> = stale
@@ -534,10 +790,22 @@ async fn ensure_instance(
         .map(|(fp, _)| fp.workspace_root.clone())
         .collect();
     for (_, inst) in stale {
-        let _ = inst.shutdown.send(());
-        let _ = inst.channel.cancel(String::new()).await;
-        let _ = inst.channel.stop().await;
+        stop_instance(inst).await;
     }
+    // Drop workspace services only after their agent instances have released
+    // cloned memory/logger handles. This closes the logger receiver cleanly
+    // and lets its forwarding thread observe shutdown instead of detaching it
+    // while an old instance is still emitting.
+    runtime
+        .workspace_services_by_root
+        .lock()
+        .await
+        .retain(|k, _| k == &workspace_root);
+    runtime
+        .chat_owner_by_workspace
+        .lock()
+        .await
+        .retain(|(root, _), _| root == &workspace_root);
     if let Some(mcp_statuses) = runtime.app.try_state::<mcp::McpStatusRegistry>() {
         for root in &stale_workspace_roots {
             if !root.is_empty() {
@@ -549,15 +817,18 @@ async fn ensure_instance(
     }
 
     // Build the (heavy) instance WITHOUT holding the instances lock.
-    let memory_node = ensure_memory(runtime, &workspace_root).await?;
+    let services = ensure_workspace_services(runtime, &workspace_root).await?;
     let workspace_root_opt = if workspace_root.is_empty() {
         None
     } else {
         Some(workspace_root.as_str())
     };
-    let (channel, shutdown) = build_instance(
+    let (channel, bus_tx, shutdown, bus_router, outbound_router) = build_instance(
         runtime.app.clone(),
-        memory_node,
+        services.memory_node.clone(),
+        services.clarification_hub.clone(),
+        services.logger.handle.clone(),
+        services.cron.node.clone(),
         provider_name,
         api_key,
         model_name,
@@ -575,15 +846,24 @@ async fn ensure_instance(
     if let Some(inst) = instances.get(&fp) {
         let winner = inst.channel.clone();
         drop(instances);
-        let _ = shutdown.send(());
-        let _ = channel.stop().await;
+        stop_instance(Instance {
+            channel,
+            bus_tx,
+            shutdown,
+            bus_router,
+            outbound_router,
+        })
+        .await;
         return Ok(winner);
     }
     instances.insert(
         fp,
         Instance {
             channel: channel.clone(),
+            bus_tx,
             shutdown,
+            bus_router,
+            outbound_router,
         },
     );
     Ok(channel)
@@ -607,6 +887,16 @@ pub async fn route_send(
     documents: Vec<DocumentArg>,
     chat_id: String,
 ) -> Result<(), String> {
+    let fingerprint = make_fingerprint(
+        provider_name,
+        api_key,
+        model_name,
+        persona_instructions,
+        base_url_override,
+        workspace_path,
+        permission_mode,
+        compaction,
+    );
     let channel = ensure_instance(
         runtime,
         provider_name,
@@ -645,7 +935,122 @@ pub async fn route_send(
     }
 
     channel
-        .inject_user_message(message, images, documents, chat_id)
+        .inject_user_message(message, images, documents, chat_id.clone())
+        .await?;
+    if !chat_id.trim().is_empty() {
+        let bus_tx = runtime
+            .instances
+            .lock()
+            .await
+            .get(&fingerprint)
+            .map(|instance| instance.bus_tx.clone())
+            .ok_or_else(|| "The owning agent runtime is no longer available".to_string())?;
+        let services = ensure_workspace_services(runtime, &fingerprint.workspace_root).await?;
+        services.dispatcher.bind(&chat_id, bus_tx).await;
+        let previous_owner = runtime
+            .chat_owner_by_workspace
+            .lock()
+            .await
+            .insert((fingerprint.workspace_root.clone(), chat_id.clone()), fingerprint);
+        // A workspace service is recreated after an app/workspace restart, so
+        // the first explicit user send is the first moment we have a trusted
+        // provider configuration and a concrete runtime to own persisted cron
+        // work. Recover once here; changing models later in the same process
+        // must not duplicate an already-running background turn.
+        if previous_owner.is_none() {
+            recover_background_jobs_after_owner_bind(
+                &services.memory_node,
+                &services.dispatcher,
+                &chat_id,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn recover_background_jobs_after_owner_bind(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    dispatcher: &WorkspaceDispatcher,
+    chat_id: &str,
+) -> Result<(), String> {
+    let records = request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::ListBackgroundJobs {
+            chat_id: Some(chat_id.to_string()),
+            channel: Some("tauri".to_string()),
+            limit: 500,
+            reply,
+        }
+    })
+    .await?;
+    for job in records.into_iter().filter(|job| {
+        job.state == "running"
+            && job.resume_after_restart
+            && is_tauri_root_identity(
+                &job.channel,
+                job.thread_id.as_deref(),
+                Some(chat_id),
+                &job.chat_id,
+            )
+    }) {
+        let content = serde_json::from_str::<serde_json::Value>(&job.payload_json)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("message")
+                    .and_then(|message| message.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| format!("Resume background job {}", job.job_id));
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            isanagent::bus::METADATA_SYNTHETIC_BACKGROUND_RESUME.to_string(),
+            serde_json::Value::Bool(true),
+        );
+        metadata.insert(
+            isanagent::bus::METADATA_BACKGROUND_JOB_ID.to_string(),
+            serde_json::Value::String(job.job_id),
+        );
+        dispatcher
+            .dispatch(
+                chat_id.to_string(),
+                isanagent::bus::InboundMessage {
+                    channel: "tauri".to_string(),
+                    sender_id: "altai_background_recovery".to_string(),
+                    chat_id: chat_id.to_string(),
+                    thread_id: None,
+                    content,
+                    attachments: Vec::new(),
+                    metadata,
+                },
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// Route a trusted synthetic inbound message to the runtime that most recently
+/// served this ALTAI chat in the selected workspace. This is intentionally not
+/// exposed as generic renderer IPC: cron and background-resume adapters call
+/// it after deriving the destination from persisted host-owned state.
+#[allow(dead_code)] // intentionally backend-only until cron/resume adapters are enabled
+pub async fn dispatch_synthetic_inbound(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: &str,
+    inbound: isanagent::bus::InboundMessage,
+) -> Result<(), String> {
+    let chat_id = validate_tauri_chat_id(chat_id)?;
+    if inbound.channel != "tauri" || inbound.chat_id != chat_id || inbound.thread_id.is_some() {
+        return Err("Synthetic inbound identity does not match the Tauri root chat".to_string());
+    }
+    let workspace_root = workspace_path
+        .map(|path| format!("{}/.isanagent", path.trim_end_matches('/')))
+        .unwrap_or_default();
+    ensure_workspace_services(runtime, &workspace_root)
+        .await?
+        .dispatcher
+        .dispatch(chat_id.to_string(), inbound)
         .await
 }
 
@@ -689,6 +1094,111 @@ pub struct SessionInfo {
     pub updated_at: i64,
     /// First user message preview (runtime prefix stripped), used as the title.
     pub title: String,
+}
+
+/// Safe frontend projection of IsanAgent's persisted notification record.
+///
+/// The raw action payload and transport selectors stay backend-only. Keeping
+/// the actor record behind an ALTAI-owned camelCase contract also prevents
+/// future IsanAgent schema additions from becoming accidental IPC API changes.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentNotificationInfo {
+    pub id: String,
+    pub chat_id: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub action_kind: Option<String>,
+    pub seen_at_ms: Option<i64>,
+    pub resolved_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+}
+
+impl From<isanagent::memory::NotificationRecord> for AgentNotificationInfo {
+    fn from(record: isanagent::memory::NotificationRecord) -> Self {
+        Self {
+            id: record.notification_id,
+            chat_id: record.chat_id,
+            kind: record.kind,
+            title: record.title,
+            body: record.body,
+            action_kind: record.action_kind,
+            seen_at_ms: record.seen_at_ms,
+            resolved_at_ms: record.resolved_at_ms,
+            created_at_ms: record.created_at_ms,
+        }
+    }
+}
+
+/// Safe list projection of a durable IsanAgent background job.
+///
+/// `payload_json` is deliberately excluded: it can contain full prompts or
+/// execution payloads and is not required to render status in ALTAI.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBackgroundJobInfo {
+    pub id: String,
+    pub kind: String,
+    pub chat_id: String,
+    pub state: String,
+    pub resume_after_restart: bool,
+    pub detached: bool,
+    pub last_error: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+impl From<isanagent::memory::BackgroundJobRecord> for AgentBackgroundJobInfo {
+    fn from(record: isanagent::memory::BackgroundJobRecord) -> Self {
+        Self {
+            id: record.job_id,
+            kind: record.kind,
+            chat_id: record.chat_id,
+            state: record.state,
+            resume_after_restart: record.resume_after_restart,
+            detached: record.detached,
+            last_error: record.last_error,
+            created_at_ms: record.created_at_ms,
+            updated_at_ms: record.updated_at_ms,
+        }
+    }
+}
+
+/// Safe frontend projection of a persisted background clarification ticket.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentClarificationTicketInfo {
+    pub id: String,
+    pub job_id: String,
+    pub chat_id: String,
+    pub prompt: String,
+    pub choices: Vec<String>,
+    pub response: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+impl From<isanagent::memory::ClarificationTicketRecord> for AgentClarificationTicketInfo {
+    fn from(record: isanagent::memory::ClarificationTicketRecord) -> Self {
+        let choices = record
+            .choices_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+            .unwrap_or_default();
+        Self {
+            id: record.ticket_id,
+            job_id: record.job_id,
+            chat_id: record.chat_id,
+            prompt: record.prompt,
+            choices,
+            response: record.response,
+            status: record.status,
+            created_at_ms: record.created_at_ms,
+            updated_at_ms: record.updated_at_ms,
+        }
+    }
 }
 
 /// List all chat sessions persisted in this workspace's backend memory DB.
@@ -819,6 +1329,466 @@ pub async fn truncate_after_user_message(
         .map_err(|_| "Memory actor closed before replying".to_string())?
 }
 
+async fn memory_for_workspace_path(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+) -> Result<NodeHandle<isanagent::memory::MemoryMessage>, String> {
+    let workspace_root = workspace_path
+        .map(|path| format!("{}/.isanagent", path.trim_end_matches('/')))
+        .unwrap_or_default();
+    ensure_memory(runtime, &workspace_root).await
+}
+
+async fn request_memory<T>(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    build: impl FnOnce(
+        isanagent::memory::SharedReply<Result<T, String>>,
+    ) -> isanagent::memory::MemoryMessage,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        memory_node
+            .send_packet(build(isanagent::memory::SharedReply::new(tx)))
+            .await
+            .map_err(|error| format!("Failed to query memory actor: {error}"))?;
+        rx.await
+            .map_err(|_| "Memory actor closed before replying".to_string())?
+            .map_err(|error| format!("Memory actor error: {error}"))
+    })
+    .await
+    .map_err(|_| "Memory actor request timed out".to_string())?
+}
+
+pub fn validate_tauri_chat_id(chat_id: &str) -> Result<&str, String> {
+    let chat_id = chat_id.trim();
+    if chat_id.is_empty() {
+        return Err("chatId is required".to_string());
+    }
+    if chat_id.len() > 256 {
+        return Err("chatId is too long".to_string());
+    }
+    if chat_id.contains(':') {
+        return Err("chatId contains an invalid delimiter".to_string());
+    }
+    Ok(chat_id)
+}
+
+fn is_tauri_root_identity(
+    channel: &str,
+    thread_id: Option<&str>,
+    expected_chat_id: Option<&str>,
+    actual_chat_id: &str,
+) -> bool {
+    channel == "tauri"
+        && thread_id.is_none_or(str::is_empty)
+        && expected_chat_id.is_none_or(|expected| expected == actual_chat_id)
+}
+
+pub async fn list_notifications(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: Option<&str>,
+    unseen_only: bool,
+    limit: usize,
+) -> Result<Vec<AgentNotificationInfo>, String> {
+    let memory_node = memory_for_workspace_path(runtime, workspace_path).await?;
+    list_notifications_with_memory(&memory_node, chat_id, unseen_only, limit).await
+}
+
+async fn list_notifications_with_memory(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    chat_id: Option<&str>,
+    unseen_only: bool,
+    limit: usize,
+) -> Result<Vec<AgentNotificationInfo>, String> {
+    let limit = limit.clamp(1, 500);
+    let records = request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::ListNotifications {
+            chat_id: chat_id.map(str::to_string),
+            // The upstream query applies this trusted host boundary before its
+            // SQL limit, so records from another channel cannot starve ALTAI's
+            // workspace inbox.
+            channel: Some("tauri".to_string()),
+            limit,
+            unseen_only,
+            reply,
+        }
+    })
+    .await?;
+    Ok(records
+        .into_iter()
+        .filter(|record| {
+            is_tauri_root_identity(
+                &record.channel,
+                record.thread_id.as_deref(),
+                chat_id,
+                &record.chat_id,
+            )
+        })
+        .take(limit)
+        .map(AgentNotificationInfo::from)
+        .collect())
+}
+
+pub async fn mark_notification_seen(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: &str,
+    notification_id: &str,
+) -> Result<(), String> {
+    let memory_node = memory_for_workspace_path(runtime, workspace_path).await?;
+    mark_notification_seen_with_memory(&memory_node, chat_id, notification_id).await
+}
+
+async fn mark_notification_seen_with_memory(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    chat_id: &str,
+    notification_id: &str,
+) -> Result<(), String> {
+    let records = request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::ListNotifications {
+            chat_id: Some(chat_id.to_string()),
+            channel: Some("tauri".to_string()),
+            limit: 500,
+            unseen_only: false,
+            reply,
+        }
+    })
+    .await?;
+    if !records.iter().any(|record| {
+        record.notification_id == notification_id
+            && is_tauri_root_identity(
+                &record.channel,
+                record.thread_id.as_deref(),
+                Some(chat_id),
+                &record.chat_id,
+            )
+    }) {
+        return Err("Notification does not belong to this Tauri chat".to_string());
+    }
+    request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::MarkNotificationSeen {
+            notification_id: notification_id.to_string(),
+            reply,
+        }
+    })
+    .await
+}
+
+pub async fn resolve_notification(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: &str,
+    notification_id: &str,
+) -> Result<(), String> {
+    let memory_node = memory_for_workspace_path(runtime, workspace_path).await?;
+    resolve_notification_with_memory(&memory_node, chat_id, notification_id).await
+}
+
+async fn resolve_notification_with_memory(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    chat_id: &str,
+    notification_id: &str,
+) -> Result<(), String> {
+    let records = request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::ListNotifications {
+            chat_id: Some(chat_id.to_string()),
+            channel: Some("tauri".to_string()),
+            limit: 500,
+            unseen_only: false,
+            reply,
+        }
+    })
+    .await?;
+    let Some(record) = records.iter().find(|record| {
+        record.notification_id == notification_id
+            && is_tauri_root_identity(
+                &record.channel,
+                record.thread_id.as_deref(),
+                Some(chat_id),
+                &record.chat_id,
+            )
+    }) else {
+        return Err("Notification does not belong to this Tauri chat".to_string());
+    };
+    if record.kind == "clarification_ticket" {
+        return Err(
+            "Clarification notifications must be dismissed through their ticket".to_string(),
+        );
+    }
+    request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::ResolveNotification {
+            notification_id: notification_id.to_string(),
+            reply,
+        }
+    })
+    .await
+}
+
+pub async fn list_background_jobs(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<AgentBackgroundJobInfo>, String> {
+    let memory_node = memory_for_workspace_path(runtime, workspace_path).await?;
+    list_background_jobs_with_memory(&memory_node, chat_id, limit).await
+}
+
+async fn list_background_jobs_with_memory(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    chat_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<AgentBackgroundJobInfo>, String> {
+    let limit = limit.clamp(1, 500);
+    let records = request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::ListBackgroundJobs {
+            chat_id: chat_id.map(str::to_string),
+            channel: Some("tauri".to_string()),
+            limit,
+            reply,
+        }
+    })
+    .await?;
+    Ok(records
+        .into_iter()
+        .filter(|record| {
+            is_tauri_root_identity(
+                &record.channel,
+                record.thread_id.as_deref(),
+                chat_id,
+                &record.chat_id,
+            )
+        })
+        .take(limit)
+        .map(AgentBackgroundJobInfo::from)
+        .collect())
+}
+
+pub async fn dismiss_background_job(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: &str,
+    job_id: &str,
+) -> Result<(), String> {
+    let memory_node = memory_for_workspace_path(runtime, workspace_path).await?;
+    dismiss_background_job_with_memory(&memory_node, chat_id, job_id).await
+}
+
+async fn dismiss_background_job_with_memory(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    chat_id: &str,
+    job_id: &str,
+) -> Result<(), String> {
+    let records = request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::ListBackgroundJobs {
+            chat_id: Some(chat_id.to_string()),
+            channel: Some("tauri".to_string()),
+            limit: 500,
+            reply,
+        }
+    })
+    .await?;
+    if !records.iter().any(|record| {
+        record.job_id == job_id
+            && is_tauri_root_identity(
+                &record.channel,
+                record.thread_id.as_deref(),
+                Some(chat_id),
+                &record.chat_id,
+            )
+    }) {
+        return Err("Background job does not belong to this Tauri chat".to_string());
+    }
+    request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::DismissBackgroundJob {
+            job_id: Some(job_id.to_string()),
+            ticket_id: None,
+            reply,
+        }
+    })
+    .await
+}
+
+pub async fn list_clarification_tickets(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: Option<&str>,
+    status: Option<&str>,
+    limit: usize,
+) -> Result<Vec<AgentClarificationTicketInfo>, String> {
+    let memory_node = memory_for_workspace_path(runtime, workspace_path).await?;
+    list_clarification_tickets_with_memory(&memory_node, chat_id, status, limit).await
+}
+
+async fn list_clarification_tickets_with_memory(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    chat_id: Option<&str>,
+    status: Option<&str>,
+    limit: usize,
+) -> Result<Vec<AgentClarificationTicketInfo>, String> {
+    let limit = limit.clamp(1, 500);
+    let records = request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::ListClarificationTickets {
+            job_id: None,
+            chat_id: chat_id.map(str::to_string),
+            channel: Some("tauri".to_string()),
+            status: status.map(str::to_string),
+            limit,
+            reply,
+        }
+    })
+    .await?;
+    Ok(records
+        .into_iter()
+        .filter(|record| {
+            is_tauri_root_identity(
+                &record.channel,
+                record.thread_id.as_deref(),
+                chat_id,
+                &record.chat_id,
+            )
+        })
+        .take(limit)
+        .map(AgentClarificationTicketInfo::from)
+        .collect())
+}
+
+pub async fn dismiss_clarification_ticket(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: &str,
+    ticket_id: &str,
+) -> Result<(), String> {
+    let memory_node = memory_for_workspace_path(runtime, workspace_path).await?;
+    dismiss_clarification_ticket_with_memory(&memory_node, chat_id, ticket_id).await
+}
+
+async fn dismiss_clarification_ticket_with_memory(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    chat_id: &str,
+    ticket_id: &str,
+) -> Result<(), String> {
+    let record = request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::GetClarificationTicket {
+            ticket_id: ticket_id.to_string(),
+            reply,
+        }
+    })
+    .await?
+    .ok_or_else(|| "Clarification ticket was not found".to_string())?;
+    if !is_tauri_root_identity(
+        &record.channel,
+        record.thread_id.as_deref(),
+        Some(chat_id),
+        &record.chat_id,
+    ) {
+        return Err("Clarification ticket does not belong to this Tauri chat".to_string());
+    }
+    if record.status != "waiting" {
+        return Err("Clarification ticket is no longer waiting".to_string());
+    }
+    request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::DismissBackgroundJob {
+            job_id: None,
+            ticket_id: Some(ticket_id.to_string()),
+            reply,
+        }
+    })
+    .await
+}
+
+/// Build the only synthetic inbound shape ALTAI accepts for a persisted
+/// clarification reply. The ticket lookup is an authorization check, not the
+/// state transition: IsanAgent #66 atomically claims the waiting ticket when
+/// the owning runtime processes this message.
+async fn clarification_ticket_reply_inbound_with_memory(
+    memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+    chat_id: &str,
+    ticket_id: &str,
+    response: &str,
+) -> Result<isanagent::bus::InboundMessage, String> {
+    let response = response.trim();
+    if response.is_empty() {
+        return Err("response is required".to_string());
+    }
+    if response.len() > 10_000 {
+        return Err("response is too long".to_string());
+    }
+
+    let ticket = request_memory(memory_node, |reply| {
+        isanagent::memory::MemoryMessage::GetClarificationTicket {
+            ticket_id: ticket_id.to_string(),
+            reply,
+        }
+    })
+    .await?
+    .ok_or_else(|| "Clarification ticket was not found".to_string())?;
+    if !is_tauri_root_identity(
+        &ticket.channel,
+        ticket.thread_id.as_deref(),
+        Some(chat_id),
+        &ticket.chat_id,
+    ) {
+        return Err("Clarification ticket does not belong to this Tauri chat".to_string());
+    }
+    if ticket.status != "waiting" {
+        return Err("Clarification ticket is no longer waiting".to_string());
+    }
+
+    let mut metadata = HashMap::new();
+    metadata.insert(
+        isanagent::bus::METADATA_CLARIFICATION_TICKET_ID.to_string(),
+        serde_json::Value::String(ticket.ticket_id),
+    );
+    metadata.insert(
+        isanagent::bus::METADATA_BACKGROUND_JOB_ID.to_string(),
+        serde_json::Value::String(ticket.job_id),
+    );
+    metadata.insert(
+        isanagent::bus::METADATA_SYNTHETIC_BACKGROUND_RESUME.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    Ok(isanagent::bus::InboundMessage {
+        channel: "tauri".to_string(),
+        sender_id: "altai_clarification_reply".to_string(),
+        chat_id: chat_id.to_string(),
+        thread_id: None,
+        content: response.to_string(),
+        attachments: Vec::new(),
+        metadata,
+    })
+}
+
+/// Submit a human response to a persisted background clarification. The
+/// workspace dispatcher delivers it only to the runtime that most recently
+/// served this chat; IsanAgent then atomically claims/resumes the ticket.
+pub async fn reply_to_clarification_ticket(
+    runtime: &AgentRuntime,
+    workspace_path: Option<&str>,
+    chat_id: &str,
+    ticket_id: &str,
+    response: &str,
+) -> Result<(), String> {
+    let chat_id = validate_tauri_chat_id(chat_id)?;
+    let ticket_id = ticket_id.trim();
+    if ticket_id.is_empty() {
+        return Err("ticketId is required".to_string());
+    }
+    let memory_node = memory_for_workspace_path(runtime, workspace_path).await?;
+    let inbound = clarification_ticket_reply_inbound_with_memory(
+        &memory_node,
+        chat_id,
+        ticket_id,
+        response,
+    )
+    .await?;
+    dispatch_synthetic_inbound(runtime, workspace_path, chat_id, inbound).await
+}
+
 /// Warm up (or ensure) the instance for a config. Kept for the `agent_start`
 /// command; dispatch now happens through `route_send`.
 #[allow(clippy::too_many_arguments)]
@@ -848,6 +1818,29 @@ pub async fn start_agent(
     .map(|_| ())
 }
 
+/// Register the interaction and memory tools that already exist in IsanAgent
+/// but were previously absent from ALTAI's embedded runtime.
+///
+/// Keep this helper dependency-only: lifecycle-owning capabilities such as the
+/// cron actor and reflection engine are assembled at workspace scope instead
+/// of being duplicated for every model/persona instance.
+fn register_existing_claw_tools(
+    tools: &mut ToolRegistry,
+    memory_node: NodeHandle<isanagent::memory::MemoryMessage>,
+    clarification_hub: Arc<ClarificationHub>,
+    outbound_tx: mpsc::Sender<BusMessage>,
+) {
+    tools.register(Box::new(AskUserTool {
+        clarification_hub,
+        outbound_tx,
+        memory_node: Some(memory_node.clone()),
+    }));
+    tools.register(Box::new(SearchMemoryTool {
+        memory_node: memory_node.clone(),
+    }));
+    tools.register(Box::new(FetchMemoryByDateTool { memory_node }));
+}
+
 /// Build ONE IsanAgent instance: a fresh `TauriChannel` + agent node + bus
 /// routers, sharing the passed-in (per-workspace) memory actor. Returns the
 /// instance's channel. No teardown/fingerprint logic — the registry
@@ -864,6 +1857,9 @@ pub async fn start_agent(
 async fn build_instance(
     app: AppHandle,
     memory_node: NodeHandle<isanagent::memory::MemoryMessage>,
+    clarification_hub: Arc<ClarificationHub>,
+    logger_handle: isanagent::logging::LoggerHandle,
+    cron_node: NodeHandle<String>,
     provider_name: &str,
     api_key: &str,
     model_name: &str,
@@ -872,7 +1868,16 @@ async fn build_instance(
     workspace_root: Option<&str>,
     permission_mode: Option<&str>,
     compaction: Option<&CompactionArg>,
-) -> Result<(Arc<TauriChannel>, tokio::sync::oneshot::Sender<()>), String> {
+) -> Result<
+    (
+        Arc<TauriChannel>,
+        mpsc::Sender<BusMessage>,
+        tokio::sync::oneshot::Sender<()>,
+        async_runtime::JoinHandle<()>,
+        async_runtime::JoinHandle<()>,
+    ),
+    String,
+> {
     // Each instance gets its own channel with a unique bootstrap chat_id;
     // actual routing is by per-message chat_id.
     let channel = Arc::new(TauriChannel::new(
@@ -896,8 +1901,6 @@ async fn build_instance(
     // serialized through a single actor (no contention).
     let session_manager = SessionManager::new(memory_node.clone());
     let skills = SkillRegistry::new(workspace.skills_path());
-    let clarification_hub = ClarificationHub::shared();
-
     // Outbound channel for agent → UI (typed as BusMessage per IsanAgent API)
     let (global_outbound_tx, mut global_outbound_rx) = mpsc::channel::<BusMessage>(100);
     // Inbound bus
@@ -949,6 +1952,13 @@ async fn build_instance(
         workspace_dir: sandbox_dir.clone(),
         restrict_to_workspace: restrict,
     }));
+    if workspace.config.git_worktree_tool_enabled() {
+        tools.register(Box::new(GitWorktreeTool {
+            workspace_dir: sandbox_dir.clone(),
+            restrict_to_workspace: restrict,
+            allow_path_outside_sandbox: workspace.config.git_worktree_allow_path_outside_sandbox(),
+        }));
+    }
 
     // Pre-edit checkpoints for one-step undo of agent edits (isanagent
     // #53/#56). WriteFileTool/EditFileTool snapshot a file's prior content
@@ -1005,6 +2015,25 @@ async fn build_instance(
     }));
     tools.register(Box::new(HfHubFileFetchTool {
         max_output_chars: max_web_chars,
+    }));
+    register_existing_claw_tools(
+        &mut tools,
+        memory_node.clone(),
+        clarification_hub.clone(),
+        global_outbound_tx.clone(),
+    );
+    let cron_db_path = workspace_dir
+        .join(".system_generated")
+        .join("agent_memory.db")
+        .to_string_lossy()
+        .to_string();
+    // CronTool binds its destination to IsanAgent's trusted ToolExecCtx
+    // (#67), while the actor itself is shared at workspace scope above.
+    tools.register(Box::new(CronTool {
+        cron_node,
+        multi_tenant_edge_cron_enabled: false,
+        mte_cron_scheduler: None,
+        db_path: cron_db_path,
     }));
     tools.register(Box::new(TodoWriteTool {
         memory_node: memory_node.clone(),
@@ -1215,6 +2244,23 @@ async fn build_instance(
         // longer exist, so there's nothing to register here.)
     }
 
+    if workspace.config.kernel_porting_harness_enabled() {
+        isanagent::tools::kernel_porting::register_kernel_porting_tools(
+            &mut tools,
+            sandbox_dir.clone(),
+            Arc::new(workspace.config.clone()),
+        );
+    }
+
+    // Register discovery last so its shared catalog contains every concrete
+    // tool available to this instance. This mirrors IsanAgent's reference
+    // binary and lets the model find opt-in MCP, execution, worktree, and
+    // Claw-parity tools without duplicating a static catalogue in ALTAI.
+    let tool_catalog = tools.catalog_handle();
+    tools.register(Box::new(ToolSearchTool {
+        catalog: tool_catalog,
+    }));
+
     // Provider — `base_url_override` (from the JS side, derived from the
     // active model) wins. Otherwise fall back to workspace config, then
     // to Gemini's `v1beta` as a last resort.
@@ -1310,6 +2356,7 @@ async fn build_instance(
             wake_on_completion: workspace.config.subagent_wake_on_completion(),
             task_history_retention: workspace.config.subagent_task_history_retention(),
             bus_tx: Some(bus_tx.clone()),
+            workspace_dir: sandbox_dir.clone(),
         })
     } else {
         None
@@ -1376,7 +2423,7 @@ async fn build_instance(
         short_term_threshold_turns,
         short_term_threshold_tokens,
         outbound_tx: global_outbound_tx.clone(),
-        logger_tx: isanagent::logging::create_logger_channel(256).0,
+        logger_tx: logger_handle,
         clarification_hub,
         subagent,
         doom_loop_enabled: workspace.config.doom_loop_enabled(),
@@ -1403,7 +2450,7 @@ async fn build_instance(
     // fire `shutdown_tx`; the task breaks, drops `agent_node`, and the cycle
     // unwinds (its `global_outbound_tx` clones drop, ending the outbound task).
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    async_runtime::spawn(async move {
+    let bus_router = async_runtime::spawn(async move {
         loop {
             let msg = tokio::select! {
                 m = bus_rx.recv() => m,
@@ -1439,7 +2486,7 @@ async fn build_instance(
     // dropped — the UI saw no tool calls or thinking between "Sending to
     // ALTAI…" and the final answer.
     let app_for_outbound = app.clone();
-    async_runtime::spawn(async move {
+    let outbound_router = async_runtime::spawn(async move {
         while let Some(out_msg) = global_outbound_rx.recv().await {
             match out_msg {
                 BusMessage::Outbound(outbound) => {
@@ -1504,7 +2551,7 @@ async fn build_instance(
         },
     );
 
-    Ok((channel, shutdown_tx))
+    Ok((channel, bus_tx, shutdown_tx, bus_router, outbound_router))
 }
 
 #[cfg(test)]
@@ -1584,5 +2631,596 @@ mod compaction_tests {
             tail_turns: 9,
         };
         assert_eq!(c.fingerprint_tuple(), (false, 12_345, 9));
+    }
+}
+
+#[cfg(test)]
+mod claw_parity_tests {
+    use super::*;
+
+    fn record<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
+        serde_json::from_value(value).expect("valid IsanAgent record")
+    }
+
+    fn notification(
+        id: &str,
+        chat_id: &str,
+        channel: &str,
+        thread_id: Option<&str>,
+        kind: &str,
+    ) -> isanagent::memory::NotificationRecord {
+        record(serde_json::json!({
+            "notification_id": id,
+            "chat_id": chat_id,
+            "channel": channel,
+            "thread_id": thread_id,
+            "kind": kind,
+            "title": format!("title-{id}"),
+            "body": format!("body-{id}"),
+            "action_kind": null,
+            "action_payload": null,
+            "seen_at_ms": null,
+            "resolved_at_ms": null,
+            "created_at_ms": 1,
+        }))
+    }
+
+    fn background_job(
+        id: &str,
+        chat_id: &str,
+        channel: &str,
+        thread_id: Option<&str>,
+        payload_json: &str,
+    ) -> isanagent::memory::BackgroundJobRecord {
+        record(serde_json::json!({
+            "job_id": id,
+            "kind": "cron",
+            "chat_id": chat_id,
+            "channel": channel,
+            "thread_id": thread_id,
+            "state": "waiting",
+            "payload_json": payload_json,
+            "resume_after_restart": true,
+            "detached": true,
+            "last_error": null,
+            "created_at_ms": 1,
+            "updated_at_ms": 1,
+        }))
+    }
+
+    fn ticket(
+        id: &str,
+        job_id: &str,
+        chat_id: &str,
+        channel: &str,
+        thread_id: Option<&str>,
+        status: &str,
+        choices_json: Option<&str>,
+    ) -> isanagent::memory::ClarificationTicketRecord {
+        record(serde_json::json!({
+            "ticket_id": id,
+            "job_id": job_id,
+            "chat_id": chat_id,
+            "channel": channel,
+            "thread_id": thread_id,
+            "tool_call_id": format!("tool-{id}"),
+            "prompt": format!("prompt-{id}"),
+            "choices_json": choices_json,
+            "response": null,
+            "status": status,
+            "created_at_ms": 1,
+            "updated_at_ms": 1,
+        }))
+    }
+
+    fn memory_node(db_path: &std::path::Path) -> NodeHandle<isanagent::memory::MemoryMessage> {
+        let memory_actor = isanagent::memory::SqliteMemoryActor::new(
+            db_path.to_str().expect("utf-8 database path"),
+        )
+        .expect("memory actor");
+        NodeHandle::<isanagent::memory::MemoryMessage>::new(
+            memory_actor,
+            100,
+            1,
+            Duration::from_millis(5),
+        )
+    }
+
+    async fn seed_notification(
+        memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+        record: isanagent::memory::NotificationRecord,
+    ) {
+        request_memory(memory_node, |reply| {
+            isanagent::memory::MemoryMessage::InsertNotification { record, reply }
+        })
+        .await
+        .expect("insert notification");
+    }
+
+    async fn seed_background_job(
+        memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+        record: isanagent::memory::BackgroundJobRecord,
+    ) {
+        request_memory(memory_node, |reply| {
+            isanagent::memory::MemoryMessage::UpsertBackgroundJob { record, reply }
+        })
+        .await
+        .expect("insert background job");
+    }
+
+    async fn seed_ticket(
+        memory_node: &NodeHandle<isanagent::memory::MemoryMessage>,
+        record: isanagent::memory::ClarificationTicketRecord,
+    ) {
+        request_memory(memory_node, |reply| {
+            isanagent::memory::MemoryMessage::UpsertClarificationTicket { record, reply }
+        })
+        .await
+        .expect("insert clarification ticket");
+    }
+
+    #[tokio::test]
+    async fn registers_existing_interaction_and_memory_tools() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("memory.db");
+        let memory_node = memory_node(&db_path);
+        let (outbound_tx, _outbound_rx) = mpsc::channel(8);
+        let mut tools = ToolRegistry::new();
+
+        register_existing_claw_tools(
+            &mut tools,
+            memory_node,
+            ClarificationHub::shared(),
+            outbound_tx,
+        );
+
+        let names = tools.get_tool_names();
+        for expected in ["ask_user", "search_memory", "fetch_memory_by_date"] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "missing IsanAgent parity tool {expected}; registered: {names:?}"
+            );
+        }
+        assert!(
+            !names.iter().any(|name| name == "message"),
+            "raw message must remain disabled until completion and destination contracts are safe"
+        );
+    }
+
+    #[test]
+    fn validates_opaque_tauri_chat_ids_and_root_identity() {
+        assert_eq!(validate_tauri_chat_id("  s-chat-1  ").unwrap(), "s-chat-1");
+        assert!(validate_tauri_chat_id("").is_err());
+        assert!(validate_tauri_chat_id("tauri:chat:").is_err());
+        assert!(validate_tauri_chat_id(&"x".repeat(257)).is_err());
+
+        assert!(is_tauri_root_identity(
+            "tauri",
+            None,
+            Some("chat-a"),
+            "chat-a"
+        ));
+        assert!(is_tauri_root_identity(
+            "tauri",
+            Some(""),
+            Some("chat-a"),
+            "chat-a"
+        ));
+        assert!(!is_tauri_root_identity(
+            "slack",
+            None,
+            Some("chat-a"),
+            "chat-a"
+        ));
+        assert!(!is_tauri_root_identity(
+            "tauri",
+            Some("thread"),
+            Some("chat-a"),
+            "chat-a"
+        ));
+        assert!(!is_tauri_root_identity(
+            "tauri",
+            None,
+            Some("chat-b"),
+            "chat-a"
+        ));
+    }
+
+    #[tokio::test]
+    async fn persisted_facade_enforces_identity_and_mutation_guards() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let memory_node = memory_node(&dir.path().join("memory.db"));
+
+        for record in [
+            notification("notification-a", "chat-a", "tauri", None, "cron_triggered"),
+            notification("notification-b", "chat-b", "tauri", None, "cron_triggered"),
+            notification(
+                "notification-slack",
+                "chat-a",
+                "slack",
+                None,
+                "cron_triggered",
+            ),
+            notification(
+                "notification-thread",
+                "chat-a",
+                "tauri",
+                Some("subthread"),
+                "cron_triggered",
+            ),
+            notification(
+                "notification-ticket",
+                "chat-a",
+                "tauri",
+                None,
+                "clarification_ticket",
+            ),
+        ] {
+            seed_notification(&memory_node, record).await;
+        }
+
+        for record in [
+            background_job(
+                "job-a",
+                "chat-a",
+                "tauri",
+                None,
+                r#"{"secret":"keep-me-private"}"#,
+            ),
+            background_job("job-b", "chat-b", "tauri", None, "{}"),
+            background_job("job-slack", "chat-a", "slack", None, "{}"),
+            background_job("job-thread", "chat-a", "tauri", Some("subthread"), "{}"),
+        ] {
+            seed_background_job(&memory_node, record).await;
+        }
+
+        for record in [
+            ticket(
+                "ticket-a",
+                "job-a",
+                "chat-a",
+                "tauri",
+                None,
+                "waiting",
+                Some(r#"["one","two"]"#),
+            ),
+            ticket(
+                "ticket-b", "job-b", "chat-b", "tauri", None, "waiting", None,
+            ),
+            ticket(
+                "ticket-slack",
+                "job-slack",
+                "chat-a",
+                "slack",
+                None,
+                "waiting",
+                None,
+            ),
+            ticket(
+                "ticket-thread",
+                "job-thread",
+                "chat-a",
+                "tauri",
+                Some("subthread"),
+                "waiting",
+                None,
+            ),
+            ticket(
+                "ticket-answered",
+                "job-a",
+                "chat-a",
+                "tauri",
+                None,
+                "answered",
+                None,
+            ),
+        ] {
+            seed_ticket(&memory_node, record).await;
+        }
+
+        let notifications =
+            list_notifications_with_memory(&memory_node, Some("chat-a"), false, 500)
+                .await
+                .expect("list notifications");
+        let mut notification_ids: Vec<_> =
+            notifications.into_iter().map(|record| record.id).collect();
+        notification_ids.sort();
+        assert_eq!(
+            notification_ids,
+            [
+                "notification-a".to_string(),
+                "notification-ticket".to_string()
+            ]
+        );
+
+        let jobs = list_background_jobs_with_memory(&memory_node, Some("chat-a"), 500)
+            .await
+            .expect("list background jobs");
+        assert_eq!(
+            jobs.iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["job-a"]
+        );
+
+        let tickets =
+            list_clarification_tickets_with_memory(&memory_node, Some("chat-a"), None, 500)
+                .await
+                .expect("list clarification tickets");
+        let mut ticket_ids: Vec<_> = tickets.into_iter().map(|record| record.id).collect();
+        ticket_ids.sort();
+        assert_eq!(
+            ticket_ids,
+            ["ticket-a".to_string(), "ticket-answered".to_string()]
+        );
+
+        assert!(
+            mark_notification_seen_with_memory(&memory_node, "chat-a", "missing-notification",)
+                .await
+                .expect_err("unknown notification must be denied")
+                .contains("does not belong")
+        );
+        assert!(
+            mark_notification_seen_with_memory(&memory_node, "chat-a", "notification-b")
+                .await
+                .expect_err("wrong-chat notification must be denied")
+                .contains("does not belong")
+        );
+        assert!(
+            resolve_notification_with_memory(&memory_node, "chat-a", "notification-ticket")
+                .await
+                .expect_err("clarification notification must use ticket dismissal")
+                .contains("through their ticket")
+        );
+
+        assert!(
+            dismiss_background_job_with_memory(&memory_node, "chat-a", "missing-job")
+                .await
+                .expect_err("unknown job must be denied")
+                .contains("does not belong")
+        );
+        assert!(
+            dismiss_background_job_with_memory(&memory_node, "chat-a", "job-b")
+                .await
+                .expect_err("wrong-chat job must be denied")
+                .contains("does not belong")
+        );
+
+        assert!(
+            dismiss_clarification_ticket_with_memory(&memory_node, "chat-a", "missing-ticket",)
+                .await
+                .expect_err("unknown ticket must be denied")
+                .contains("not found")
+        );
+        assert!(
+            dismiss_clarification_ticket_with_memory(&memory_node, "chat-a", "ticket-b")
+                .await
+                .expect_err("wrong-chat ticket must be denied")
+                .contains("does not belong")
+        );
+        assert!(
+            dismiss_clarification_ticket_with_memory(&memory_node, "chat-a", "ticket-slack")
+                .await
+                .expect_err("wrong-channel ticket must be denied")
+                .contains("does not belong")
+        );
+        assert!(
+            dismiss_clarification_ticket_with_memory(&memory_node, "chat-a", "ticket-thread")
+                .await
+                .expect_err("subthread ticket must be denied")
+                .contains("does not belong")
+        );
+        assert!(dismiss_clarification_ticket_with_memory(
+            &memory_node,
+            "chat-a",
+            "ticket-answered",
+        )
+        .await
+        .expect_err("answered ticket must be denied")
+        .contains("no longer waiting"));
+
+        let inbound = clarification_ticket_reply_inbound_with_memory(
+            &memory_node,
+            "chat-a",
+            "ticket-a",
+            "  one  ",
+        )
+        .await
+        .expect("trusted ticket reply inbound");
+        assert_eq!(inbound.channel, "tauri");
+        assert_eq!(inbound.chat_id, "chat-a");
+        assert_eq!(inbound.thread_id, None);
+        assert_eq!(inbound.content, "one");
+        assert_eq!(
+            inbound
+                .metadata
+                .get(isanagent::bus::METADATA_CLARIFICATION_TICKET_ID)
+                .and_then(|value| value.as_str()),
+            Some("ticket-a")
+        );
+        assert_eq!(
+            inbound
+                .metadata
+                .get(isanagent::bus::METADATA_BACKGROUND_JOB_ID)
+                .and_then(|value| value.as_str()),
+            Some("job-a")
+        );
+        assert!(clarification_ticket_reply_inbound_with_memory(
+            &memory_node,
+            "chat-a",
+            "ticket-b",
+            "one",
+        )
+        .await
+        .expect_err("cross-chat ticket reply must be denied")
+        .contains("does not belong"));
+        assert!(clarification_ticket_reply_inbound_with_memory(
+            &memory_node,
+            "chat-a",
+            "ticket-answered",
+            "one",
+        )
+        .await
+        .expect_err("answered ticket reply must be denied")
+        .contains("no longer waiting"));
+    }
+
+    #[tokio::test]
+    async fn channel_scoped_inbox_query_applies_before_the_limit() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let memory_node = memory_node(&dir.path().join("memory.db"));
+
+        let mut tauri_record = notification(
+            "tauri-notification",
+            "chat-a",
+            "tauri",
+            None,
+            "cron_triggered",
+        );
+        tauri_record.created_at_ms = 1;
+        seed_notification(&memory_node, tauri_record).await;
+
+        // These are all newer than the Tauri record. The former API adapter
+        // fetched the newest 500 global records, filtered afterward, and
+        // would return an empty ALTAI inbox here. The upstream channel filter
+        // must execute in SQLite before `limit` is applied.
+        for index in 0..501 {
+            let mut record = notification(
+                &format!("slack-notification-{index}"),
+                "chat-a",
+                "slack",
+                None,
+                "cron_triggered",
+            );
+            record.created_at_ms = i64::from(index) + 2;
+            seed_notification(&memory_node, record).await;
+        }
+
+        let records = list_notifications_with_memory(&memory_node, None, false, 1)
+            .await
+            .expect("list notifications");
+        assert_eq!(
+            records.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
+            ["tauri-notification"]
+        );
+    }
+
+    #[test]
+    fn clarification_dto_treats_malformed_choices_as_empty() {
+        let dto = AgentClarificationTicketInfo::from(ticket(
+            "ticket-malformed",
+            "job-a",
+            "chat-a",
+            "tauri",
+            None,
+            "waiting",
+            Some("{not-json"),
+        ));
+        assert!(dto.choices.is_empty());
+    }
+
+    #[test]
+    fn background_job_dto_never_serializes_payload_json() {
+        let dto = AgentBackgroundJobInfo::from(background_job(
+            "job-secret",
+            "chat-a",
+            "tauri",
+            None,
+            r#"{"prompt":"TOP SECRET"}"#,
+        ));
+        let json = serde_json::to_value(dto).expect("serialize background job DTO");
+        let encoded = serde_json::to_string(&json).expect("encode background job DTO");
+
+        assert!(json.get("payloadJson").is_none());
+        assert!(json.get("payload_json").is_none());
+        assert!(!encoded.contains("TOP SECRET"));
+    }
+
+    #[tokio::test]
+    async fn workspace_dispatcher_routes_only_an_explicitly_bound_chat() {
+        let dispatcher = WorkspaceDispatcher::new();
+        let (bus_tx, mut bus_rx) = mpsc::channel(1);
+        dispatcher.bind("chat-a", bus_tx).await;
+
+        let inbound = isanagent::bus::InboundMessage {
+            channel: "tauri".to_string(),
+            sender_id: "system".to_string(),
+            chat_id: "chat-a".to_string(),
+            thread_id: None,
+            content: "Synthetic work".to_string(),
+            attachments: Vec::new(),
+            metadata: HashMap::new(),
+        };
+        dispatcher
+            .dispatch("chat-a".to_string(), inbound)
+            .await
+            .expect("bound chat routes");
+
+        let routed = bus_rx.recv().await.expect("inbound routed to owner");
+        assert!(matches!(routed, BusMessage::Inbound(message) if message.chat_id == "chat-a"));
+
+        let unbound = isanagent::bus::InboundMessage {
+            channel: "tauri".to_string(),
+            sender_id: "system".to_string(),
+            chat_id: "chat-b".to_string(),
+            thread_id: None,
+            content: "Synthetic work".to_string(),
+            attachments: Vec::new(),
+            metadata: HashMap::new(),
+        };
+        assert!(dispatcher
+            .dispatch("chat-b".to_string(), unbound)
+            .await
+            .expect_err("unbound chat must fail closed")
+            .contains("No owning"));
+    }
+
+    #[tokio::test]
+    async fn owner_bind_recovers_only_persisted_tauri_background_work() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let memory_node = memory_node(&dir.path().join("memory.db"));
+
+        let mut recoverable = background_job(
+            "cron:daily",
+            "chat-a",
+            "tauri",
+            None,
+            r#"{"message":"Run the daily briefing"}"#,
+        );
+        recoverable.state = "running".to_string();
+        recoverable.resume_after_restart = true;
+        let mut no_resume = background_job("job-no-resume", "chat-a", "tauri", None, "{}");
+        no_resume.state = "running".to_string();
+        no_resume.resume_after_restart = false;
+        let mut foreign = background_job("job-foreign", "chat-b", "tauri", None, "{}");
+        foreign.state = "running".to_string();
+        foreign.resume_after_restart = true;
+        for job in [recoverable, no_resume, foreign] {
+            seed_background_job(&memory_node, job).await;
+        }
+
+        let dispatcher = WorkspaceDispatcher::new();
+        let (bus_tx, mut bus_rx) = mpsc::channel(2);
+        dispatcher.bind("chat-a", bus_tx).await;
+        recover_background_jobs_after_owner_bind(&memory_node, &dispatcher, "chat-a")
+            .await
+            .expect("recover background work");
+
+        let routed = bus_rx.recv().await.expect("one recovery inbound");
+        let BusMessage::Inbound(inbound) = routed else {
+            panic!("expected recovery inbound");
+        };
+        assert_eq!(inbound.chat_id, "chat-a");
+        assert_eq!(inbound.content, "Run the daily briefing");
+        assert_eq!(
+            inbound
+                .metadata
+                .get(isanagent::bus::METADATA_BACKGROUND_JOB_ID)
+                .and_then(|value| value.as_str()),
+            Some("cron:daily")
+        );
+        assert!(tokio::time::timeout(Duration::from_millis(20), bus_rx.recv())
+            .await
+            .is_err());
     }
 }

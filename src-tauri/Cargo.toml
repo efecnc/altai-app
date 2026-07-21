@@ -51,9 +51,11 @@ base64 = "0.22"
 pdf-extract = "0.12"
 
 # İsanAgent — embedded as Rust crate (direct API, no sidecar)
-# Temporarily pinned to the IsanAgent edit-approval PR. Revert to
-# altaidevorg/main at the merged immutable revision once #62 lands.
-isanagent = { git = "https://github.com/efecnc/isanagent.git", rev = "8be7863" }
+# Pinned to the merged upstream baseline for opaque ALTAI chat IDs (#64),
+# channel-scoped inbox queries (#65), atomic clarification resumption (#66),
+# session-bound cron operations (#67), cron actor reload (#68), and PDF
+# document attachments (#69).
+isanagent = { git = "https://github.com/altaidevorg/isanagent.git", rev = "b8357d60fe634bb9dd5d77fabb3c4d2d516bdd48" }
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"
 tauri-plugin-deep-link = "2"

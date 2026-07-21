@@ -255,6 +255,26 @@ pub fn map_telemetry_to_event(telemetry: &isanagent::bus::TelemetryEvent) -> Opt
             kind: kind.clone(),
             detail: detail.clone(),
         }),
+        TelemetryEvent::NotificationCreated {
+            notification_id,
+            channel,
+            kind,
+            title,
+            ..
+        } if channel == "tauri" => Some(Event::NotificationCreated {
+            notification_id: notification_id.clone(),
+            kind: kind.clone(),
+            title: title.clone(),
+        }),
+        TelemetryEvent::NotificationUpdated {
+            notification_id,
+            channel,
+            state,
+            ..
+        } if channel == "tauri" => Some(Event::NotificationUpdated {
+            notification_id: notification_id.clone(),
+            state: state.clone(),
+        }),
         TelemetryEvent::SubagentSpawned {
             child_chat_id,
             task_id,
@@ -297,7 +317,9 @@ pub fn telemetry_chat_id(telemetry: &isanagent::bus::TelemetryEvent) -> Option<&
         | ToolProgress { chat_id, .. }
         | ExecutionRunFinished { chat_id, .. }
         | ExecutionJobFinished { chat_id, .. }
-        | BackgroundJobUpdated { chat_id, .. } => Some(chat_id.as_str()),
+        | BackgroundJobUpdated { chat_id, .. }
+        | NotificationCreated { chat_id, .. }
+        | NotificationUpdated { chat_id, .. } => Some(chat_id.as_str()),
         // Subagent events are scoped to the *parent* chat — that's the session
         // the UI filters on, so route them by `parent_chat_id`.
         SubagentSpawned { parent_chat_id, .. } | SubagentFinished { parent_chat_id, .. } => {
@@ -328,6 +350,8 @@ mod tests {
             Event::ExecutionRunFinished { .. } => "execution_run_finished",
             Event::ExecutionJobFinished { .. } => "execution_job_finished",
             Event::BackgroundJobUpdated { .. } => "background_job_updated",
+            Event::NotificationCreated { .. } => "notification_created",
+            Event::NotificationUpdated { .. } => "notification_updated",
             Event::SubagentSpawned { .. } => "subagent_spawned",
             Event::SubagentFinished { .. } => "subagent_finished",
             Event::NotebookOutput { .. } => "notebook_output",
@@ -472,6 +496,15 @@ mod tests {
             channel: "tauri".into(),
             kind: "info".into(),
             title: "Job done".into(),
+        }
+    }
+
+    fn te_notification_updated() -> isanagent::bus::TelemetryEvent {
+        isanagent::bus::TelemetryEvent::NotificationUpdated {
+            notification_id: "n1".into(),
+            chat_id: "c1".into(),
+            channel: "tauri".into(),
+            state: "seen".into(),
         }
     }
 
@@ -715,8 +748,46 @@ mod tests {
     }
 
     #[test]
-    fn notification_created_falls_through_to_none() {
-        assert!(map_telemetry_to_event(&te_notification_created()).is_none());
+    fn notification_created_maps_for_tauri() {
+        let event = map_telemetry_to_event(&te_notification_created()).unwrap();
+        assert_eq!(event_type(&event), "notification_created");
+        if let Event::NotificationCreated {
+            notification_id,
+            kind,
+            title,
+        } = event
+        {
+            assert_eq!(notification_id, "n1");
+            assert_eq!(kind, "info");
+            assert_eq!(title, "Job done");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn notification_updated_maps_for_tauri() {
+        let event = map_telemetry_to_event(&te_notification_updated()).unwrap();
+        assert_eq!(event_type(&event), "notification_updated");
+        if let Event::NotificationUpdated {
+            notification_id,
+            state,
+        } = event
+        {
+            assert_eq!(notification_id, "n1");
+            assert_eq!(state, "seen");
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    #[test]
+    fn notification_from_another_channel_is_not_forwarded() {
+        let mut event = te_notification_created();
+        if let isanagent::bus::TelemetryEvent::NotificationCreated { channel, .. } = &mut event {
+            *channel = "slack".into();
+        }
+        assert!(map_telemetry_to_event(&event).is_none());
     }
 
     #[test]

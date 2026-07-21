@@ -11,6 +11,7 @@ import {
   DatabaseIcon,
   FileEditIcon,
   Notebook01Icon,
+  Notification01Icon,
   PaintBrush04Icon,
   PencilEdit02Icon,
   ShieldUserIcon,
@@ -35,6 +36,7 @@ import { AiInputBar, AiInputBarConnect } from "./AiInputBar";
 import { AgentStatusPill } from "./AgentStatusPill";
 import { ChatHistoryPanel } from "./ChatHistoryPanel";
 import { PlanDiffReview } from "./PlanDiffReview";
+import { NotificationInboxPanel } from "./NotificationInboxPanel";
 import { TaskRunsPanel } from "./TaskRunsPanel";
 import { TodoSummaryChip } from "./TodoStrip";
 
@@ -91,6 +93,7 @@ export function AiSidePanel({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
 
   useEffect(() => {
@@ -114,6 +117,8 @@ export function AiSidePanel({
         onToggleInspector={() => setInspectorOpen((o) => !o)}
         tasksOpen={tasksOpen}
         onToggleTasks={() => setTasksOpen((o) => !o)}
+        inboxOpen={inboxOpen}
+        onToggleInbox={() => setInboxOpen((open) => !open)}
         reviewOpen={reviewOpen}
         onToggleReview={() => setReviewOpen((o) => !o)}
       />
@@ -145,9 +150,12 @@ export function AiSidePanel({
           </div>
         ) : null}
         {tasksOpen ? <TaskRunsPanel onClose={() => setTasksOpen(false)} /> : null}
+        {inboxOpen ? (
+          <NotificationInboxPanel onClose={() => setInboxOpen(false)} />
+        ) : null}
       </div>
-      {!historyOpen && !inspectorOpen && !tasksOpen && <RuntimeStatusRow />}
-      {!historyOpen && !inspectorOpen && !tasksOpen &&
+      {!historyOpen && !inspectorOpen && !tasksOpen && !inboxOpen && <RuntimeStatusRow />}
+      {!historyOpen && !inspectorOpen && !tasksOpen && !inboxOpen &&
         (hasComposer ? (
           <AiInputBar />
         ) : (
@@ -155,7 +163,7 @@ export function AiSidePanel({
         ))}
       <PlanDiffReview
         open={reviewOpen}
-        autoOpen={!historyOpen && !inspectorOpen && !tasksOpen}
+        autoOpen={!historyOpen && !inspectorOpen && !tasksOpen && !inboxOpen}
         onClose={() => setReviewOpen(false)}
       />
     </aside>
@@ -194,6 +202,8 @@ function WorkspaceTopbar({
   onToggleInspector,
   tasksOpen,
   onToggleTasks,
+  inboxOpen,
+  onToggleInbox,
   reviewOpen,
   onToggleReview,
 }: {
@@ -204,6 +214,8 @@ function WorkspaceTopbar({
   onToggleInspector: () => void;
   tasksOpen: boolean;
   onToggleTasks: () => void;
+  inboxOpen: boolean;
+  onToggleInbox: () => void;
   reviewOpen: boolean;
   onToggleReview: () => void;
 }) {
@@ -303,6 +315,19 @@ function WorkspaceTopbar({
         )}
       >
         <HugeiconsIcon icon={Notebook01Icon} size={14} strokeWidth={1.75} />
+      </button>
+      <button
+        type="button"
+        onClick={onToggleInbox}
+        title={inboxOpen ? "Close inbox" : "Open inbox"}
+        aria-label={inboxOpen ? "Close inbox" : "Open inbox"}
+        aria-pressed={inboxOpen}
+        className={cn(
+          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground",
+          inboxOpen && "bg-foreground/[0.09] text-foreground",
+        )}
+      >
+        <HugeiconsIcon icon={Notification01Icon} size={14} strokeWidth={1.75} />
       </button>
       <button
         type="button"

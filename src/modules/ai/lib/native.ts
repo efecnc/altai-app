@@ -103,6 +103,11 @@ export type GitDiffResult = {
   truncated: boolean;
 };
 
+export type GitWorktreeInfo = {
+  path: string;
+  branch: string;
+};
+
 export type GitDiffContentResult = {
   originalContent: string;
   modifiedContent: string;
@@ -199,6 +204,41 @@ export type CheckpointInfo = {
 export type InstalledSkillInfo = { name: string; description: string | null };
 
 export type PdfExtractResult = { content: string; truncated: boolean };
+export type AgentNotificationInfo = {
+  id: string;
+  chatId: string;
+  kind: string;
+  title: string;
+  body: string;
+  actionKind: string | null;
+  seenAtMs: number | null;
+  resolvedAtMs: number | null;
+  createdAtMs: number;
+};
+
+export type AgentBackgroundJobInfo = {
+  id: string;
+  kind: string;
+  chatId: string;
+  state: string;
+  resumeAfterRestart: boolean;
+  detached: boolean;
+  lastError: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+export type AgentClarificationTicketInfo = {
+  id: string;
+  jobId: string;
+  chatId: string;
+  prompt: string;
+  choices: string[];
+  response: string | null;
+  status: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
 
 export const native = {
   workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
@@ -411,6 +451,18 @@ export const native = {
   gitStatus: (repoRoot: string) =>
     invoke<GitStatusSnapshot>("git_status", {
       repoRoot,
+      workspace: currentWorkspaceEnv(),
+    }),
+  gitWorktreeCreate: (repoRoot: string, label: string) =>
+    invoke<GitWorktreeInfo>("git_worktree_create", {
+      repoRoot,
+      label,
+      workspace: currentWorkspaceEnv(),
+    }),
+  gitWorktreeApply: (sourceWorktree: string, targetRepoRoot: string) =>
+    invoke<void>("git_worktree_apply", {
+      sourceWorktree,
+      targetRepoRoot,
       workspace: currentWorkspaceEnv(),
     }),
   gitDiff: (repoRoot: string, path: string | null, staged: boolean) =>
@@ -633,7 +685,95 @@ export const native = {
       keepUserMessages,
       workspacePath: workspacePath ?? null,
     }),
-
+  agentListNotifications: (options?: {
+    workspacePath?: string;
+    chatId?: string;
+    unseenOnly?: boolean;
+    limit?: number;
+  }) =>
+    invoke<AgentNotificationInfo[]>("agent_list_notifications", {
+      workspacePath: options?.workspacePath ?? null,
+      chatId: options?.chatId ?? null,
+      unseenOnly: options?.unseenOnly ?? false,
+      limit: options?.limit ?? 100,
+    }),
+  agentNotificationMarkSeen: (
+    notificationId: string,
+    chatId: string,
+    workspacePath?: string,
+  ) =>
+    invoke<void>("agent_notification_mark_seen", {
+      notificationId,
+      chatId,
+      workspacePath: workspacePath ?? null,
+    }),
+  agentNotificationResolve: (
+    notificationId: string,
+    chatId: string,
+    workspacePath?: string,
+  ) =>
+    invoke<void>("agent_notification_resolve", {
+      notificationId,
+      chatId,
+      workspacePath: workspacePath ?? null,
+    }),
+  agentListBackgroundJobs: (options?: {
+    workspacePath?: string;
+    chatId?: string;
+    limit?: number;
+  }) =>
+    invoke<AgentBackgroundJobInfo[]>("agent_list_background_jobs", {
+      workspacePath: options?.workspacePath ?? null,
+      chatId: options?.chatId ?? null,
+      limit: options?.limit ?? 100,
+    }),
+  agentBackgroundJobDismiss: (
+    jobId: string,
+    chatId: string,
+    workspacePath?: string,
+  ) =>
+    invoke<void>("agent_background_job_dismiss", {
+      jobId,
+      chatId,
+      workspacePath: workspacePath ?? null,
+    }),
+  agentListClarificationTickets: (options?: {
+    workspacePath?: string;
+    chatId?: string;
+    status?: string;
+    limit?: number;
+  }) =>
+    invoke<AgentClarificationTicketInfo[]>(
+      "agent_list_clarification_tickets",
+      {
+        workspacePath: options?.workspacePath ?? null,
+        chatId: options?.chatId ?? null,
+        status: options?.status ?? null,
+        limit: options?.limit ?? 100,
+      },
+    ),
+  agentClarificationTicketDismiss: (
+    ticketId: string,
+    chatId: string,
+    workspacePath?: string,
+  ) =>
+    invoke<void>("agent_clarification_ticket_dismiss", {
+      ticketId,
+      chatId,
+      workspacePath: workspacePath ?? null,
+    }),
+  agentClarificationTicketReply: (
+    ticketId: string,
+    chatId: string,
+    response: string,
+    workspacePath?: string,
+  ) =>
+    invoke<void>("agent_clarification_ticket_reply", {
+      ticketId,
+      chatId,
+      response,
+      workspacePath: workspacePath ?? null,
+    }),
 
   agentApprove: (approvalId: string, approved: boolean) =>
     invoke<void>("agent_approve", { approvalId, approved }),
