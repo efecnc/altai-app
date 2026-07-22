@@ -40,6 +40,8 @@ import {
 } from "../lib/projectInstructions";
 import { effectivePermissionMode, setDefaultModel } from "@/modules/settings/store";
 import type { AssignmentRunConfig } from "@/modules/github/lib/assignments";
+import type { RunOutcome } from "../lib/agentEventBridge";
+import { useAgentRunsStore, type RunState } from "./agentRunsStore";
 
 type Live = {
   getCwd: () => string | null;
@@ -56,6 +58,7 @@ export type AgentRunStatus =
   | "thinking"
   | "streaming"
   | "awaiting-approval"
+  | "cancelling"
   | "error";
 
 /** A subagent task currently dispatched by the main agent. */
@@ -128,6 +131,32 @@ const IDLE_META: AgentMeta = {
   activeSubagents: [],
 };
 
+function terminalOutcomeError(outcome: RunOutcome | null): string | null {
+  if (!outcome || outcome.kind === "completed" || outcome.kind === "cancelled") {
+    return null;
+  }
+  if (outcome.kind === "failed") return outcome.failure;
+  if (outcome.kind === "stuck") return `Agent got stuck: ${outcome.reason}`;
+  return `Run budget exhausted after ${outcome.budget.iterations_used} iterations`;
+}
+
+function agentMetaForRun(run: RunState | undefined): AgentMeta {
+  if (!run) return IDLE_META;
+  const error = terminalOutcomeError(run.outcome);
+  return {
+    ...IDLE_META,
+    status: run.completed ? (error ? "error" : "idle") : run.status,
+    step: run.completed ? null : run.step,
+    error,
+    tokens: {
+      inputTokens: run.tokens.input,
+      outputTokens: run.tokens.output,
+      cachedInputTokens: run.tokens.cached,
+    },
+    activeSubagents: run.subagents,
+  };
+}
+
 export type MiniState = {
   open: boolean;
   /**
@@ -141,6 +170,17 @@ export type PendingSelection = {
   id: string;
   text: string;
   source: "terminal" | "editor";
+};
+
+export type PendingEditDiff = {
+  file: string;
+  diff: string;
+  truncated: boolean;
+};
+
+export type PendingClarification = {
+  choices: string[];
+  editDiff: PendingEditDiff | null;
 };
 
 type StoreState = {
@@ -216,13 +256,12 @@ type StoreState = {
    * sends `approve` / `deny` as a message and the `ClarificationHub` routes it
    * back to the waiting tool.
    */
-  pendingEditDiff: {
-    file: string;
-    diff: string;
-    truncated: boolean;
-  } | null;
-  setPendingEditDiff: (
-    diff: { file: string; diff: string; truncated: boolean } | null,
+  pendingEditDiff: PendingEditDiff | null;
+  setPendingEditDiff: (diff: PendingEditDiff | null) => void;
+  pendingClarificationsBySession: Record<string, PendingClarification>;
+  setPendingClarificationForSession: (
+    sessionId: string,
+    clarification: PendingClarification | null,
   ) => void;
   /** Clear BOTH `pendingChoices` and `pendingEditDiff` in one step. The two
    *  are always set together from a clarification event and resolve together
@@ -686,21 +725,74 @@ export const useChatStore = create<StoreState>((set, get) => ({
   pendingChoices: null,
   setPendingChoices: (choices) => {
     const next = choices && choices.length > 0 ? choices : null;
-    // Clearing the choices also clears the edit-diff card — the two are
-    // always set together from a clarification event and resolve together
-    // when the user replies. Routed through `resetPendingClarification` so
-    // there is exactly one chokepoint for the two-field reset.
-    if (next === null) {
-      set({ pendingChoices: null, pendingEditDiff: null });
-    } else {
-      set({ pendingChoices: next });
+    const sessionId = get().activeSessionId;
+    if (!sessionId) {
+      set({
+        pendingChoices: next,
+        ...(next === null ? { pendingEditDiff: null } : {}),
+      });
+      return;
     }
+    if (next === null) {
+      get().setPendingClarificationForSession(sessionId, null);
+      return;
+    }
+    const current = get().pendingClarificationsBySession[sessionId];
+    get().setPendingClarificationForSession(sessionId, {
+      choices: next,
+      editDiff: current?.editDiff ?? get().pendingEditDiff,
+    });
   },
 
   pendingEditDiff: null,
-  setPendingEditDiff: (diff) => set({ pendingEditDiff: diff }),
-  resetPendingClarification: () =>
-    set({ pendingChoices: null, pendingEditDiff: null }),
+  setPendingEditDiff: (diff) => {
+    const sessionId = get().activeSessionId;
+    if (!sessionId) {
+      set({ pendingEditDiff: diff });
+      return;
+    }
+    const current = get().pendingClarificationsBySession[sessionId];
+    get().setPendingClarificationForSession(sessionId, {
+      choices: current?.choices ?? get().pendingChoices ?? [],
+      editDiff: diff,
+    });
+  },
+  pendingClarificationsBySession: {},
+  setPendingClarificationForSession: (sessionId, clarification) =>
+    set((state) => {
+      const pendingClarificationsBySession = {
+        ...state.pendingClarificationsBySession,
+      };
+      if (clarification) {
+        pendingClarificationsBySession[sessionId] = {
+          choices: clarification.choices.filter(
+            (choice) => choice.trim().length > 0,
+          ),
+          editDiff: clarification.editDiff,
+        };
+      } else {
+        delete pendingClarificationsBySession[sessionId];
+      }
+      const activeProjection =
+        state.activeSessionId === sessionId
+          ? {
+              pendingChoices:
+                clarification && clarification.choices.length > 0
+                  ? clarification.choices
+                  : null,
+              pendingEditDiff: clarification?.editDiff ?? null,
+            }
+          : {};
+      return { pendingClarificationsBySession, ...activeProjection };
+    }),
+  resetPendingClarification: () => {
+    const sessionId = get().activeSessionId;
+    if (sessionId) {
+      get().setPendingClarificationForSession(sessionId, null);
+    } else {
+      set({ pendingChoices: null, pendingEditDiff: null });
+    }
+  },
 
   paperImportOpen: false,
   setPaperImportOpen: (open) => set({ paperImportOpen: open }),
@@ -833,13 +925,16 @@ export const useChatStore = create<StoreState>((set, get) => ({
     // Switch synchronously so the UI reflects the active session immediately.
     // The message thread loads asynchronously and is applied only if we're
     // still on this session — rapid A→B→A switches must not cross-populate.
+    const pending = get().pendingClarificationsBySession[id];
+    const run = useAgentRunsStore.getState().runs[id];
     set({
       activeSessionId: id,
-      agentMeta: IDLE_META,
+      agentMeta: agentMetaForRun(run),
       nativeMessages: [],
       currentAssistantTurnId: null,
-      pendingChoices: null,
-      pendingEditDiff: null,
+      pendingChoices:
+        pending && pending.choices.length > 0 ? pending.choices : null,
+      pendingEditDiff: pending?.editDiff ?? null,
     });
     void saveActiveId(id);
 
@@ -868,7 +963,23 @@ export const useChatStore = create<StoreState>((set, get) => ({
   },
 
   deleteSession: (id) => {
-    const remaining = get().sessions.filter((s) => s.id !== id);
+    const currentState = get();
+    const deletingRun = useAgentRunsStore.getState().runs[id];
+    if (deletingRun?.runId && !deletingRun.completed) {
+      currentState.addActivity({
+        label: "Stopping the run before deleting its chat",
+        detail: "Delete the chat again after cancellation completes",
+        kind: "agent",
+        tone: "warning",
+      });
+      void requestStop(id).catch(() => undefined);
+      return;
+    }
+    const remaining = currentState.sessions.filter((s) => s.id !== id);
+    const pendingClarificationsBySession = {
+      ...currentState.pendingClarificationsBySession,
+    };
+    delete pendingClarificationsBySession[id];
     const pend = pendingPersist.get(id);
     if (pend) {
       clearTimeout(pend.timer);
@@ -896,30 +1007,40 @@ export const useChatStore = create<StoreState>((set, get) => ({
         currentAssistantTurnId: null,
         pendingChoices: null,
         pendingEditDiff: null,
+        pendingClarificationsBySession,
       });
       void saveSessionsList([fresh]);
       void saveActiveId(fresh.id);
       return;
     }
 
-    const wasActive = get().activeSessionId === id;
+    const wasActive = currentState.activeSessionId === id;
     // remaining is non-empty here (the empty case returned above), so
     // remaining[0] is defined whenever we deleted the active session.
-    const nextActive = wasActive ? remaining[0].id : get().activeSessionId;
+    const nextActive = wasActive ? remaining[0].id : currentState.activeSessionId;
     if (wasActive) {
+      const pending = nextActive
+        ? pendingClarificationsBySession[nextActive]
+        : undefined;
       // Clear the deleted session's thread synchronously so its messages don't
       // linger on screen while the next session's thread loads asynchronously.
       set({
         sessions: remaining,
         activeSessionId: nextActive,
-        agentMeta: IDLE_META,
+        agentMeta: agentMetaForRun(
+          nextActive
+            ? useAgentRunsStore.getState().runs[nextActive]
+            : undefined,
+        ),
         nativeMessages: [],
         currentAssistantTurnId: null,
-        pendingChoices: null,
-        pendingEditDiff: null,
+        pendingChoices:
+          pending && pending.choices.length > 0 ? pending.choices : null,
+        pendingEditDiff: pending?.editDiff ?? null,
+        pendingClarificationsBySession,
       });
     } else {
-      set({ sessions: remaining });
+      set({ sessions: remaining, pendingClarificationsBySession });
     }
     void saveSessionsList(remaining);
     if (wasActive && nextActive) {
@@ -1003,11 +1124,22 @@ async function rewindAndResend(
   text: string,
 ): Promise<boolean> {
   const workspacePath = currentWorkspaceFolder() ?? undefined;
-  // Stop any in-flight run first so its events don't land on the trimmed thread.
-  try {
-    await native.agentCancel(sessionId);
-  } catch {
-    /* best-effort: an idle chat has nothing to cancel */
+  // Stop any in-flight run and wait for its terminal lifecycle event before
+  // trimming durable history. An acknowledgement alone does not mean the old
+  // run has stopped emitting events.
+  const activeRun = useAgentRunsStore.getState().runs[sessionId];
+  if (activeRun?.runId && !activeRun.completed) {
+    try {
+      await requestStop(sessionId);
+      await waitForRunTerminal(sessionId, activeRun.runId);
+    } catch (cause) {
+      useChatStore.getState().addActivity({
+        label: "Could not safely modify history",
+        detail: cause instanceof Error ? cause.message : String(cause),
+        tone: "error",
+      });
+      return false;
+    }
   }
   try {
     await native.agentTruncateAfterUserMessage(
@@ -1027,6 +1159,7 @@ async function rewindAndResend(
     useChatStore.getState().nativeMessages,
     keepUserMessages,
   );
+  useChatStore.getState().setPendingClarificationForSession(sessionId, null);
   useChatStore.setState({
     nativeMessages: cut,
     currentAssistantTurnId: null,
@@ -1107,24 +1240,46 @@ export async function sendMessage(
   text: string,
   images?: string[],
   documents?: { data: string; mediaType: string; name: string }[],
+  options?: { queue?: boolean },
 ): Promise<boolean> {
   const state = useChatStore.getState();
   const sessionId = state.activeSessionId;
   if (!sessionId) return false;
 
-  // Sending any message resolves an open clarification, so clear its chips.
-  // Clear any pending clarification (choices and/or an edit-approval diff
-  // card) — sending a message resolves the `ask_user` wait in the crate, so
-  // the chip/diff state must go away regardless of which kind it was. The
-  // guard fires on either field so an edit-approval clarification that
-  // carried no preset choices still unmounts the EditApprovalCard.
-  if (state.pendingChoices || state.pendingEditDiff) {
-    state.setPendingChoices(null);
-  }
-
   // The ALTAI session id IS the runtime chat_id — keeps each tab's
   // conversation isolated and lets the event bridge route by chat.
-  return sendViaIsanAgent(text, sessionId, images, documents);
+  const accepted = await sendViaIsanAgent(
+    text,
+    sessionId,
+    images,
+    documents,
+    options?.queue ?? false,
+  );
+  // A rejected IPC must leave the clarification actionable. Only clear the
+  // per-session projection after the runtime accepts the reply.
+  if (
+    accepted &&
+    (state.pendingClarificationsBySession[sessionId] ||
+      state.pendingChoices ||
+      state.pendingEditDiff)
+  ) {
+    useChatStore
+      .getState()
+      .setPendingClarificationForSession(sessionId, null);
+  }
+  return accepted;
+}
+
+/**
+ * Retry a provider-level failure without rewinding the conversation. Rewinding
+ * could repeat tool calls that already succeeded earlier in the failed run;
+ * this creates a fresh run in the same chat context and tells the agent to
+ * resume only the interrupted provider step.
+ */
+export async function retryFailedRun(): Promise<boolean> {
+  return sendMessage(
+    "Retry the provider request that interrupted the previous run. Continue from the existing context, do not repeat successful tool calls or side effects, and complete the original task.",
+  );
 }
 
 async function sendViaIsanAgent(
@@ -1132,6 +1287,7 @@ async function sendViaIsanAgent(
   chatId: string,
   images?: string[],
   documents?: { data: string; mediaType: string; name: string }[],
+  queue = false,
 ): Promise<boolean> {
   const store = useChatStore.getState();
 
@@ -1180,9 +1336,8 @@ async function sendViaIsanAgent(
     prefs.bypassPermissionsEnabled,
   );
 
-  // Configured failover model. The runtime refreshes its process-global
-  // fallback list per send so the agent retries here when the primary provider
-  // is exhausted; null when no failover model is set or it can't be resolved.
+  // Configured failover model. The runtime snapshots it into this run's
+  // immutable provider context; null means failover is disabled for the run.
   const fallback = resolveFallbackSpec(prefs.fallbackModelId, store.apiKeys, {
     lmstudioBaseURL: prefs.lmstudioBaseURL,
     lmstudioModelId: prefs.lmstudioModelId,
@@ -1246,11 +1401,12 @@ async function sendViaIsanAgent(
     }
   }
 
-  store.addActivity({ label: "Sent a task to ALTAI" });
-  store.patchAgentMeta({ status: "thinking", step: "Sending to ALTAI..." });
-
-  // Echo the clean user message locally (no env preamble in the transcript).
-  store.appendNativeMessage(text, "user");
+  store.addActivity({
+    label: queue ? "Queueing the next task" : "Sent a task to ALTAI",
+  });
+  if (!queue) {
+    store.patchAgentMeta({ status: "thinking", step: "Sending to ALTAI..." });
+  }
 
   // Prepend a live <env> block so the agent knows the active workspace,
   // terminal cwd, and open file — the context the deleted Vercel transport
@@ -1264,17 +1420,45 @@ async function sendViaIsanAgent(
   try {
     // Carry the same config the pre-warm used, so the runtime routes this
     // message to that instance (route_send keys instances by this config).
-    await native.agentSend(payload, images, documents, chatId, {
-      providerName,
-      apiKey,
-      modelName,
-      instructions,
-      baseUrl,
-      workspacePath,
-      permissionMode,
-      fallback,
-      compaction,
-    });
+    const acknowledgement = await native.agentSend(
+      payload,
+      images,
+      documents,
+      chatId,
+      {
+        providerName,
+        apiKey,
+        modelName,
+        instructions,
+        baseUrl,
+        workspacePath,
+        permissionMode,
+        fallback,
+        compaction,
+      },
+      queue,
+    );
+    if (acknowledgement.chatId !== chatId) {
+      throw new Error("The runtime acknowledged a different chat");
+    }
+    if (!acknowledgement.queued) {
+      const admitted = useAgentRunsStore
+        .getState()
+        .admitAccepted(chatId, acknowledgement.runId);
+      if (!admitted) {
+        throw new Error("The runtime acknowledged a conflicting agent run");
+      }
+      const acknowledgedRun = useAgentRunsStore.getState().runs[chatId];
+      if (queue && !acknowledgedRun?.completed) {
+        store.patchAgentMeta({
+          status: "thinking",
+          step: "Starting queued task...",
+        });
+      }
+    }
+    // Echo only after the runtime accepts the operation. This keeps rejected
+    // sends in the composer instead of recording work the agent never saw.
+    store.appendNativeMessage(text, "user");
     return true;
   } catch (e) {
     // Without this the status would stay stuck on "thinking" if the IPC call
@@ -1286,11 +1470,13 @@ async function sendViaIsanAgent(
       detail: e instanceof Error ? e.message : String(e),
       tone: "error",
     });
-    store.patchAgentMeta({
-      status: "error",
-      error: e instanceof Error ? e.message : String(e),
-      step: null,
-    });
+    if (!queue) {
+      store.patchAgentMeta({
+        status: "error",
+        error: e instanceof Error ? e.message : String(e),
+        step: null,
+      });
+    }
     return false;
   }
 }
@@ -1369,7 +1555,23 @@ export async function dispatchToSession(
   const envBlock = buildEnvBlock(store.live);
   const payload = envBlock ? `${envBlock}\n\n${text}` : text;
   try {
-    await native.agentSend(payload, undefined, undefined, chatId, config);
+    const acknowledgement = await native.agentSend(
+      payload,
+      undefined,
+      undefined,
+      chatId,
+      config,
+    );
+    if (acknowledgement.chatId !== chatId || acknowledgement.queued) {
+      return false;
+    }
+    if (
+      !useAgentRunsStore
+        .getState()
+        .admitAccepted(chatId, acknowledgement.runId)
+    ) {
+      return false;
+    }
     return true;
   } catch {
     return false;
@@ -1390,7 +1592,68 @@ function buildEnvBlock(live: Live): string | null {
 }
 
 export function stop(): void {
-  const state = useChatStore.getState();
-  void native.agentCancel(state.activeSessionId ?? undefined);
-  state.patchAgentMeta({ status: "idle", step: null });
+  void requestStop(useChatStore.getState().activeSessionId).catch(() => undefined);
+}
+
+/**
+ * Ask the owning runtime to cancel one exact run. The acknowledgement only
+ * moves UI state to `cancelling`; terminal state remains lifecycle-owned.
+ */
+export async function requestStop(sessionId: string | null): Promise<boolean> {
+  if (!sessionId) return false;
+  const run = useAgentRunsStore.getState().runs[sessionId];
+  if (!run?.runId || run.completed || run.status === "cancelling") return false;
+
+  try {
+    const acknowledgement = await native.agentCancel(sessionId, run.runId);
+    if (
+      acknowledgement.chatId !== sessionId ||
+      acknowledgement.runId !== run.runId
+    ) {
+      throw new Error("The runtime acknowledged a different agent run");
+    }
+    const markedCancelling = useAgentRunsStore
+      .getState()
+      .markCancelling(sessionId, run.runId);
+    const store = useChatStore.getState();
+    if (markedCancelling && store.activeSessionId === sessionId) {
+      store.patchAgentMeta({ status: "cancelling", step: null });
+    }
+    return true;
+  } catch (cause) {
+    useChatStore.getState().addActivity({
+      label: "Could not stop the active run",
+      detail: cause instanceof Error ? cause.message : String(cause),
+      kind: "agent",
+      tone: "error",
+    });
+    throw cause;
+  }
+}
+
+export function waitForRunTerminal(
+  sessionId: string,
+  runId: string,
+  timeoutMs = 30_000,
+): Promise<RunOutcome> {
+  const terminalOutcome = () => {
+    const run = useAgentRunsStore.getState().runs[sessionId];
+    return run?.runId === runId && run.completed ? run.outcome : null;
+  };
+  const current = terminalOutcome();
+  if (current) return Promise.resolve(current);
+
+  return new Promise((resolve, reject) => {
+    const unsubscribe = useAgentRunsStore.subscribe(() => {
+      const outcome = terminalOutcome();
+      if (!outcome) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(outcome);
+    });
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`Timed out waiting for run ${runId} to terminate`));
+    }, timeoutMs);
+  });
 }

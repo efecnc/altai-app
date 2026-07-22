@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import type { AgentEvent } from "../lib/agentEventBridge";
+import type {
+  AgentEvent,
+  ParsedAgentEvent,
+  RunBudgetWarning,
+  RunOutcome,
+} from "../lib/agentEventBridge";
 import type { AgentRunStatus, SubagentTask } from "./chatStore";
 
 export type RunTokens = { input: number; output: number; cached: number };
@@ -11,11 +16,21 @@ export type RunVerification = {
   status: "running" | "passed" | "failed" | "unknown";
   detail?: string;
 };
-export type RunChange = { path: string; source: string };
+export type RunChange = {
+  path: string;
+  source: string;
+  before?: string;
+  after?: string;
+  hunkId?: string;
+};
 
 /** Per-session (chat_id) run state, tracked for EVERY session — not just the
  *  focused one — so a project board can watch many dispatched agents at once. */
 export type RunState = {
+  runId: string | null;
+  lastSeq: number;
+  outcome: RunOutcome | null;
+  warning: RunBudgetWarning | null;
   status: AgentRunStatus;
   step: string | null;
   tokens: RunTokens;
@@ -37,6 +52,10 @@ export type RunState = {
 };
 
 const EMPTY: RunState = {
+  runId: null,
+  lastSeq: 0,
+  outcome: null,
+  warning: null,
   status: "idle",
   step: null,
   tokens: { input: 0, output: 0, cached: 0 },
@@ -50,7 +69,9 @@ const EMPTY: RunState = {
 
 type State = {
   runs: Record<string, RunState>;
-  ingest: (chatId: string, ev: AgentEvent) => void;
+  admitAccepted: (chatId: string, runId: string) => boolean;
+  ingest: (chatId: string, ev: ParsedAgentEvent) => boolean;
+  markCancelling: (chatId: string, runId: string) => boolean;
   clear: (chatId: string) => void;
 };
 
@@ -62,13 +83,61 @@ type State = {
  */
 export const useAgentRunsStore = create<State>((set) => ({
   runs: {},
-  ingest: (chatId, ev) =>
+  admitAccepted: (chatId, runId) => {
+    let accepted = false;
+    set((s) => {
+      const current = s.runs[chatId];
+      // Events may outrun the IPC acknowledgement. If this exact run already
+      // exists (even terminal), the acknowledgement confirms it and must not
+      // reset newer lifecycle state back to an admitted placeholder.
+      if (current?.runId === runId) {
+        accepted = true;
+        return s;
+      }
+      if (current && !current.completed) return s;
+      accepted = true;
+      return {
+        runs: {
+          ...s.runs,
+          [chatId]: { ...EMPTY, runId, status: "thinking" },
+        },
+      };
+    });
+    return accepted;
+  },
+  ingest: (chatId, ev) => {
+    let accepted = false;
     set((s) => {
       const cur = s.runs[chatId] ?? EMPTY;
       const next = reduce(cur, ev);
       if (next === cur) return s;
+      accepted = true;
       return { runs: { ...s.runs, [chatId]: next } };
-    }),
+    });
+    return accepted;
+  },
+  markCancelling: (chatId, runId) => {
+    let accepted = false;
+    set((s) => {
+      const current = s.runs[chatId];
+      if (
+        !current ||
+        current.runId !== runId ||
+        current.completed ||
+        current.status === "cancelling"
+      ) {
+        return s;
+      }
+      accepted = true;
+      return {
+        runs: {
+          ...s.runs,
+          [chatId]: { ...current, status: "cancelling", step: null },
+        },
+      };
+    });
+    return accepted;
+  },
   clear: (chatId) =>
     set((s) => {
       if (!(chatId in s.runs)) return s;
@@ -78,7 +147,29 @@ export const useAgentRunsStore = create<State>((set) => ({
     }),
 }));
 
-function reduce(cur: RunState, ev: AgentEvent): RunState {
+function reduce(cur: RunState, ev: ParsedAgentEvent): RunState {
+  if (ev.version === 1) {
+    if (ev.type === "run_started") {
+      const confirmsAcceptedRun =
+        cur.runId === ev.run_id && cur.lastSeq === 0 && !cur.completed;
+      if (
+        ev.seq !== 1 ||
+        (cur.runId !== null && !cur.completed && !confirmsAcceptedRun)
+      ) {
+        return cur;
+      }
+    } else if (
+      !ev.run_id ||
+      ev.run_id !== cur.runId ||
+      !ev.seq ||
+      ev.seq <= cur.lastSeq
+    ) {
+      return cur;
+    }
+  }
+  if (ev.version === 1 && ev.type !== "run_started") {
+    cur = { ...cur, lastSeq: ev.seq!, runId: ev.run_id! };
+  }
   switch (ev.type) {
     case "thinking":
       return { ...cur, status: "thinking", step: ev.content };
@@ -113,17 +204,22 @@ function reduce(cur: RunState, ev: AgentEvent): RunState {
         : cur;
     }
     case "edit_diff":
-      return { ...cur, changes: addChange(cur.changes, { path: ev.file, source: "agent edit" }) };
+      return {
+        ...cur,
+        changes: addChange(cur.changes, {
+          path: ev.file,
+          source: "agent edit",
+          before: ev.before,
+          after: ev.after,
+          hunkId: ev.hunk_id,
+        }),
+      };
     case "agent_message":
-      // A final assistant message is the closest we have to a per-run "done";
-      // capture it as the result and mark the run completed.
+      // Content never completes a run; lifecycle owns terminal state.
       return ev.role === "assistant"
         ? {
             ...cur,
-            status: "idle",
-            step: null,
             lastResult: ev.content,
-            completed: true,
           }
         : cur;
     case "usage":
@@ -157,6 +253,8 @@ function reduce(cur: RunState, ev: AgentEvent): RunState {
       };
     case "approval_request":
       return { ...cur, status: "awaiting-approval" };
+    case "clarification":
+      return { ...cur, status: "awaiting-approval", step: null };
     case "subagent_spawned":
       if (cur.subagents.some((t) => t.taskId === ev.task_id)) return cur;
       return {
@@ -176,10 +274,37 @@ function reduce(cur: RunState, ev: AgentEvent): RunState {
         ...cur,
         subagents: cur.subagents.filter((t) => t.taskId !== ev.task_id),
       };
+    case "run_started":
+      return {
+        ...EMPTY,
+        runId: ev.run_id,
+        lastSeq: ev.seq ?? 1,
+        status:
+          cur.runId === ev.run_id && cur.status === "cancelling"
+            ? "cancelling"
+            : "thinking",
+      };
+    case "run_warning":
+      return {
+        ...cur,
+        status: cur.status === "cancelling" ? "cancelling" : "thinking",
+        warning: ev.warning,
+      };
+    case "run_terminated": {
+      const succeeded =
+        ev.outcome.kind === "completed" || ev.outcome.kind === "cancelled";
+      return {
+        ...cur,
+        status: succeeded ? "idle" : "error",
+        step: null,
+        completed: true,
+        outcome: ev.outcome,
+      };
+    }
     case "done":
-      return { ...cur, status: "idle", step: null, completed: true };
+      return cur;
     case "error":
-      return { ...cur, status: "error", step: null };
+      return { ...cur, failures: [...cur.failures, ev.message].slice(-10) };
     default:
       return cur;
   }
@@ -233,9 +358,11 @@ function verificationResult(output: unknown, error?: string): Pick<RunVerificati
 }
 
 function addChange(list: RunChange[], change: RunChange): RunChange[] {
-  return list.some((item) => item.path === change.path)
-    ? list
-    : [...list, change].slice(-80);
+  const existing = list.find((item) => item.path === change.path);
+  if (!existing) return [...list, change].slice(-80);
+  return list.map((item) =>
+    item.path === change.path ? { ...item, ...change } : item,
+  );
 }
 
 function addVerification(list: RunVerification[], item: RunVerification): RunVerification[] {

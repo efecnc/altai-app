@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::async_runtime;
@@ -12,9 +13,9 @@ use isanagent::channels::Channel;
 use isanagent::clarification::ClarificationHub;
 use isanagent::config::ShellPolicyMode;
 use isanagent::provider;
+use isanagent::scheduler::{CronActor, CronCommand, CronSchedulingMode, CronStore, ScheduleKind};
 use isanagent::session::SessionManager;
 use isanagent::skills::SkillRegistry;
-use isanagent::scheduler::{CronActor, CronCommand, CronSchedulingMode, CronStore, ScheduleKind};
 use isanagent::tools::builtin::{
     CronTool, EditFileTool, FetchMemoryByDateTool, GitWorktreeTool, GlobFilesTool, ListDirTool,
     ReadFileTool, SearchMemoryTool, SearchTextTool, ShellExecTool, WebFetchTool, WebSearchTool,
@@ -27,7 +28,9 @@ use isanagent::workspace::{resolve_workspace_root, IsanagentWorkspace};
 use isanagent::{NodeHandle, Supervisor, SupervisorPolicy};
 
 use super::commands::DocumentArg;
-use super::tauri_channel::{map_telemetry_to_event, telemetry_chat_id, TauriChannel};
+use super::tauri_channel::{
+    map_lifecycle_to_event, map_telemetry_to_event, telemetry_chat_id, TauriChannel,
+};
 use crate::modules::mcp;
 
 /// Context-condensing (compaction) configuration received from the JS layer
@@ -95,6 +98,17 @@ pub struct EditDiffPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    RunStarted {
+        run_id: String,
+    },
+    RunWarning {
+        run_id: String,
+        warning: serde_json::Value,
+    },
+    RunTerminated {
+        run_id: String,
+        outcome: serde_json::Value,
+    },
     AgentMessage {
         content: String,
         role: String,
@@ -231,15 +245,481 @@ pub enum Event {
 /// Wire envelope for `agent://event`: every event carries the `chat_id` of the
 /// ALTAI chat tab it belongs to, so the frontend can drop events that aren't
 /// for the chat currently on screen (per-session isolation).
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AgentEventEnvelope<'a> {
+    version: u8,
+    scope: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seq: Option<u64>,
     chat_id: &'a str,
-    #[serde(flatten)]
     event: &'a Event,
 }
 
-fn emit_event(app: &AppHandle, chat_id: &str, event: &Event) {
-    let _ = app.emit("agent://event", &AgentEventEnvelope { chat_id, event });
+pub(crate) type SharedRunCoordinator = Arc<StdMutex<RunCoordinator>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunPhase {
+    Admitted,
+    Running,
+    WaitingUser,
+    CancellingBeforeStart,
+    CancellingRunning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunAdmission {
+    New,
+    ExistingReply,
+    Queued,
+    Confirmed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RunTransitionError {
+    ActiveLease,
+    MissingLease,
+    RunMismatch,
+    OwnerMismatch,
+    OwnerDraining,
+    InvalidPhase,
+}
+
+#[derive(Default)]
+pub(crate) struct RunCoordinator {
+    active: HashMap<String, ActiveRun>,
+    pending: HashMap<String, VecDeque<PendingRun>>,
+    draining_owners: HashSet<String>,
+}
+
+struct ActiveRun {
+    run_id: String,
+    owner_id: String,
+    next_seq: u64,
+    phase: RunPhase,
+}
+
+struct PendingRun {
+    run_id: String,
+    owner_id: String,
+}
+
+impl RunCoordinator {
+    fn admit(
+        &mut self,
+        chat_id: &str,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<(), RunTransitionError> {
+        if self.draining_owners.contains(owner_id) {
+            return Err(RunTransitionError::OwnerDraining);
+        }
+        if self.active.contains_key(chat_id) {
+            return Err(RunTransitionError::ActiveLease);
+        }
+        self.active.insert(
+            chat_id.to_string(),
+            ActiveRun {
+                run_id: run_id.to_string(),
+                owner_id: owner_id.to_string(),
+                next_seq: 1,
+                phase: RunPhase::Admitted,
+            },
+        );
+        Ok(())
+    }
+
+    fn admit_user_message(
+        &mut self,
+        chat_id: &str,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<RunAdmission, RunTransitionError> {
+        if let Some(active) = self.active.get(chat_id) {
+            if active.owner_id == owner_id && active.phase == RunPhase::WaitingUser {
+                return Ok(RunAdmission::ExistingReply);
+            }
+            return Err(RunTransitionError::ActiveLease);
+        }
+        self.admit(chat_id, run_id, owner_id)?;
+        Ok(RunAdmission::New)
+    }
+
+    fn admit_or_queue(
+        &mut self,
+        chat_id: &str,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<RunAdmission, RunTransitionError> {
+        let Some(active) = self.active.get(chat_id) else {
+            self.admit(chat_id, run_id, owner_id)?;
+            return Ok(RunAdmission::New);
+        };
+        if active.owner_id != owner_id {
+            return Err(RunTransitionError::OwnerMismatch);
+        }
+        if active.phase == RunPhase::WaitingUser {
+            return Err(RunTransitionError::InvalidPhase);
+        }
+        if active.run_id == run_id
+            && matches!(
+                active.phase,
+                RunPhase::Admitted | RunPhase::CancellingBeforeStart
+            )
+        {
+            return Ok(RunAdmission::Confirmed);
+        }
+        let pending = self.pending.entry(chat_id.to_string()).or_default();
+        if pending
+            .iter()
+            .any(|run| run.run_id == run_id && run.owner_id == owner_id)
+        {
+            return Ok(RunAdmission::Confirmed);
+        }
+        pending.push_back(PendingRun {
+            run_id: run_id.to_string(),
+            owner_id: owner_id.to_string(),
+        });
+        Ok(RunAdmission::Queued)
+    }
+
+    fn started(
+        &mut self,
+        chat_id: &str,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<(String, u64), RunTransitionError> {
+        let active = self
+            .active
+            .get_mut(chat_id)
+            .ok_or(RunTransitionError::MissingLease)?;
+        if active.run_id != run_id {
+            return Err(RunTransitionError::RunMismatch);
+        }
+        if active.owner_id != owner_id {
+            return Err(RunTransitionError::OwnerMismatch);
+        }
+        active.phase = match active.phase {
+            RunPhase::Admitted => RunPhase::Running,
+            RunPhase::CancellingBeforeStart => RunPhase::CancellingRunning,
+            RunPhase::Running | RunPhase::WaitingUser | RunPhase::CancellingRunning => {
+                return Err(RunTransitionError::InvalidPhase);
+            }
+        };
+        active.next_seq = 2;
+        Ok((run_id.to_string(), 1))
+    }
+
+    fn next(&mut self, chat_id: &str, owner_id: &str) -> Result<(String, u64), RunTransitionError> {
+        let active = self
+            .active
+            .get_mut(chat_id)
+            .ok_or(RunTransitionError::MissingLease)?;
+        if active.owner_id != owner_id {
+            return Err(RunTransitionError::OwnerMismatch);
+        }
+        if !matches!(
+            active.phase,
+            RunPhase::Running | RunPhase::WaitingUser | RunPhase::CancellingRunning
+        ) {
+            return Err(RunTransitionError::InvalidPhase);
+        }
+        if active.phase == RunPhase::WaitingUser {
+            active.phase = RunPhase::Running;
+        }
+        let seq = active.next_seq;
+        active.next_seq = active.next_seq.saturating_add(1);
+        Ok((active.run_id.clone(), seq))
+    }
+
+    fn next_for_run(
+        &mut self,
+        chat_id: &str,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<(String, u64), RunTransitionError> {
+        let active = self
+            .active
+            .get(chat_id)
+            .ok_or(RunTransitionError::MissingLease)?;
+        if active.run_id != run_id {
+            return Err(RunTransitionError::RunMismatch);
+        }
+        self.next(chat_id, owner_id)
+    }
+
+    fn cancel_requested(
+        &mut self,
+        chat_id: &str,
+        expected_run_id: Option<&str>,
+    ) -> Result<String, RunTransitionError> {
+        let active = self
+            .active
+            .get_mut(chat_id)
+            .ok_or(RunTransitionError::MissingLease)?;
+        if expected_run_id.is_some_and(|run_id| run_id != active.run_id) {
+            return Err(RunTransitionError::RunMismatch);
+        }
+        self.pending.remove(chat_id);
+        active.phase = match active.phase {
+            RunPhase::Admitted => RunPhase::CancellingBeforeStart,
+            RunPhase::Running | RunPhase::WaitingUser => RunPhase::CancellingRunning,
+            RunPhase::CancellingBeforeStart | RunPhase::CancellingRunning => {
+                return Err(RunTransitionError::InvalidPhase);
+            }
+        };
+        Ok(active.run_id.clone())
+    }
+
+    fn active_run(&self, chat_id: &str) -> Option<(&str, &str)> {
+        self.active
+            .get(chat_id)
+            .map(|run| (run.run_id.as_str(), run.owner_id.as_str()))
+    }
+
+    fn accepts_steer(
+        &self,
+        chat_id: &str,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<(), RunTransitionError> {
+        let active = self
+            .active
+            .get(chat_id)
+            .ok_or(RunTransitionError::MissingLease)?;
+        if active.run_id != run_id {
+            return Err(RunTransitionError::RunMismatch);
+        }
+        if active.owner_id != owner_id {
+            return Err(RunTransitionError::OwnerMismatch);
+        }
+        if active.phase != RunPhase::Running {
+            return Err(RunTransitionError::InvalidPhase);
+        }
+        Ok(())
+    }
+
+    fn begin_draining(&mut self, owner_ids: &HashSet<String>) -> Result<(), RunTransitionError> {
+        if self
+            .active
+            .values()
+            .any(|run| owner_ids.contains(&run.owner_id))
+        {
+            return Err(RunTransitionError::ActiveLease);
+        }
+        self.draining_owners.extend(owner_ids.iter().cloned());
+        Ok(())
+    }
+
+    fn end_draining(&mut self, owner_ids: &HashSet<String>) {
+        self.draining_owners
+            .retain(|owner_id| !owner_ids.contains(owner_id));
+    }
+
+    fn terminated(
+        &mut self,
+        chat_id: &str,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<(String, u64), RunTransitionError> {
+        let active = self
+            .active
+            .get(chat_id)
+            .ok_or(RunTransitionError::MissingLease)?;
+        if active.run_id != run_id {
+            return Err(RunTransitionError::RunMismatch);
+        }
+        if active.owner_id != owner_id {
+            return Err(RunTransitionError::OwnerMismatch);
+        }
+        if !matches!(
+            active.phase,
+            RunPhase::Running | RunPhase::WaitingUser | RunPhase::CancellingRunning
+        ) {
+            return Err(RunTransitionError::InvalidPhase);
+        }
+        let seq = active.next_seq;
+        self.active.remove(chat_id);
+        self.promote_next(chat_id);
+        Ok((run_id.to_string(), seq))
+    }
+
+    fn promote_next(&mut self, chat_id: &str) {
+        let next = self.pending.get_mut(chat_id).and_then(VecDeque::pop_front);
+        if self.pending.get(chat_id).is_some_and(VecDeque::is_empty) {
+            self.pending.remove(chat_id);
+        }
+        if let Some(next) = next {
+            self.active.insert(
+                chat_id.to_string(),
+                ActiveRun {
+                    run_id: next.run_id,
+                    owner_id: next.owner_id,
+                    next_seq: 1,
+                    phase: RunPhase::Admitted,
+                },
+            );
+        }
+    }
+
+    fn mark_waiting_user(
+        &mut self,
+        chat_id: &str,
+        owner_id: &str,
+    ) -> Result<(), RunTransitionError> {
+        let active = self
+            .active
+            .get_mut(chat_id)
+            .ok_or(RunTransitionError::MissingLease)?;
+        if active.owner_id != owner_id {
+            return Err(RunTransitionError::OwnerMismatch);
+        }
+        if active.phase != RunPhase::Running {
+            return Err(RunTransitionError::InvalidPhase);
+        }
+        active.phase = RunPhase::WaitingUser;
+        Ok(())
+    }
+
+    fn rollback_admission(&mut self, chat_id: &str, run_id: &str, owner_id: &str) {
+        let should_remove = self.active.get(chat_id).is_some_and(|active| {
+            active.run_id == run_id
+                && active.owner_id == owner_id
+                && matches!(
+                    active.phase,
+                    RunPhase::Admitted | RunPhase::CancellingBeforeStart
+                )
+        });
+        if should_remove {
+            self.active.remove(chat_id);
+            self.promote_next(chat_id);
+            return;
+        }
+        if let Some(pending) = self.pending.get_mut(chat_id) {
+            pending.retain(|run| run.run_id != run_id || run.owner_id != owner_id);
+            if pending.is_empty() {
+                self.pending.remove(chat_id);
+            }
+        }
+    }
+}
+
+fn coordinator_guard(
+    coordinator: &SharedRunCoordinator,
+) -> std::sync::MutexGuard<'_, RunCoordinator> {
+    coordinator
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) fn admit_run(
+    coordinator: &SharedRunCoordinator,
+    chat_id: &str,
+    run_id: &str,
+    owner_id: &str,
+) -> Result<(), String> {
+    coordinator_guard(coordinator)
+        .admit(chat_id, run_id, owner_id)
+        .map_err(|error| format!("Cannot start a second run for chat {chat_id}: {error:?}"))
+}
+
+pub(crate) fn admit_user_message(
+    coordinator: &SharedRunCoordinator,
+    chat_id: &str,
+    run_id: &str,
+    owner_id: &str,
+) -> Result<String, String> {
+    let mut coordinator = coordinator_guard(coordinator);
+    let admission = coordinator
+        .admit_user_message(chat_id, run_id, owner_id)
+        .map_err(|error| format!("Cannot accept user input for chat {chat_id}: {error:?}"))?;
+    match admission {
+        RunAdmission::New => Ok(run_id.to_string()),
+        RunAdmission::ExistingReply => coordinator
+            .active_run(chat_id)
+            .map(|(active_run_id, _)| active_run_id.to_string())
+            .ok_or_else(|| format!("The active run for chat {chat_id} disappeared")),
+        RunAdmission::Queued | RunAdmission::Confirmed => Err(format!(
+            "Unexpected direct-message admission for chat {chat_id}: {admission:?}"
+        )),
+    }
+}
+
+fn queue_run(
+    coordinator: &SharedRunCoordinator,
+    chat_id: &str,
+    run_id: &str,
+    owner_id: &str,
+) -> Result<RunAdmission, String> {
+    coordinator_guard(coordinator)
+        .admit_or_queue(chat_id, run_id, owner_id)
+        .map_err(|error| format!("Cannot queue run for chat {chat_id}: {error:?}"))
+}
+
+pub(crate) fn admit_queued_user_message(
+    coordinator: &SharedRunCoordinator,
+    chat_id: &str,
+    run_id: &str,
+    owner_id: &str,
+) -> Result<(String, bool), String> {
+    match queue_run(coordinator, chat_id, run_id, owner_id)? {
+        RunAdmission::New | RunAdmission::Confirmed => Ok((run_id.to_string(), false)),
+        RunAdmission::Queued => Ok((run_id.to_string(), true)),
+        RunAdmission::ExistingReply => Err(format!(
+            "Unexpected queued-message admission for chat {chat_id}: ExistingReply"
+        )),
+    }
+}
+
+pub(crate) fn rollback_run_admission(
+    coordinator: &SharedRunCoordinator,
+    chat_id: &str,
+    run_id: &str,
+    owner_id: &str,
+) {
+    coordinator_guard(coordinator).rollback_admission(chat_id, run_id, owner_id);
+}
+
+pub(crate) fn emit_event(
+    app: &AppHandle,
+    chat_id: &str,
+    event: &Event,
+    run: Option<(String, u64)>,
+) {
+    let (run_id, seq) = match run.as_ref() {
+        Some((run_id, seq)) => (Some(run_id.as_str()), Some(*seq)),
+        None => (None, None),
+    };
+    let _ = app.emit(
+        "agent://event",
+        &AgentEventEnvelope {
+            version: 1,
+            scope: if run.is_some() { "run" } else { "system" },
+            run_id,
+            seq,
+            chat_id,
+            event,
+        },
+    );
+}
+
+pub(crate) fn next_run_event(
+    coordinator: &SharedRunCoordinator,
+    chat_id: &str,
+    owner_id: &str,
+) -> Option<(String, u64)> {
+    coordinator_guard(coordinator).next(chat_id, owner_id).ok()
+}
+
+fn is_system_event(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::BackgroundJobUpdated { .. }
+            | Event::NotificationCreated { .. }
+            | Event::NotificationUpdated { .. }
+    )
 }
 
 /// Wall-clock epoch millis. Used to stamp MCP status transitions so the
@@ -273,7 +753,34 @@ fn parse_edit_diff(value: &serde_json::Value) -> Option<EditDiffPayload> {
     })
 }
 
-/// Identifies a particular `(provider, model, key, base_url, persona)`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FallbackFingerprint {
+    provider_name: String,
+    model_name: String,
+    base_url: String,
+    secret_identity: String,
+}
+
+impl From<&isanagent::agent::FallbackProviderSpec> for FallbackFingerprint {
+    fn from(spec: &isanagent::agent::FallbackProviderSpec) -> Self {
+        Self {
+            provider_name: spec.provider_name.clone(),
+            model_name: spec.model_name.clone(),
+            base_url: spec.base_url.trim_end_matches('/').to_string(),
+            secret_identity: secret_identity(&spec.api_key),
+        }
+    }
+}
+
+fn secret_identity(secret: &str) -> String {
+    if secret.is_empty() {
+        return "none".to_string();
+    }
+    let digest = Sha256::digest(secret.as_bytes());
+    format!("sha256:{}", &hex::encode(digest)[..16])
+}
+
+/// Identifies a particular `(provider, model, secret identity, base_url, persona, fallback)`
 /// configuration of the running runtime. When `start_agent` is called
 /// with a different fingerprint we tear down the existing bus and
 /// agent node and re-init — without this guard the runtime locked in
@@ -284,8 +791,10 @@ fn parse_edit_diff(value: &serde_json::Value) -> Option<EditDiffPayload> {
 struct RuntimeFingerprint {
     provider_name: String,
     model_name: String,
-    api_key: String,
+    /// Non-reversible stable identity; raw provider credentials never enter Hash/Debug state.
+    secret_identity: String,
     base_url: String,
+    fallback: Option<FallbackFingerprint>,
     persona: String,
     /// Resolved IsanAgent workspace root (`<selected-folder>/.isanagent`, or
     /// the `~/.isanagent` default). Switching workspaces reinitializes the
@@ -401,10 +910,8 @@ async fn stop_instance(instance: Instance) {
         ..
     } = instance;
 
-    // Give the agent an opportunity to cancel active work before releasing its
-    // router. A blank ID is IsanAgent's established all-session cancellation
-    // signal for this channel.
-    let _ = channel.cancel(String::new()).await;
+    // Workspace switching marks this owner as draining and refuses teardown
+    // while it owns a run, so no foreground task can be orphaned here.
     let _ = shutdown.send(());
 
     if tokio::time::timeout(INSTANCE_TASK_SHUTDOWN_TIMEOUT, &mut bus_router)
@@ -451,31 +958,80 @@ struct WorkspaceIngress {
 struct WorkspaceDispatcher {
     #[allow(dead_code)] // consumed by cron/background adapters added after I4/I5
     tx: mpsc::Sender<WorkspaceIngress>,
-    routes: Arc<tokio::sync::Mutex<HashMap<String, mpsc::Sender<BusMessage>>>>,
+    routes: Arc<tokio::sync::Mutex<HashMap<String, WorkspaceRoute>>>,
     #[allow(dead_code)]
     task: async_runtime::JoinHandle<()>,
 }
 
+#[derive(Clone)]
+struct WorkspaceRoute {
+    bus_tx: mpsc::Sender<BusMessage>,
+    owner_id: String,
+}
+
 impl WorkspaceDispatcher {
-    fn new() -> Self {
-        let routes = Arc::new(tokio::sync::Mutex::new(HashMap::<
-            String,
-            mpsc::Sender<BusMessage>,
-        >::new()));
+    fn new(run_coordinator: SharedRunCoordinator) -> Self {
+        let routes = Arc::new(tokio::sync::Mutex::new(
+            HashMap::<String, WorkspaceRoute>::new(),
+        ));
         let (tx, mut rx) = mpsc::channel::<WorkspaceIngress>(100);
         let routes_for_task = routes.clone();
+        let coordinator_for_task = run_coordinator.clone();
         let task = async_runtime::spawn(async move {
             while let Some(ingress) = rx.recv().await {
-                let bus_tx = routes_for_task
-                    .lock()
-                    .await
-                    .get(&ingress.chat_id)
-                    .cloned();
-                let result = match bus_tx {
-                    Some(bus_tx) => bus_tx
-                        .send(BusMessage::Inbound(ingress.inbound))
-                        .await
-                        .map_err(|_| "The owning agent runtime is no longer available".to_string()),
+                let route = routes_for_task.lock().await.get(&ingress.chat_id).cloned();
+                let result = match route {
+                    Some(route) => {
+                        let run_id = inbound_run_id(&ingress.inbound).map(str::to_string);
+                        match run_id {
+                            Some(run_id) => match if is_queueable_synthetic(&ingress.inbound) {
+                                queue_run(
+                                    &coordinator_for_task,
+                                    &ingress.chat_id,
+                                    &run_id,
+                                    &route.owner_id,
+                                )
+                                .map(|_| ())
+                            } else if is_clarification_reply(&ingress.inbound) {
+                                admit_user_message(
+                                    &coordinator_for_task,
+                                    &ingress.chat_id,
+                                    &run_id,
+                                    &route.owner_id,
+                                )
+                                .map(|_| ())
+                            } else {
+                                admit_run(
+                                    &coordinator_for_task,
+                                    &ingress.chat_id,
+                                    &run_id,
+                                    &route.owner_id,
+                                )
+                            } {
+                                Ok(()) => {
+                                    let result = route
+                                        .bus_tx
+                                        .send(BusMessage::Inbound(ingress.inbound))
+                                        .await
+                                        .map_err(|_| {
+                                            "The owning agent runtime is no longer available"
+                                                .to_string()
+                                        });
+                                    if result.is_err() {
+                                        rollback_run_admission(
+                                            &coordinator_for_task,
+                                            &ingress.chat_id,
+                                            &run_id,
+                                            &route.owner_id,
+                                        );
+                                    }
+                                    result
+                                }
+                                Err(error) => Err(error),
+                            },
+                            None => Err("Trusted inbound is missing its run ID".to_string()),
+                        }
+                    }
                     None => Err("No owning agent runtime is registered for this chat".to_string()),
                 };
                 let _ = ingress.reply.send(result);
@@ -484,11 +1040,14 @@ impl WorkspaceDispatcher {
         Self { tx, routes, task }
     }
 
-    async fn bind(&self, chat_id: &str, bus_tx: mpsc::Sender<BusMessage>) {
-        self.routes
-            .lock()
-            .await
-            .insert(chat_id.to_string(), bus_tx);
+    async fn bind(&self, chat_id: &str, bus_tx: mpsc::Sender<BusMessage>, owner_id: &str) {
+        self.routes.lock().await.insert(
+            chat_id.to_string(),
+            WorkspaceRoute {
+                bus_tx,
+                owner_id: owner_id.to_string(),
+            },
+        );
     }
 
     #[allow(dead_code)] // exercised in tests; production callers arrive with cron/resume adapters
@@ -542,13 +1101,12 @@ pub struct AgentRuntime {
     instances: tokio::sync::Mutex<HashMap<RuntimeFingerprint, Instance>>,
     /// One service record per workspace root. Provider/persona instances share
     /// this record instead of reconstructing workspace-owned state.
-    workspace_services_by_root:
-        tokio::sync::Mutex<HashMap<String, Arc<WorkspaceServices>>>,
+    workspace_services_by_root: tokio::sync::Mutex<HashMap<String, Arc<WorkspaceServices>>>,
     /// Last successfully delivered model/persona runtime for each workspace
     /// chat. This is only an ownership record today; A2's dispatcher will use
     /// it to route synthetic work and ticket resumes to exactly one instance.
-    chat_owner_by_workspace:
-        tokio::sync::Mutex<HashMap<(String, String), RuntimeFingerprint>>,
+    chat_owner_by_workspace: tokio::sync::Mutex<HashMap<(String, String), RuntimeFingerprint>>,
+    run_coordinator: SharedRunCoordinator,
 }
 
 pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -557,6 +1115,7 @@ pub fn init(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         instances: tokio::sync::Mutex::new(HashMap::new()),
         workspace_services_by_root: tokio::sync::Mutex::new(HashMap::new()),
         chat_owner_by_workspace: tokio::sync::Mutex::new(HashMap::new()),
+        run_coordinator: Arc::new(StdMutex::new(RunCoordinator::default())),
     });
 
     Ok(())
@@ -573,6 +1132,7 @@ fn make_fingerprint(
     workspace_path: Option<&str>,
     permission_mode: Option<&str>,
     compaction: Option<&CompactionArg>,
+    fallback: Option<&isanagent::agent::FallbackProviderSpec>,
 ) -> RuntimeFingerprint {
     let workspace_root = workspace_path
         .map(|p| format!("{}/.isanagent", p.trim_end_matches('/')))
@@ -588,8 +1148,9 @@ fn make_fingerprint(
     RuntimeFingerprint {
         provider_name: provider_name.to_string(),
         model_name: model_name.to_string(),
-        api_key: api_key.to_string(),
+        secret_identity: secret_identity(api_key),
         base_url: base_url_override.unwrap_or("").to_string(),
+        fallback: fallback.map(FallbackFingerprint::from),
         persona: persona_instructions.unwrap_or("").to_string(),
         workspace_root,
         permission_mode: permission_mode.unwrap_or("").to_string(),
@@ -630,9 +1191,8 @@ async fn ensure_workspace_services(
         1,
         Duration::from_millis(5),
     );
-    let (logger_handle, logger_rx) = isanagent::logging::create_logger_channel(
-        isanagent::logging::LOGGER_QUEUE_CAPACITY,
-    );
+    let (logger_handle, logger_rx) =
+        isanagent::logging::create_logger_channel(isanagent::logging::LOGGER_QUEUE_CAPACITY);
     let logger_factory = {
         let workspace_dir = dir.clone();
         move || isanagent::logging::create_logging_actor_or_fallback(workspace_dir.clone())
@@ -659,7 +1219,7 @@ async fn ensure_workspace_services(
         })
         .map_err(|error| format!("Failed to start workspace logger forwarder: {error}"))?;
 
-    let dispatcher = Arc::new(WorkspaceDispatcher::new());
+    let dispatcher = Arc::new(WorkspaceDispatcher::new(runtime.run_coordinator.clone()));
     let (cron_bus_tx, mut cron_bus_rx) = mpsc::channel::<BusMessage>(100);
     let cron_logic = CronActor::new(
         "AltaiWorkspaceCron",
@@ -687,7 +1247,10 @@ async fn ensure_workspace_services(
             // A missing owner is expected after app restart. CronActor has
             // already persisted its running job, and `route_send` performs a
             // one-shot recovery when the user next reopens that conversation.
-            if let Err(error) = dispatcher_for_cron.dispatch(chat_id, inbound).await {
+            if let Err(error) = dispatcher_for_cron
+                .dispatch(chat_id, trusted_tauri_inbound(inbound))
+                .await
+            {
                 log::info!("Deferred cron delivery until its ALTAI chat is active: {error}");
             }
         }
@@ -737,6 +1300,7 @@ async fn ensure_instance(
     workspace_path: Option<&str>,
     permission_mode: Option<&str>,
     compaction: Option<&CompactionArg>,
+    fallback: Option<&isanagent::agent::FallbackProviderSpec>,
 ) -> Result<Arc<TauriChannel>, String> {
     let fp = make_fingerprint(
         provider_name,
@@ -747,6 +1311,7 @@ async fn ensure_instance(
         workspace_path,
         permission_mode,
         compaction,
+        fallback,
     );
     let workspace_root = fp.workspace_root.clone();
 
@@ -766,7 +1331,22 @@ async fn ensure_instance(
         }
     }
 
-    // Tear down instances of other workspaces (the UI uses one at a time).
+    // Atomically prevent new admission to instances that are about to be
+    // removed. If one still owns a run, preserve it and reject the workspace
+    // switch instead of orphaning its terminal event and coordinator lease.
+    let stale_owner_ids: HashSet<String> = {
+        let instances = runtime.instances.lock().await;
+        instances
+            .iter()
+            .filter(|(key, _)| key.workspace_root != workspace_root)
+            .map(|(_, instance)| instance.channel.owner_id().to_string())
+            .collect()
+    };
+    coordinator_guard(&runtime.run_coordinator)
+        .begin_draining(&stale_owner_ids)
+        .map_err(|_| "Stop active agent runs before switching workspaces".to_string())?;
+
+    // Tear down idle instances of other workspaces (the UI uses one at a time).
     // Remove them under the lock, but defer the async teardown until the lock
     // is released. Firing `shutdown` stops the bus-router task (so `agent_node`
     // drops and the `bus_tx` cycle unwinds); `stop()` then closes the channel.
@@ -792,6 +1372,7 @@ async fn ensure_instance(
     for (_, inst) in stale {
         stop_instance(inst).await;
     }
+    coordinator_guard(&runtime.run_coordinator).end_draining(&stale_owner_ids);
     // Drop workspace services only after their agent instances have released
     // cloned memory/logger handles. This closes the logger receiver cleanly
     // and lets its forwarding thread observe shutdown instead of detaching it
@@ -829,6 +1410,7 @@ async fn ensure_instance(
         services.clarification_hub.clone(),
         services.logger.handle.clone(),
         services.cron.node.clone(),
+        runtime.run_coordinator.clone(),
         provider_name,
         api_key,
         model_name,
@@ -837,6 +1419,7 @@ async fn ensure_instance(
         workspace_root_opt,
         permission_mode,
         compaction,
+        fallback,
     )
     .await?;
 
@@ -886,7 +1469,8 @@ pub async fn route_send(
     images: Vec<String>,
     documents: Vec<DocumentArg>,
     chat_id: String,
-) -> Result<(), String> {
+    queue: bool,
+) -> Result<SendAck, String> {
     let fingerprint = make_fingerprint(
         provider_name,
         api_key,
@@ -896,6 +1480,7 @@ pub async fn route_send(
         workspace_path,
         permission_mode,
         compaction,
+        fallback.as_ref(),
     );
     let channel = ensure_instance(
         runtime,
@@ -907,35 +1492,12 @@ pub async fn route_send(
         workspace_path,
         permission_mode,
         compaction,
+        fallback.as_ref(),
     )
     .await?;
 
-    // Cross-provider failover: refresh the process-global fallback list per send
-    // so it tracks the current primary. `build_fallback_specs` drops the
-    // candidate if it equals the primary (so the primary is never its own
-    // fallback). Empty list = failover off.
-    //
-    // CAVEAT: `set_fallback_providers` is process-GLOBAL (isanagent owns one
-    // list), so concurrent sends from different chats race here — last writer
-    // wins until each call's `chat_with_retry` reads it. Failover only fires on
-    // primary exhaustion (a rare, mostly-sequential path), so a stray cross-chat
-    // fallback is benign; truly per-chat fallback would need a per-instance list
-    // upstream in isanagent.
-    match fallback {
-        Some(fb) => {
-            let specs = isanagent::agent::build_fallback_specs(
-                provider_name,
-                base_url_override.unwrap_or(""),
-                model_name,
-                vec![fb],
-            );
-            isanagent::agent::set_fallback_providers(specs);
-        }
-        None => isanagent::agent::set_fallback_providers(Vec::new()),
-    }
-
-    channel
-        .inject_user_message(message, images, documents, chat_id.clone())
+    let acknowledgement = channel
+        .inject_user_message(message, images, documents, chat_id.clone(), queue)
         .await?;
     if !chat_id.trim().is_empty() {
         let bus_tx = runtime
@@ -946,27 +1508,37 @@ pub async fn route_send(
             .map(|instance| instance.bus_tx.clone())
             .ok_or_else(|| "The owning agent runtime is no longer available".to_string())?;
         let services = ensure_workspace_services(runtime, &fingerprint.workspace_root).await?;
-        services.dispatcher.bind(&chat_id, bus_tx).await;
-        let previous_owner = runtime
-            .chat_owner_by_workspace
-            .lock()
-            .await
-            .insert((fingerprint.workspace_root.clone(), chat_id.clone()), fingerprint);
+        services
+            .dispatcher
+            .bind(&chat_id, bus_tx, channel.owner_id())
+            .await;
+        let previous_owner = runtime.chat_owner_by_workspace.lock().await.insert(
+            (fingerprint.workspace_root.clone(), chat_id.clone()),
+            fingerprint,
+        );
         // A workspace service is recreated after an app/workspace restart, so
         // the first explicit user send is the first moment we have a trusted
         // provider configuration and a concrete runtime to own persisted cron
         // work. Recover once here; changing models later in the same process
         // must not duplicate an already-running background turn.
         if previous_owner.is_none() {
-            recover_background_jobs_after_owner_bind(
+            if let Err(error) = recover_background_jobs_after_owner_bind(
                 &services.memory_node,
                 &services.dispatcher,
                 &chat_id,
             )
-            .await?;
+            .await
+            {
+                // The foreground message is already accepted. Recovery is a
+                // best-effort side effect and must not turn that accepted send
+                // into an IPC rejection that invites a duplicate retry.
+                log::warn!(
+                    "Could not recover persisted background work for chat {chat_id}: {error}"
+                );
+            }
         }
     }
-    Ok(())
+    Ok(acknowledgement)
 }
 
 async fn recover_background_jobs_after_owner_bind(
@@ -1014,7 +1586,7 @@ async fn recover_background_jobs_after_owner_bind(
         dispatcher
             .dispatch(
                 chat_id.to_string(),
-                isanagent::bus::InboundMessage {
+                trusted_tauri_inbound(isanagent::bus::InboundMessage {
                     channel: "tauri".to_string(),
                     sender_id: "altai_background_recovery".to_string(),
                     chat_id: chat_id.to_string(),
@@ -1022,7 +1594,7 @@ async fn recover_background_jobs_after_owner_bind(
                     content,
                     attachments: Vec::new(),
                     metadata,
-                },
+                }),
             )
             .await?;
     }
@@ -1050,30 +1622,141 @@ pub async fn dispatch_synthetic_inbound(
     ensure_workspace_services(runtime, &workspace_root)
         .await?
         .dispatcher
-        .dispatch(chat_id.to_string(), inbound)
+        .dispatch(chat_id.to_string(), trusted_tauri_inbound(inbound))
         .await
 }
 
-/// Cancel a chat's run. Fan out to every live instance rather than tracking a
-/// chat→instance owner: cancellation is `chat_id`-scoped and idempotent inside
-/// IsanAgent, so a stray cancel to an instance that doesn't own the chat is a
-/// harmless no-op. Targeted ownership would be stale after a mid-session
-/// model/persona switch (the chat's old instance still draining), silently
-/// dropping the cancel — fanning out can't.
-pub async fn route_cancel(runtime: &AgentRuntime, chat_id: String) -> Result<(), String> {
-    // Clone the channels under a short-lived lock, then cancel outside it so the
-    // cancel awaits don't block concurrent sends/cancels on the registry.
-    let channels: Vec<Arc<TauriChannel>> = {
+/// Trusted Rust-side producers, unlike renderer IPC, own run-id generation.
+/// Every synthetic Tauri turn receives a fresh ID before IsanAgent admission.
+fn trusted_tauri_inbound(
+    mut inbound: isanagent::bus::InboundMessage,
+) -> isanagent::bus::InboundMessage {
+    debug_assert_eq!(inbound.channel, "tauri");
+    inbound.metadata.insert(
+        isanagent::bus::METADATA_RUN_ID.to_string(),
+        serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+    );
+    inbound
+}
+
+fn inbound_run_id(inbound: &isanagent::bus::InboundMessage) -> Option<&str> {
+    inbound
+        .metadata
+        .get(isanagent::bus::METADATA_RUN_ID)
+        .and_then(serde_json::Value::as_str)
+        .filter(|run_id| !run_id.trim().is_empty())
+}
+
+fn is_queueable_synthetic(inbound: &isanagent::bus::InboundMessage) -> bool {
+    inbound
+        .metadata
+        .get(isanagent::bus::METADATA_SYNTHETIC_BACKGROUND_RESUME)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        && !inbound
+            .metadata
+            .contains_key(isanagent::bus::METADATA_CLARIFICATION_TICKET_ID)
+}
+
+fn is_clarification_reply(inbound: &isanagent::bus::InboundMessage) -> bool {
+    inbound
+        .metadata
+        .contains_key(isanagent::bus::METADATA_CLARIFICATION_TICKET_ID)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendAck {
+    pub chat_id: String,
+    pub run_id: String,
+    pub queued: bool,
+}
+
+/// Cancel the single runtime instance holding this chat's coordinator lease.
+/// The owning bus router records the cancelling transition in the same FIFO
+/// order in which IsanAgent observes inbound/cancel messages.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelAck {
+    pub chat_id: String,
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteerAck {
+    pub chat_id: String,
+    pub run_id: String,
+}
+
+pub async fn route_cancel(
+    runtime: &AgentRuntime,
+    chat_id: String,
+    run_id: String,
+) -> Result<CancelAck, String> {
+    let (active_run_id, owner_id) = coordinator_guard(&runtime.run_coordinator)
+        .active_run(&chat_id)
+        .map(|(active_run_id, owner_id)| (active_run_id.to_string(), owner_id.to_string()))
+        .ok_or_else(|| "No active agent run exists for this chat".to_string())?;
+    if active_run_id != run_id {
+        return Err("The requested agent run is no longer active".to_string());
+    }
+    let channel = {
         let instances = runtime.instances.lock().await;
         instances
             .values()
-            .map(|inst| inst.channel.clone())
-            .collect()
+            .find(|instance| instance.channel.owner_id() == owner_id)
+            .map(|instance| instance.channel.clone())
     };
-    for channel in channels {
-        let _ = channel.cancel(chat_id.clone()).await;
+    let channel = channel.ok_or_else(|| "The owning agent runtime is unavailable".to_string())?;
+    channel.cancel_run(chat_id.clone(), run_id.clone()).await?;
+    Ok(CancelAck { chat_id, run_id })
+}
+
+/// Route new user direction to the runtime instance that owns one exact,
+/// currently-running lease. Enqueueing on that instance's FIFO is the backend
+/// acceptance boundary exposed to Tauri; IsanAgent applies it at its next safe
+/// provider/tool boundary.
+pub async fn route_steer(
+    runtime: &AgentRuntime,
+    chat_id: String,
+    run_id: String,
+    content: String,
+) -> Result<SteerAck, String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("Steering instructions cannot be empty".to_string());
     }
-    Ok(())
+    let owner_id = {
+        let coordinator = coordinator_guard(&runtime.run_coordinator);
+        let (_, owner_id) = coordinator
+            .active_run(&chat_id)
+            .ok_or_else(|| "No active agent run exists for this chat".to_string())?;
+        coordinator
+            .accepts_steer(&chat_id, &run_id, owner_id)
+            .map_err(|error| match error {
+                RunTransitionError::RunMismatch => {
+                    "The requested agent run is no longer active".to_string()
+                }
+                RunTransitionError::InvalidPhase => {
+                    "The active agent run cannot be steered in its current state".to_string()
+                }
+                _ => "The active agent run is unavailable".to_string(),
+            })?;
+        owner_id.to_string()
+    };
+    let channel = {
+        let instances = runtime.instances.lock().await;
+        instances
+            .values()
+            .find(|instance| instance.channel.owner_id() == owner_id)
+            .map(|instance| instance.channel.clone())
+    };
+    let channel = channel.ok_or_else(|| "The owning agent runtime is unavailable".to_string())?;
+    channel
+        .steer_run(chat_id.clone(), run_id.clone(), content)
+        .await?;
+    Ok(SteerAck { chat_id, run_id })
 }
 
 /// One chat session as known to the backend memory DB (the source of truth for
@@ -1418,7 +2101,9 @@ fn automation_store(workspace_root: &str) -> Result<CronStore, String> {
     } else {
         resolve_workspace_root(Some(workspace_root))
     };
-    let db_path = workspace_dir.join(".system_generated").join("agent_memory.db");
+    let db_path = workspace_dir
+        .join(".system_generated")
+        .join("agent_memory.db");
     CronStore::new(
         db_path
             .to_str()
@@ -1438,9 +2123,7 @@ pub async fn list_automations(
     let mut jobs: Vec<_> = automation_store(&workspace_root)?
         .load_jobs()?
         .into_iter()
-        .filter(|job| {
-            job.channel == "tauri" && validate_tauri_chat_id(&job.chat_id).is_ok()
-        })
+        .filter(|job| job.channel == "tauri" && validate_tauri_chat_id(&job.chat_id).is_ok())
         .map(|job| AgentAutomationInfo {
             id: job.id,
             schedule: job.schedule.into(),
@@ -1487,7 +2170,9 @@ pub async fn create_automation(
             return Err("Repeating automation interval is too long".to_string())
         }
         ScheduleKind::Cron { .. } => {
-            return Err("Direct automations support one-time or repeating schedules only".to_string())
+            return Err(
+                "Direct automations support one-time or repeating schedules only".to_string(),
+            )
         }
         _ => {}
     }
@@ -1957,13 +2642,9 @@ pub async fn reply_to_clarification_ticket(
         return Err("ticketId is required".to_string());
     }
     let memory_node = memory_for_workspace_path(runtime, workspace_path).await?;
-    let inbound = clarification_ticket_reply_inbound_with_memory(
-        &memory_node,
-        chat_id,
-        ticket_id,
-        response,
-    )
-    .await?;
+    let inbound =
+        clarification_ticket_reply_inbound_with_memory(&memory_node, chat_id, ticket_id, response)
+            .await?;
     dispatch_synthetic_inbound(runtime, workspace_path, chat_id, inbound).await
 }
 
@@ -1991,6 +2672,7 @@ pub async fn start_agent(
         workspace_path,
         permission_mode,
         compaction,
+        None,
     )
     .await
     .map(|_| ())
@@ -2038,6 +2720,7 @@ async fn build_instance(
     clarification_hub: Arc<ClarificationHub>,
     logger_handle: isanagent::logging::LoggerHandle,
     cron_node: NodeHandle<String>,
+    run_coordinator: SharedRunCoordinator,
     provider_name: &str,
     api_key: &str,
     model_name: &str,
@@ -2046,6 +2729,7 @@ async fn build_instance(
     workspace_root: Option<&str>,
     permission_mode: Option<&str>,
     compaction: Option<&CompactionArg>,
+    fallback: Option<&isanagent::agent::FallbackProviderSpec>,
 ) -> Result<
     (
         Arc<TauriChannel>,
@@ -2058,9 +2742,12 @@ async fn build_instance(
 > {
     // Each instance gets its own channel with a unique bootstrap chat_id;
     // actual routing is by per-message chat_id.
+    let owner_id = uuid::Uuid::new_v4().to_string();
     let channel = Arc::new(TauriChannel::new(
         app.clone(),
         uuid::Uuid::new_v4().to_string(),
+        owner_id.clone(),
+        run_coordinator.clone(),
     ));
 
     // Resolve workspace — `<selected-folder>/.isanagent`, or `~/.isanagent`.
@@ -2463,6 +3150,13 @@ async fn build_instance(
     };
     let llm_provider =
         provider::create_provider(provider_name, &resolved_base_url, api_key, model_name);
+    let provider_credentials = isanagent::provider::ProviderCredentials {
+        provider_name: provider_name.to_string(),
+        base_url: resolved_base_url.clone(),
+        api_key: api_key.to_string(),
+        model_name: model_name.to_string(),
+    };
+    let fallback_providers = fallback.cloned().into_iter().collect();
 
     // System prompt
     let mut system_prompt = workspace.compile_system_prompt();
@@ -2587,30 +3281,33 @@ async fn build_instance(
         harness_ref,
     );
 
-    let agent_logic = AgentLogic::new(AgentLogicParams {
-        name: "altai-agent".to_string(),
-        provider: llm_provider,
-        provider_credentials: isanagent::provider::ProviderCredentials::empty(),
-        session_manager,
-        tools,
-        skills,
-        system_prompt,
-        max_iterations,
-        max_tool_output_chars,
-        max_recent_summaries,
-        short_term_threshold_turns,
-        short_term_threshold_tokens,
-        outbound_tx: global_outbound_tx.clone(),
-        logger_tx: logger_handle,
-        clarification_hub,
-        subagent,
-        doom_loop_enabled: workspace.config.doom_loop_enabled(),
-        harness_runtime_summary,
-        subagent_system_prompt,
-        forbid_final_without_tools,
-        shell_policy,
-        hook_tool_ctx,
-    });
+    let agent_logic = AgentLogic::new_with_fallback_providers(
+        AgentLogicParams {
+            name: "altai-agent".to_string(),
+            provider: llm_provider,
+            provider_credentials,
+            session_manager,
+            tools,
+            skills,
+            system_prompt,
+            max_iterations,
+            max_tool_output_chars,
+            max_recent_summaries,
+            short_term_threshold_turns,
+            short_term_threshold_tokens,
+            outbound_tx: global_outbound_tx.clone(),
+            logger_tx: logger_handle,
+            clarification_hub,
+            subagent,
+            doom_loop_enabled: workspace.config.doom_loop_enabled(),
+            harness_runtime_summary,
+            subagent_system_prompt,
+            forbid_final_without_tools,
+            shell_policy,
+            hook_tool_ctx,
+        },
+        fallback_providers,
+    );
 
     let agent_node = NodeHandle::<BusMessage>::new(agent_logic, 100, 3, Duration::from_millis(50));
 
@@ -2628,6 +3325,8 @@ async fn build_instance(
     // fire `shutdown_tx`; the task breaks, drops `agent_node`, and the cycle
     // unwinds (its `global_outbound_tx` clones drop, ending the outbound task).
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let coordinator_for_bus = run_coordinator.clone();
+    let owner_for_bus = owner_id.clone();
     let bus_router = async_runtime::spawn(async move {
         loop {
             let msg = tokio::select! {
@@ -2636,8 +3335,42 @@ async fn build_instance(
             };
             let Some(msg) = msg else { break };
             match msg {
-                BusMessage::Inbound(inbound) => {
-                    let _ = agent_node.send_packet(BusMessage::Inbound(inbound)).await;
+                BusMessage::Inbound(mut inbound) => {
+                    let generated_run_id =
+                        if inbound.channel == "tauri" && inbound_run_id(&inbound).is_none() {
+                            inbound = trusted_tauri_inbound(inbound);
+                            inbound_run_id(&inbound).map(str::to_string)
+                        } else {
+                            None
+                        };
+                    let run_id_for_rollback = inbound_run_id(&inbound).map(str::to_string);
+                    if let Some(run_id) = generated_run_id.as_deref() {
+                        if let Err(error) = queue_run(
+                            &coordinator_for_bus,
+                            &inbound.chat_id,
+                            run_id,
+                            &owner_for_bus,
+                        ) {
+                            log::warn!(
+                                "Dropped internal synthetic inbound for chat {}: {}",
+                                inbound.chat_id,
+                                error
+                            );
+                            continue;
+                        }
+                    }
+                    let chat_id = inbound.chat_id.clone();
+                    let result = agent_node.send_packet(BusMessage::Inbound(inbound)).await;
+                    if result.is_err() {
+                        if let Some(run_id) = run_id_for_rollback.as_deref() {
+                            rollback_run_admission(
+                                &coordinator_for_bus,
+                                &chat_id,
+                                run_id,
+                                &owner_for_bus,
+                            );
+                        }
+                    }
                 }
                 BusMessage::Outbound(outbound) => {
                     let _ = channel_for_outbound.send(outbound).await;
@@ -2650,7 +3383,34 @@ async fn build_instance(
                 // here would be dead code today and a double-emit footgun if
                 // anything later routed telemetry to this channel.
                 BusMessage::Cancel(chat_id) => {
+                    let _ =
+                        coordinator_guard(&coordinator_for_bus).cancel_requested(&chat_id, None);
                     let _ = agent_node.send_packet(BusMessage::Cancel(chat_id)).await;
+                }
+                BusMessage::CancelRun { chat_id, run_id }
+                    if coordinator_guard(&coordinator_for_bus)
+                        .cancel_requested(&chat_id, Some(&run_id))
+                        .is_ok() =>
+                {
+                    let _ = agent_node
+                        .send_packet(BusMessage::CancelRun { chat_id, run_id })
+                        .await;
+                }
+                BusMessage::Steer {
+                    chat_id,
+                    run_id,
+                    content,
+                } if coordinator_guard(&coordinator_for_bus)
+                    .accepts_steer(&chat_id, &run_id, &owner_for_bus)
+                    .is_ok() =>
+                {
+                    let _ = agent_node
+                        .send_packet(BusMessage::Steer {
+                            chat_id,
+                            run_id,
+                            content,
+                        })
+                        .await;
                 }
                 _ => {}
             }
@@ -2664,6 +3424,8 @@ async fn build_instance(
     // dropped — the UI saw no tool calls or thinking between "Sending to
     // ALTAI…" and the final answer.
     let app_for_outbound = app.clone();
+    let coordinator_for_outbound = run_coordinator.clone();
+    let owner_for_outbound = owner_id.clone();
     let outbound_router = async_runtime::spawn(async move {
         while let Some(out_msg) = global_outbound_rx.recv().await {
             match out_msg {
@@ -2704,12 +3466,82 @@ async fn build_instance(
                             role: "assistant".to_string(),
                         }
                     };
-                    emit_event(&app_for_outbound, &chat_id, &event);
+                    let run = coordinator_guard(&coordinator_for_outbound)
+                        .next(&chat_id, &owner_for_outbound)
+                        .ok();
+                    let accepted = run.is_some();
+                    if is_clarification && accepted {
+                        if let Err(error) = coordinator_guard(&coordinator_for_outbound)
+                            .mark_waiting_user(&chat_id, &owner_for_outbound)
+                        {
+                            log::warn!(
+                                "Could not mark clarification wait for chat {chat_id}: {error:?}"
+                            );
+                        }
+                    }
+                    emit_event(&app_for_outbound, &chat_id, &event, run);
                 }
                 BusMessage::Telemetry(ref telemetry) => {
                     if let Some(event) = map_telemetry_to_event(telemetry) {
                         let chat_id = telemetry_chat_id(telemetry).unwrap_or("");
-                        emit_event(&app_for_outbound, chat_id, &event);
+                        let run = if is_system_event(&event) {
+                            None
+                        } else {
+                            coordinator_guard(&coordinator_for_outbound)
+                                .next(chat_id, &owner_for_outbound)
+                                .ok()
+                        };
+                        emit_event(&app_for_outbound, chat_id, &event, run);
+                    }
+                }
+                BusMessage::RunLifecycle(lifecycle) => {
+                    use isanagent::bus::RunLifecycleEvent;
+
+                    let event = map_lifecycle_to_event(&lifecycle);
+                    match lifecycle {
+                        RunLifecycleEvent::Started { run_id, chat_id } => {
+                            let transition = coordinator_guard(&coordinator_for_outbound).started(
+                                &chat_id,
+                                &run_id,
+                                &owner_for_outbound,
+                            );
+                            match transition {
+                                Ok(run) => {
+                                    emit_event(&app_for_outbound, &chat_id, &event, Some(run));
+                                }
+                                Err(error) => log::warn!(
+                                    "Dropped invalid run_started transition for chat {chat_id}: {error:?}"
+                                ),
+                            }
+                        }
+                        RunLifecycleEvent::Warning {
+                            run_id, chat_id, ..
+                        } => {
+                            let transition = coordinator_guard(&coordinator_for_outbound)
+                                .next_for_run(&chat_id, &run_id, &owner_for_outbound);
+                            match transition {
+                                Ok(run) => {
+                                    emit_event(&app_for_outbound, &chat_id, &event, Some(run));
+                                }
+                                Err(error) => log::warn!(
+                                    "Dropped invalid run_warning transition for chat {chat_id}: {error:?}"
+                                ),
+                            }
+                        }
+                        RunLifecycleEvent::Terminated {
+                            run_id, chat_id, ..
+                        } => {
+                            let transition = coordinator_guard(&coordinator_for_outbound)
+                                .terminated(&chat_id, &run_id, &owner_for_outbound);
+                            match transition {
+                                Ok(run) => {
+                                    emit_event(&app_for_outbound, &chat_id, &event, Some(run));
+                                }
+                                Err(error) => log::warn!(
+                                    "Dropped invalid run_terminated transition for chat {chat_id}: {error:?}"
+                                ),
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -2727,9 +3559,230 @@ async fn build_instance(
             content: "IsanAgent runtime initialized.".to_string(),
             role: "system".to_string(),
         },
+        None,
     );
 
     Ok((channel, bus_tx, shutdown_tx, bus_router, outbound_router))
+}
+
+#[cfg(test)]
+mod run_event_tests {
+    use super::*;
+
+    #[test]
+    fn sequence_is_monotonic_and_terminal_closes_only_the_matching_run() {
+        let mut coordinator = RunCoordinator::default();
+        coordinator
+            .admit("chat-a", "run-1", "owner-1")
+            .expect("admit first run");
+        assert_eq!(
+            coordinator.started("chat-a", "run-1", "owner-1"),
+            Ok(("run-1".to_string(), 1))
+        );
+        assert_eq!(
+            coordinator.next("chat-a", "owner-1"),
+            Ok(("run-1".to_string(), 2))
+        );
+        assert_eq!(
+            coordinator.terminated("chat-a", "other-run", "owner-1"),
+            Err(RunTransitionError::RunMismatch)
+        );
+        assert_eq!(
+            coordinator.terminated("chat-a", "run-1", "owner-1"),
+            Ok(("run-1".to_string(), 3))
+        );
+        assert_eq!(
+            coordinator.next("chat-a", "owner-1"),
+            Err(RunTransitionError::MissingLease)
+        );
+    }
+
+    #[test]
+    fn stale_run_warning_cannot_consume_the_active_sequence() {
+        let mut coordinator = RunCoordinator::default();
+        coordinator
+            .admit("chat-a", "run-1", "owner-1")
+            .expect("admit run");
+        coordinator
+            .started("chat-a", "run-1", "owner-1")
+            .expect("start run");
+
+        assert_eq!(
+            coordinator.next_for_run("chat-a", "stale-run", "owner-1"),
+            Err(RunTransitionError::RunMismatch)
+        );
+        assert_eq!(
+            coordinator.next_for_run("chat-a", "run-1", "owner-1"),
+            Ok(("run-1".to_string(), 2))
+        );
+    }
+
+    #[test]
+    fn cancellation_keeps_lease_until_matching_terminal() {
+        let mut coordinator = RunCoordinator::default();
+        coordinator
+            .admit("chat-a", "run-1", "owner-1")
+            .expect("admit first run");
+        coordinator
+            .started("chat-a", "run-1", "owner-1")
+            .expect("start first run");
+
+        assert_eq!(
+            coordinator.cancel_requested("chat-a", Some("run-1")),
+            Ok("run-1".to_string())
+        );
+        assert_eq!(
+            coordinator.admit("chat-a", "run-2", "owner-2"),
+            Err(RunTransitionError::ActiveLease)
+        );
+        assert_eq!(
+            coordinator.terminated("chat-a", "run-2", "owner-2"),
+            Err(RunTransitionError::RunMismatch)
+        );
+        assert_eq!(
+            coordinator.terminated("chat-a", "run-1", "owner-1"),
+            Ok(("run-1".to_string(), 2))
+        );
+    }
+
+    #[test]
+    fn steering_accepts_only_the_exact_running_lease() {
+        let mut coordinator = RunCoordinator::default();
+        coordinator
+            .admit("chat-a", "run-1", "owner-1")
+            .expect("admit run");
+        assert_eq!(
+            coordinator.accepts_steer("chat-a", "run-1", "owner-1"),
+            Err(RunTransitionError::InvalidPhase)
+        );
+        coordinator
+            .started("chat-a", "run-1", "owner-1")
+            .expect("start run");
+        assert_eq!(
+            coordinator.accepts_steer("chat-a", "stale", "owner-1"),
+            Err(RunTransitionError::RunMismatch)
+        );
+        assert_eq!(
+            coordinator.accepts_steer("chat-a", "run-1", "owner-2"),
+            Err(RunTransitionError::OwnerMismatch)
+        );
+        assert_eq!(
+            coordinator.accepts_steer("chat-a", "run-1", "owner-1"),
+            Ok(())
+        );
+        coordinator
+            .cancel_requested("chat-a", Some("run-1"))
+            .expect("cancel run");
+        assert_eq!(
+            coordinator.accepts_steer("chat-a", "run-1", "owner-1"),
+            Err(RunTransitionError::InvalidPhase)
+        );
+    }
+
+    #[test]
+    fn clarification_reply_preserves_the_active_run_identity() {
+        let coordinator = Arc::new(StdMutex::new(RunCoordinator::default()));
+        {
+            let mut guard = coordinator_guard(&coordinator);
+            guard
+                .admit("chat-a", "run-1", "owner-1")
+                .expect("admit run");
+            guard
+                .started("chat-a", "run-1", "owner-1")
+                .expect("start run");
+            guard
+                .mark_waiting_user("chat-a", "owner-1")
+                .expect("wait for user");
+        }
+        assert_eq!(
+            admit_user_message(&coordinator, "chat-a", "reply-id", "owner-1"),
+            Ok("run-1".to_string())
+        );
+        assert_eq!(
+            coordinator_guard(&coordinator).next("chat-a", "owner-1"),
+            Ok(("run-1".to_string(), 2))
+        );
+    }
+
+    #[test]
+    fn queued_run_is_promoted_only_after_terminal() {
+        let mut coordinator = RunCoordinator::default();
+        coordinator
+            .admit("chat-a", "run-1", "owner-1")
+            .expect("admit current run");
+        coordinator
+            .started("chat-a", "run-1", "owner-1")
+            .expect("start current run");
+        assert_eq!(
+            coordinator.admit_or_queue("chat-a", "run-2", "owner-1"),
+            Ok(RunAdmission::Queued)
+        );
+        assert_eq!(
+            coordinator.started("chat-a", "run-2", "owner-1"),
+            Err(RunTransitionError::RunMismatch)
+        );
+        coordinator
+            .terminated("chat-a", "run-1", "owner-1")
+            .expect("terminate current run");
+        assert_eq!(
+            coordinator.started("chat-a", "run-2", "owner-1"),
+            Ok(("run-2".to_string(), 1))
+        );
+    }
+
+    #[test]
+    fn concurrent_admission_grants_exactly_one_chat_lease() {
+        let coordinator = Arc::new(StdMutex::new(RunCoordinator::default()));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut handles = Vec::new();
+        for index in 1..=2 {
+            let coordinator = coordinator.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                coordinator_guard(&coordinator).admit(
+                    "chat-a",
+                    &format!("run-{index}"),
+                    &format!("owner-{index}"),
+                )
+            }));
+        }
+        barrier.wait();
+        let outcomes: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("admission thread"))
+            .collect();
+        assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == Err(RunTransitionError::ActiveLease))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn envelope_is_versioned_and_carries_run_identity() {
+        let event = Event::RunStarted {
+            run_id: "run-1".to_string(),
+        };
+        let envelope = AgentEventEnvelope {
+            version: 1,
+            scope: "run",
+            run_id: Some("run-1"),
+            seq: Some(1),
+            chat_id: "chat-a",
+            event: &event,
+        };
+        let value = serde_json::to_value(envelope).expect("serialize envelope");
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["scope"], "run");
+        assert_eq!(value["runId"], "run-1");
+        assert_eq!(value["seq"], 1);
+        assert_eq!(value["chatId"], "chat-a");
+        assert_eq!(value["event"]["type"], "run_started");
+    }
 }
 
 #[cfg(test)]
@@ -2809,6 +3862,79 @@ mod compaction_tests {
             tail_turns: 9,
         };
         assert_eq!(c.fingerprint_tuple(), (false, 12_345, 9));
+    }
+}
+
+#[cfg(test)]
+mod provider_fingerprint_tests {
+    use super::*;
+
+    fn fallback(
+        provider: &str,
+        model: &str,
+        api_key: &str,
+    ) -> isanagent::agent::FallbackProviderSpec {
+        isanagent::agent::FallbackProviderSpec {
+            provider_name: provider.to_string(),
+            base_url: format!("https://{provider}.test/v1"),
+            api_key: api_key.to_string(),
+            model_name: model.to_string(),
+        }
+    }
+
+    fn fingerprint(
+        primary_key: &str,
+        fallback: Option<&isanagent::agent::FallbackProviderSpec>,
+    ) -> RuntimeFingerprint {
+        make_fingerprint(
+            "primary",
+            primary_key,
+            "primary-model",
+            None,
+            Some("https://primary.test/v1"),
+            Some("/tmp/altai-provider-fingerprint-test"),
+            Some("ask"),
+            None,
+            fallback,
+        )
+    }
+
+    #[test]
+    fn fingerprint_debug_uses_secret_identity_instead_of_raw_keys() {
+        let fallback = fallback("backup", "backup-model", "fallback-secret-value");
+        let runtime_fingerprint = fingerprint("primary-secret-value", Some(&fallback));
+        let debug = format!("{runtime_fingerprint:?}");
+
+        assert!(!debug.contains("primary-secret-value"), "{debug}");
+        assert!(!debug.contains("fallback-secret-value"), "{debug}");
+        assert!(debug.contains("sha256:"), "{debug}");
+        assert_ne!(
+            fingerprint("primary-secret-value", Some(&fallback)),
+            fingerprint("different-primary-secret", Some(&fallback))
+        );
+    }
+
+    #[test]
+    fn two_concurrent_chat_configurations_keep_distinct_fallback_identity() {
+        let fallback_a = fallback("backup-a", "model-a", "fallback-key-a");
+        let fallback_b = fallback("backup-b", "model-b", "fallback-key-b");
+        let (config_a, config_b) = std::thread::scope(|scope| {
+            let config_a = scope.spawn(|| fingerprint("shared-primary-key", Some(&fallback_a)));
+            let config_b = scope.spawn(|| fingerprint("shared-primary-key", Some(&fallback_b)));
+            (
+                config_a.join().expect("chat-a fingerprint"),
+                config_b.join().expect("chat-b fingerprint"),
+            )
+        });
+
+        let mut owners = HashMap::new();
+        owners.insert(config_a.clone(), "chat-a");
+        owners.insert(config_b.clone(), "chat-b");
+
+        assert_ne!(config_a, config_b);
+        assert_eq!(owners.len(), 2);
+        assert_eq!(owners.get(&config_a), Some(&"chat-a"));
+        assert_eq!(owners.get(&config_b), Some(&"chat-b"));
     }
 }
 
@@ -3278,7 +4404,10 @@ mod claw_parity_tests {
             .await
             .expect("list notifications");
         assert_eq!(
-            records.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
+            records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
             ["tauri-notification"]
         );
     }
@@ -3316,11 +4445,12 @@ mod claw_parity_tests {
 
     #[tokio::test]
     async fn workspace_dispatcher_routes_only_an_explicitly_bound_chat() {
-        let dispatcher = WorkspaceDispatcher::new();
+        let coordinator = Arc::new(StdMutex::new(RunCoordinator::default()));
+        let dispatcher = WorkspaceDispatcher::new(coordinator);
         let (bus_tx, mut bus_rx) = mpsc::channel(1);
-        dispatcher.bind("chat-a", bus_tx).await;
+        dispatcher.bind("chat-a", bus_tx, "owner-a").await;
 
-        let inbound = isanagent::bus::InboundMessage {
+        let inbound = trusted_tauri_inbound(isanagent::bus::InboundMessage {
             channel: "tauri".to_string(),
             sender_id: "system".to_string(),
             chat_id: "chat-a".to_string(),
@@ -3328,7 +4458,7 @@ mod claw_parity_tests {
             content: "Synthetic work".to_string(),
             attachments: Vec::new(),
             metadata: HashMap::new(),
-        };
+        });
         dispatcher
             .dispatch("chat-a".to_string(), inbound)
             .await
@@ -3377,9 +4507,10 @@ mod claw_parity_tests {
             seed_background_job(&memory_node, job).await;
         }
 
-        let dispatcher = WorkspaceDispatcher::new();
+        let coordinator = Arc::new(StdMutex::new(RunCoordinator::default()));
+        let dispatcher = WorkspaceDispatcher::new(coordinator);
         let (bus_tx, mut bus_rx) = mpsc::channel(2);
-        dispatcher.bind("chat-a", bus_tx).await;
+        dispatcher.bind("chat-a", bus_tx, "owner-a").await;
         recover_background_jobs_after_owner_bind(&memory_node, &dispatcher, "chat-a")
             .await
             .expect("recover background work");
@@ -3397,8 +4528,10 @@ mod claw_parity_tests {
                 .and_then(|value| value.as_str()),
             Some("cron:daily")
         );
-        assert!(tokio::time::timeout(Duration::from_millis(20), bus_rx.recv())
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), bus_rx.recv())
+                .await
+                .is_err()
+        );
     }
 }

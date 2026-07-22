@@ -22,10 +22,14 @@ function currentStatus(
   run: ReturnType<typeof useAgentRunsStore.getState>["runs"][string] | undefined,
 ): AssignmentStatus {
   if (TERMINAL.includes(assignment.status) || !run) return assignment.status;
+  if (run.completed) {
+    if (run.outcome?.kind === "completed") return "done";
+    if (run.outcome?.kind === "cancelled") return "cancelled";
+    return "failed";
+  }
   if (run.status === "thinking" || run.status === "streaming") return "running";
   if (run.status === "awaiting-approval") return "awaiting-approval";
   if (run.status === "error") return "failed";
-  if (run.completed) return "done";
   return assignment.status;
 }
 

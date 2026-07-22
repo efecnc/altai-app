@@ -19,7 +19,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { ACCEPTED_FILES, useComposer, type FileAttachment } from "../lib/composer";
+import {
+  ACCEPTED_FILES,
+  resolveComposerEnterAction,
+  useComposer,
+  type FileAttachment,
+} from "../lib/composer";
 import { native } from "../lib/native";
 import { useWorkspaceFiles } from "../hooks/useWorkspaceFiles";
 import { SLASH_COMMANDS } from "../lib/slashCommands";
@@ -383,40 +388,50 @@ export function AiInputBar() {
                       return;
                     }
                   }
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    c.submit();
+                  if (e.key === "Enter") {
+                    const action = resolveComposerEnterAction({
+                      availability: c.actionAvailability,
+                      shiftKey: e.shiftKey,
+                      modifierKey: e.metaKey || e.ctrlKey,
+                    });
+                    if (action) e.preventDefault();
+                    if (action === "steer") c.steer();
+                    else if (action === "queue") c.queueNext();
+                    else if (action === "send") c.submit();
                   }
                 }}
                 placeholder="Ask ALTAI anything…  @ files  # snippets"
                 aria-label="Message ALTAI"
                 rows={1}
-                disabled={c.isBusy}
                 className={cn(
                   "block w-full max-h-44 min-h-[28px] resize-none bg-transparent",
                   // Right padding reserves space for the absolutely-positioned
                   // send/stop button so long text never slides under it.
                   "pr-10 text-[13px] leading-5 text-foreground outline-none",
                   "placeholder:text-muted-foreground/55",
-                  "disabled:cursor-not-allowed",
                 )}
               />
               {/* Send / stop button floats in the textarea's top-right corner.
                   Its accessible label is also exposed as a hover title. */}
               <div className="absolute right-3 top-2.5">
                 {c.isBusy ? (
-                  <HoverTooltip label="Stop">
+                  <HoverTooltip label={c.isCancelling ? "Cancelling…" : "Stop"}>
                     <Button
                       type="button"
                       size="icon-xs"
                       onClick={c.stop}
+                      disabled={c.isCancelling}
                       className={cn(
                         "rounded-md p-0 transition-colors",
                         "bg-foreground/10 text-foreground hover:bg-foreground/15",
                       )}
-                      aria-label="Stop"
+                      aria-label={c.isCancelling ? "Cancelling" : "Stop"}
                     >
-                      <span className="block size-2 rounded-[2px] bg-foreground" />
+                      {c.isCancelling ? (
+                        <Spinner className="size-3" />
+                      ) : (
+                        <span className="block size-2 rounded-[2px] bg-foreground" />
+                      )}
                     </Button>
                   </HoverTooltip>
                 ) : (
@@ -465,11 +480,50 @@ export function AiInputBar() {
           )}
         </Popover>
 
+        {c.isBusy && (
+          <div className="flex items-center gap-1.5 border-t border-border/40 px-2.5 py-1.5">
+            <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
+              {c.isCancelling
+                ? "Cancellation requested — you can queue the next task"
+                : "Enter queues next · ⌘/Ctrl+Enter steers this run"}
+            </span>
+            {c.isRunning && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={c.steer}
+                disabled={!c.canSteer}
+                title={
+                  c.files.some(
+                    (file) => file.kind === "image" || file.kind === "pdf",
+                  )
+                    ? "Steering cannot include images or PDFs; use Queue next"
+                    : "Apply at the active run's next safe boundary"
+                }
+                className="h-6 px-2 text-[11px]"
+              >
+                Steer now
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={c.queueNext}
+              disabled={!c.canQueue}
+              title="Start after the active run terminates"
+              className="h-6 px-2 text-[11px]"
+            >
+              Queue next
+            </Button>
+          </div>
+        )}
+
         <div className="flex items-center gap-0.5 overflow-x-auto border-t border-border/40 bg-muted/[0.14] px-2.5 pb-1.5 pt-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <ToolbarIcon
             title="Attach file or image"
             onClick={() => fileInputRef.current?.click()}
-            disabled={c.isBusy}
           >
             <HugeiconsIcon icon={Attachment01Icon} size={14} strokeWidth={1.75} />
           </ToolbarIcon>
@@ -479,7 +533,6 @@ export function AiInputBar() {
               <ToolbarIcon
                 title="Add workspace context"
                 onClick={() => setContextOpen((open) => !open)}
-                disabled={c.isBusy}
               >
                 <HugeiconsIcon icon={CodeIcon} size={14} strokeWidth={1.75} />
               </ToolbarIcon>
@@ -496,7 +549,7 @@ export function AiInputBar() {
           <ToolbarIcon
             title="Research with Semble Scout"
             onClick={prepareSembleSearch}
-            disabled={c.isBusy || !workspaceRoot}
+            disabled={!workspaceRoot}
           >
             <HugeiconsIcon icon={Search01Icon} size={14} strokeWidth={1.75} />
           </ToolbarIcon>
@@ -523,7 +576,7 @@ export function AiInputBar() {
               onClick={() =>
                 c.voice.recording ? c.voice.stop() : void c.voice.start()
               }
-              disabled={c.isBusy || c.voice.transcribing || !c.voice.hasKey}
+              disabled={c.voice.transcribing || !c.voice.hasKey}
               className={cn(
                 c.voice.recording &&
                   "bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive",

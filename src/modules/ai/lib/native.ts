@@ -627,9 +627,8 @@ export const native = {
       workspacePath?: string;
       /// "ask" | "auto-edit" | "bypass" — gates code-exec/destructive-shell.
       permissionMode?: string;
-      // Failover provider. The Rust side refreshes the process-global fallback
-      // list per send (via `set_fallback_providers`) so the agent retries on
-      // this model when the primary provider is exhausted. Null = failover off.
+      // Failover provider snapshotted into the immutable run configuration.
+      // Null disables failover for this run.
       fallback?: {
         providerName: string;
         baseUrl: string;
@@ -644,8 +643,9 @@ export const native = {
         tailTurns: number;
       } | null;
     },
+    queue = false,
   ) =>
-    invoke<void>("agent_send", {
+    invoke<{ chatId: string; runId: string; queued: boolean }>("agent_send", {
       message,
       images,
       documents,
@@ -659,8 +659,16 @@ export const native = {
       permissionMode: config.permissionMode,
       fallback: config.fallback ?? null,
       compaction: config.compaction ?? null,
+      queue,
     }),
-  agentCancel: (chatId?: string) => invoke<void>("agent_cancel", { chatId }),
+  agentCancel: (chatId: string, runId: string) =>
+    invoke<{ chatId: string; runId: string }>("agent_cancel", { chatId, runId }),
+  agentSteer: (chatId: string, runId: string, content: string) =>
+    invoke<{ chatId: string; runId: string }>("agent_steer", {
+      chatId,
+      runId,
+      content,
+    }),
   /**
    * List every chat session the backend memory DB knows about for the active
    * workspace — including chats that were closed and dropped from the ephemeral

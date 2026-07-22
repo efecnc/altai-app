@@ -9,7 +9,8 @@ import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
 import { native } from "./native";
-import { sendMessage, useChatStore } from "../store/chatStore";
+import { sendMessage, stop as stopAgent, useChatStore } from "../store/chatStore";
+import { useAgentRunsStore } from "../store/agentRunsStore";
 import { useSnippetsStore } from "../store/snippetsStore";
 
 export type FileAttachment = {
@@ -29,6 +30,69 @@ export const ACCEPTED_FILES =
   "image/*,.pdf,.txt,.md,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cpp,.h,.hpp,.html,.css,.csv,.log,.env,.config,.conf,.ini,Dockerfile,.dockerfile";
 
 type Voice = ReturnType<typeof useWhisperRecording>;
+
+export type ComposerAction = "send" | "steer" | "queue";
+
+export type ComposerActionAvailability = {
+  isBusy: boolean;
+  isRunning: boolean;
+  isCancelling: boolean;
+  canSend: boolean;
+  canSteer: boolean;
+  canQueue: boolean;
+};
+
+export function getComposerActionAvailability(input: {
+  status: string;
+  hasDraft: boolean;
+  hasNativeAttachment: boolean;
+  runId: string | null;
+  submitting: boolean;
+}): ComposerActionAvailability {
+  const isRunning = input.status === "thinking" || input.status === "streaming";
+  const isCancelling = input.status === "cancelling";
+  const isBusy = isRunning || isCancelling;
+  const ready = input.hasDraft && !input.submitting;
+  return {
+    isBusy,
+    isRunning,
+    isCancelling,
+    canSend: ready && !isBusy,
+    canSteer:
+      ready &&
+      isRunning &&
+      input.runId !== null &&
+      !input.hasNativeAttachment,
+    canQueue: ready && isBusy,
+  };
+}
+
+export function resolveComposerEnterAction(input: {
+  availability: ComposerActionAvailability;
+  shiftKey: boolean;
+  modifierKey: boolean;
+}): ComposerAction | null {
+  if (input.shiftKey) return null;
+  if (input.modifierKey && input.availability.isRunning) {
+    return input.availability.canSteer ? "steer" : null;
+  }
+  if (input.availability.isBusy) {
+    return input.availability.canQueue ? "queue" : null;
+  }
+  return input.availability.canSend ? "send" : null;
+}
+
+export function remainingTextAfterAcceptedDispatch(
+  current: string,
+  submitted: string,
+  draftWasUnchanged: boolean,
+): string {
+  if (draftWasUnchanged) return "";
+  if (submitted && current.startsWith(submitted)) {
+    return current.slice(submitted.length).replace(/^\s+/, "");
+  }
+  return current;
+}
 
 type ComposerCtx = {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -53,10 +117,17 @@ type ComposerCtx = {
   addCommand: (c: SlashCommandMeta) => void;
   removeCommand: (name: string) => void;
   isBusy: boolean;
+  isRunning: boolean;
+  isCancelling: boolean;
   submit: () => void;
+  steer: () => void;
+  queueNext: () => void;
   stop: () => void;
   voice: Voice;
   canSend: boolean;
+  canSteer: boolean;
+  canQueue: boolean;
+  actionAvailability: ComposerActionAvailability;
   contextTokenEstimate: number;
 };
 
@@ -76,12 +147,21 @@ type ProviderProps = {
 export function AiComposerProvider({ children }: ProviderProps) {
   const sessionId = useChatStore((s) => s.activeSessionId);
   const status = useChatStore((s) => s.agentMeta.status);
-  const isBusy = status === "thinking" || status === "streaming";
+  const runId = useAgentRunsStore((s) =>
+    sessionId ? (s.runs[sessionId]?.runId ?? null) : null,
+  );
 
-  const [value, setValue] = useState("");
+  const [value, setValueState] = useState("");
+  const valueRevision = useRef(0);
+  const setValue: React.Dispatch<React.SetStateAction<string>> = (next) => {
+    valueRevision.current += 1;
+    setValueState(next);
+  };
   const [files, setFiles] = useState<FileAttachment[]>([]);
   const [pickedSnippets, setPickedSnippets] = useState<Snippet[]>([]);
   const [pickedCommands, setPickedCommands] = useState<SlashCommandMeta[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const addFiles = async (list: FileList | null) => {
@@ -146,17 +226,6 @@ export function AiComposerProvider({ children }: ProviderProps) {
       document.removeEventListener("drop", onDrop);
     };
     // addFiles only closes over React's stable setter.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const onAttach = (e: Event) => {
-      const path = (e as CustomEvent<string>).detail;
-      if (typeof path === "string" && path.length > 0) void attachFolderByPath(path);
-    };
-    window.addEventListener("altai:ai-attach-folder", onAttach);
-    return () => window.removeEventListener("altai:ai-attach-folder", onAttach);
-    // attachFolderByPath only closes over stable setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -311,8 +380,49 @@ export function AiComposerProvider({ children }: ProviderProps) {
     useChatStore.getState().focusInput();
   };
 
-  const submit = () => {
-    if (isBusy) return;
+  const hasDraft =
+    value.trim().length > 0 ||
+    files.length > 0 ||
+    pickedSnippets.length > 0 ||
+    pickedCommands.length > 0;
+  const actionAvailability = getComposerActionAvailability({
+    status,
+    hasDraft,
+    hasNativeAttachment: files.some(
+      (file) => file.kind === "image" || file.kind === "pdf",
+    ),
+    runId,
+    submitting,
+  });
+
+  const clearAcceptedSnapshot = (snapshot: {
+    valueRevision: number;
+    value: string;
+    files: FileAttachment[];
+    snippets: Snippet[];
+    commands: SlashCommandMeta[];
+  }) => {
+    setValueState((current) =>
+      remainingTextAfterAcceptedDispatch(
+        current,
+        snapshot.value,
+        valueRevision.current === snapshot.valueRevision,
+      ),
+    );
+    setFiles((current) => current.filter((file) => !snapshot.files.includes(file)));
+    setPickedSnippets((current) =>
+      current.filter((snippet) => !snapshot.snippets.includes(snippet)),
+    );
+    setPickedCommands((current) =>
+      current.filter((command) => !snapshot.commands.includes(command)),
+    );
+  };
+
+  const dispatch = async (action: ComposerAction) => {
+    if (submittingRef.current) return;
+    if (action === "send" && !actionAvailability.canSend) return;
+    if (action === "steer" && !actionAvailability.canSteer) return;
+    if (action === "queue" && !actionAvailability.canQueue) return;
     const trimmed = value.trim();
     if (
       !trimmed &&
@@ -321,6 +431,14 @@ export function AiComposerProvider({ children }: ProviderProps) {
       pickedCommands.length === 0
     )
       return;
+
+    const snapshot = {
+      valueRevision: valueRevision.current,
+      value,
+      files,
+      snippets: pickedSnippets,
+      commands: pickedCommands,
+    };
 
     // Slash-command interception. `/plan` toggles plan mode; `/init` rewrites
     // the prompt to the ALTAI.md scan template before sending.
@@ -333,7 +451,7 @@ export function AiComposerProvider({ children }: ProviderProps) {
     if (commandSource.startsWith("/") || commandSource.startsWith("#")) {
       const outcome = tryRunSlashCommand(commandSource);
       if (outcome.kind === "handled") {
-        setValue("");
+        clearAcceptedSnapshot(snapshot);
         if (outcome.toast) console.info(outcome.toast);
         return;
       }
@@ -412,32 +530,70 @@ export function AiComposerProvider({ children }: ProviderProps) {
         name: f.name,
       }));
 
-    void sendMessage(
-      composed,
-      imageUrls.length ? imageUrls : undefined,
-      documents.length ? documents : undefined,
-    );
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      let accepted: boolean;
+      if (action === "steer") {
+        if (!runId) return;
+        const acknowledgement = await native.agentSteer(
+          sessionId,
+          runId,
+          composed,
+        );
+        if (
+          acknowledgement.chatId !== sessionId ||
+          acknowledgement.runId !== runId
+        ) {
+          throw new Error("The runtime acknowledged a different agent run");
+        }
+        store.appendNativeMessage(composed, "user");
+        store.addActivity({
+          label: "Steering queued for the active run",
+          detail: "It will be applied at the next safe boundary",
+          kind: "agent",
+          tone: "success",
+        });
+        accepted = true;
+      } else {
+        accepted = await sendMessage(
+          composed,
+          imageUrls.length ? imageUrls : undefined,
+          documents.length ? documents : undefined,
+          { queue: action === "queue" },
+        );
+      }
 
-    if (!store.mini.open) store.openMini();
-    setValue("");
-    setFiles([]);
-    setPickedSnippets([]);
-    setPickedCommands([]);
+      if (accepted) {
+        if (!store.mini.open) store.openMini();
+        clearAcceptedSnapshot(snapshot);
+      }
+    } catch (error) {
+      store.addActivity({
+        label:
+          action === "steer"
+            ? "Could not steer the active run"
+            : "Task could not be queued",
+        detail: error instanceof Error ? error.message : String(error),
+        kind: "agent",
+        tone: "error",
+      });
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
   };
+
+  const submit = () => void dispatch("send");
+  const steer = () => void dispatch("steer");
+  const queueNext = () => void dispatch("queue");
 
   const stop = () => {
-    void native.agentCancel(
-      useChatStore.getState().activeSessionId ?? undefined,
-    );
-    useChatStore.getState().patchAgentMeta({ status: "idle", step: null });
+    if (!actionAvailability.isCancelling) stopAgent();
   };
 
-  const canSend =
-    !isBusy &&
-    (value.trim().length > 0 ||
-      files.length > 0 ||
-      pickedSnippets.length > 0 ||
-      pickedCommands.length > 0);
+  const { isBusy, isRunning, isCancelling, canSend, canSteer, canQueue } =
+    actionAvailability;
   const contextTokenEstimate = Math.ceil(
     (files.reduce((total, file) => total + (file.kind === "image" ? 0 : (file.text?.length ?? 0)), 0) +
       pickedSnippets.reduce((total, snippet) => total + snippet.content.length, 0)) /
@@ -461,10 +617,17 @@ export function AiComposerProvider({ children }: ProviderProps) {
     addCommand,
     removeCommand,
     isBusy,
+    isRunning,
+    isCancelling,
     submit,
+    steer,
+    queueNext,
     stop,
     voice,
     canSend,
+    canSteer,
+    canQueue,
+    actionAvailability,
     contextTokenEstimate,
   };
 

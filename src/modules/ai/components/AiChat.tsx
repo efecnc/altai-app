@@ -33,7 +33,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { SLASH_COMMANDS, ALTAI_CMD_RE } from "../lib/slashCommands";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { editUserMessage, retryLastMessage } from "../store/chatStore";
+import {
+  editUserMessage,
+  retryFailedRun,
+  useChatStore,
+} from "../store/chatStore";
+import { useAgentRunsStore } from "../store/agentRunsStore";
+import { isRetryableRunOutcome } from "../lib/agentEventBridge";
 import type {
   ChatStatus,
   DynamicToolUIPart,
@@ -231,6 +237,12 @@ export function AiChatView({
   // "off" disables announcements entirely (some SR users prefer to pull
   // updates via virtual cursor instead of being interrupted on every chunk).
   const chatAnnounce = usePreferencesStore((s) => s.chatAnnounce);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const retryableFailure = useAgentRunsStore((s) => {
+    if (!activeSessionId) return false;
+    const outcome = s.runs[activeSessionId]?.outcome;
+    return isRetryableRunOutcome(outcome);
+  });
   const ariaLiveProp: "off" | "polite" | "assertive" =
     chatAnnounce === "off"
       ? "off"
@@ -271,9 +283,12 @@ export function AiChatView({
             onApproval={onApproval}
             streaming={m.id === streamingMessageId}
             canRetry={
-              m.role === "assistant" && i === messages.length - 1 && status !== "streaming"
+              retryableFailure &&
+              m.role === "assistant" &&
+              i === messages.length - 1 &&
+              status !== "streaming"
             }
-            onRetry={() => void retryLastMessage()}
+            onRetry={() => void retryFailedRun()}
             onStop={() => void stop?.()}
           />
         ))}

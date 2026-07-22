@@ -1,7 +1,11 @@
-import { native } from "@/modules/ai/lib/native";
 import { resolveIsanAgentTarget } from "@/modules/ai/lib/isanagentTarget";
 import { useAgentRunsStore } from "@/modules/ai/store/agentRunsStore";
-import { dispatchToSession, useChatStore } from "@/modules/ai/store/chatStore";
+import {
+  dispatchToSession,
+  requestStop,
+  useChatStore,
+  waitForRunTerminal,
+} from "@/modules/ai/store/chatStore";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { create } from "zustand";
 import {
@@ -153,16 +157,9 @@ export const useAssignmentsStore = create<State>((set, get) => ({
   cancel: async (id) => {
     const a = get().assignments.find((x) => x.id === id);
     if (!a) return;
-    try {
-      await native.agentCancel(a.sessionId);
-    } finally {
-      // Only commit "cancelled" if the run is still active — don't overwrite a
-      // run that finished (done/failed) just as we asked it to cancel.
-      const current = get().assignments.find((x) => x.id === id);
-      if (current && ACTIVE_ASSIGNMENT_STATES.includes(current.status)) {
-        get().updateStatus(id, "cancelled");
-      }
-    }
+    // Cancellation acknowledgement is not terminal. The assignment observers
+    // map the eventual typed run outcome to cancelled/done/failed.
+    await requestStop(a.sessionId);
   },
 
   remove: async (id) => {
@@ -170,10 +167,16 @@ export const useAssignmentsStore = create<State>((set, get) => ({
     // A still-running run must be cancelled before its card disappears, or it
     // becomes an uncancellable orphan on the Rust side.
     if (a && ACTIVE_ASSIGNMENT_STATES.includes(a.status)) {
+      const run = useAgentRunsStore.getState().runs[a.sessionId];
       try {
-        await native.agentCancel(a.sessionId);
+        if (run?.runId && !run.completed) {
+          if (run.status !== "cancelling") await requestStop(a.sessionId);
+          await waitForRunTerminal(a.sessionId, run.runId);
+        }
       } catch {
-        // best effort — proceed with removal regardless
+        // Keep the card reachable when cancellation could not be confirmed;
+        // removing it now would leave an uncontrollable background run.
+        return;
       }
     }
     // Tear down the background session and its registry entry so removing a

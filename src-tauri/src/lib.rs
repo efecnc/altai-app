@@ -397,6 +397,7 @@ pub fn run() {
             agent_commands::agent_send,
             agent_commands::agent_approve,
             agent_commands::agent_cancel,
+            agent_commands::agent_steer,
             agent_commands::agent_list_sessions,
             agent_commands::agent_get_session_messages,
             agent_commands::agent_truncate_after_user_message,

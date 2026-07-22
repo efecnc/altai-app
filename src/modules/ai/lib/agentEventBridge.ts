@@ -75,6 +75,9 @@ function ingestTodoWrite(input: unknown, sessionId: string | null): void {
  * Must match the `Event` enum in `src-tauri/src/altai/agent/runtime.rs`.
  */
 export type AgentEvent =
+  | { type: "run_started"; run_id: string }
+  | { type: "run_warning"; run_id: string; warning: RunBudgetWarning }
+  | { type: "run_terminated"; run_id: string; outcome: RunOutcome }
   | { type: "agent_message"; content: string; role: string }
   | { type: "tool_call_start"; id: string; name: string; input: unknown }
   | { type: "tool_call_end"; id: string; name: string; output: unknown; error?: string }
@@ -131,6 +134,17 @@ export type AgentEvent =
       kind: string;
       detail: string | null;
     }
+  | {
+      type: "notification_created";
+      notification_id: string;
+      kind: string;
+      title: string;
+    }
+  | {
+      type: "notification_updated";
+      notification_id: string;
+      state: string;
+    }
   | { type: "done"; reason: string }
   | { type: "error"; message: string }
   | {
@@ -150,6 +164,366 @@ export type AgentEvent =
     }
   | { type: "notebook_output"; notebook_id: string; cell_index: number; output: unknown }
   | { type: "experiment_result"; experiment_id: string; metrics: unknown; artifacts: string[] };
+
+export type RunBudgetSnapshot = {
+  iterations_used: number;
+  iterations_limit: number;
+  elapsed_ms?: number;
+  elapsed_limit_ms?: number;
+  tokens_used?: number;
+  tokens_limit?: number;
+  provider_retries_used?: number;
+  provider_retries_limit?: number;
+  context_recoveries_used?: number;
+  context_recoveries_limit?: number;
+  no_progress_turns?: number;
+  repeated_root_cause_failures?: number;
+  exhausted_limit?: string;
+};
+
+export type RunBudgetWarning = {
+  reason:
+    | { kind: "approaching_limit"; limit: string }
+    | { kind: "repeated_root_cause"; failures: number }
+    | { kind: "no_progress"; turns: number };
+  budget: RunBudgetSnapshot;
+};
+
+export type RunOutcome =
+  | { kind: "completed" }
+  | { kind: "cancelled" }
+  | { kind: "failed"; failure: string; retryable: boolean }
+  | { kind: "stuck"; reason: string }
+  | {
+      kind: "budget_exhausted";
+      budget: RunBudgetSnapshot;
+    };
+
+export function isRetryableRunOutcome(
+  outcome: RunOutcome | null | undefined,
+): boolean {
+  return outcome?.kind === "failed" && outcome.retryable;
+}
+
+export function describeRunWarning(warning: RunBudgetWarning): string {
+  switch (warning.reason.kind) {
+    case "approaching_limit":
+      return `Run is approaching its ${warning.reason.limit.replace(/_/g, " ")} limit`;
+    case "repeated_root_cause":
+      return `The same typed failure repeated ${warning.reason.failures} times`;
+    case "no_progress":
+      return `No measurable progress for ${warning.reason.turns} turns`;
+  }
+}
+
+export type VersionedAgentEventEnvelope = {
+  version: 1;
+  scope: "run" | "system";
+  runId?: string;
+  seq?: number;
+  chatId: string;
+  event: AgentEvent;
+};
+
+export type ParsedAgentEvent = AgentEvent & {
+  chat_id?: string;
+  run_id?: string;
+  seq?: number;
+  version?: 1;
+  scope?: "run" | "system";
+  legacy?: boolean;
+};
+
+const AGENT_EVENT_TYPES = new Set<AgentEvent["type"]>([
+  "run_started",
+  "run_warning",
+  "run_terminated",
+  "agent_message",
+  "tool_call_start",
+  "tool_call_end",
+  "edit_diff",
+  "approval_request",
+  "thinking",
+  "clarification",
+  "usage",
+  "execution_run_finished",
+  "execution_job_finished",
+  "background_job_updated",
+  "notification_created",
+  "notification_updated",
+  "done",
+  "error",
+  "subagent_spawned",
+  "subagent_finished",
+  "notebook_output",
+  "experiment_result",
+]);
+
+const nonBlankString = z.string().trim().min(1);
+const nullableString = z.string().nullable();
+const nonnegativeInteger = z.number().int().nonnegative();
+const budgetSnapshotSchema = z.object({
+  iterations_used: nonnegativeInteger,
+  iterations_limit: z.number().int().positive(),
+  elapsed_ms: nonnegativeInteger.optional(),
+  elapsed_limit_ms: nonnegativeInteger.optional(),
+  tokens_used: nonnegativeInteger.optional(),
+  tokens_limit: nonnegativeInteger.optional(),
+  provider_retries_used: nonnegativeInteger.optional(),
+  provider_retries_limit: nonnegativeInteger.optional(),
+  context_recoveries_used: nonnegativeInteger.optional(),
+  context_recoveries_limit: nonnegativeInteger.optional(),
+  no_progress_turns: nonnegativeInteger.optional(),
+  repeated_root_cause_failures: nonnegativeInteger.optional(),
+  exhausted_limit: nonBlankString.optional(),
+});
+const runBudgetWarningSchema = z.object({
+  reason: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("approaching_limit"), limit: nonBlankString }),
+    z.object({
+      kind: z.literal("repeated_root_cause"),
+      failures: z.number().int().positive(),
+    }),
+    z.object({
+      kind: z.literal("no_progress"),
+      turns: z.number().int().positive(),
+    }),
+  ]),
+  budget: budgetSnapshotSchema,
+});
+const runOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("completed") }),
+  z.object({ kind: z.literal("cancelled") }),
+  z.object({
+    kind: z.literal("failed"),
+    failure: nonBlankString,
+    retryable: z.boolean(),
+  }),
+  z.object({ kind: z.literal("stuck"), reason: nonBlankString }),
+  z.object({
+    kind: z.literal("budget_exhausted"),
+    budget: budgetSnapshotSchema,
+  }),
+]);
+const lifecycleEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("run_started"), run_id: nonBlankString }),
+  z.object({
+    type: z.literal("run_warning"),
+    run_id: nonBlankString,
+    warning: runBudgetWarningSchema,
+  }),
+  z.object({
+    type: z.literal("run_terminated"),
+    run_id: nonBlankString,
+    outcome: runOutcomeSchema,
+  }),
+]);
+const runEventSchemas: Partial<Record<AgentEvent["type"], z.ZodType>> = {
+  agent_message: z.object({
+    type: z.literal("agent_message"),
+    content: z.string(),
+    role: nonBlankString,
+  }),
+  thinking: z.object({ type: z.literal("thinking"), content: z.string() }),
+  error: z.object({ type: z.literal("error"), message: nonBlankString }),
+  done: z.object({ type: z.literal("done"), reason: z.string() }),
+  tool_call_start: z.object({
+    type: z.literal("tool_call_start"),
+    id: nonBlankString,
+    name: nonBlankString,
+    input: z.unknown(),
+  }),
+  tool_call_end: z.object({
+    type: z.literal("tool_call_end"),
+    id: nonBlankString,
+    name: nonBlankString,
+    output: z.unknown(),
+    error: z.string().optional(),
+  }),
+  clarification: z.object({
+    type: z.literal("clarification"),
+    content: nonBlankString,
+    choices: z.array(z.string()),
+    edit_diff: z
+      .object({
+        file: nonBlankString,
+        diff: z.string(),
+        truncated: z.boolean(),
+      })
+      .optional(),
+  }),
+  usage: z.object({
+    type: z.literal("usage"),
+    prompt_tokens: nonnegativeInteger,
+    completion_tokens: nonnegativeInteger,
+    total_tokens: nonnegativeInteger,
+    cache_read_tokens: nonnegativeInteger,
+    cache_creation_tokens: nonnegativeInteger,
+  }),
+  edit_diff: z.object({
+    type: z.literal("edit_diff"),
+    file: nonBlankString,
+    before: z.string(),
+    after: z.string(),
+    hunk_id: nonBlankString,
+  }),
+  approval_request: z.object({
+    type: z.literal("approval_request"),
+    id: nonBlankString,
+    action: nonBlankString,
+    payload: z.unknown(),
+  }),
+  execution_run_finished: z.object({
+    type: z.literal("execution_run_finished"),
+    provider_id: nonBlankString,
+    session_id: nonBlankString,
+    exit_code: z.number().int().nullable(),
+    duration_ms: nonnegativeInteger,
+    stdout_len: nonnegativeInteger,
+    stderr_len: nonnegativeInteger,
+    artifact_count: nonnegativeInteger,
+    git_head: nullableString,
+    description: nullableString,
+  }),
+  execution_job_finished: z.object({
+    type: z.literal("execution_job_finished"),
+    job_id: nonBlankString,
+    session_id: nonBlankString,
+    provider_id: nonBlankString,
+    status: nonBlankString,
+    exit_code: z.number().int().nullable(),
+    duration_ms: nonnegativeInteger,
+    stdout_len: nonnegativeInteger,
+    stderr_len: nonnegativeInteger,
+    artifact_count: nonnegativeInteger,
+    description: nullableString,
+  }),
+  subagent_spawned: z.object({
+    type: z.literal("subagent_spawned"),
+    task_id: nonBlankString,
+    child_chat_id: nonBlankString,
+    display_name: nullableString,
+    agent_name: nullableString,
+    background_job_id: nullableString,
+  }),
+  subagent_finished: z.object({
+    type: z.literal("subagent_finished"),
+    task_id: nonBlankString,
+    child_chat_id: nonBlankString,
+    status: nonBlankString,
+    agent_name: nullableString,
+  }),
+  notebook_output: z.object({
+    type: z.literal("notebook_output"),
+    notebook_id: nonBlankString,
+    cell_index: nonnegativeInteger,
+    output: z.unknown(),
+  }),
+  experiment_result: z.object({
+    type: z.literal("experiment_result"),
+    experiment_id: nonBlankString,
+    metrics: z.unknown(),
+    artifacts: z.array(z.string()),
+  }),
+};
+const systemEventSchemas: Partial<Record<AgentEvent["type"], z.ZodType>> = {
+  background_job_updated: z.object({
+    type: z.literal("background_job_updated"),
+    job_id: nonBlankString,
+    state: nonBlankString,
+    kind: nonBlankString,
+    detail: nullableString,
+  }),
+  notification_created: z.object({
+    type: z.literal("notification_created"),
+    notification_id: nonBlankString,
+    kind: nonBlankString,
+    title: nonBlankString,
+  }),
+  notification_updated: z.object({
+    type: z.literal("notification_updated"),
+    notification_id: nonBlankString,
+    state: nonBlankString,
+  }),
+};
+
+/**
+ * Validate the lifecycle envelope at the desktop IPC trust boundary.
+ * Legacy events are deliberately limited to assistant text: they can keep old
+ * transports readable but can never advance or complete a lifecycle run.
+ */
+export function parseAgentEventPayload(payload: unknown): ParsedAgentEvent | null {
+  if (!payload || typeof payload !== "object") return null;
+  const value = payload as Record<string, unknown>;
+  if ("version" in value && value.version !== 1) return null;
+
+  if (value.version === 1) {
+    const { scope, runId, seq, chatId, event } = value;
+    if (
+      (scope !== "run" && scope !== "system") ||
+      typeof chatId !== "string" ||
+      !chatId.trim() ||
+      !event ||
+      typeof event !== "object"
+    ) {
+      return null;
+    }
+    const typedEvent = event as { type?: unknown };
+    if (
+      typeof typedEvent.type !== "string" ||
+      !AGENT_EVENT_TYPES.has(typedEvent.type as AgentEvent["type"])
+    ) {
+      return null;
+    }
+    const eventType = typedEvent.type as AgentEvent["type"];
+    if (scope === "system") {
+      if (runId !== undefined || seq !== undefined) return null;
+      const schema = systemEventSchemas[eventType];
+      if (!schema?.safeParse(event).success) return null;
+    } else {
+      if (
+        typeof runId !== "string" ||
+        !runId.trim() ||
+        typeof seq !== "number" ||
+        !Number.isSafeInteger(seq) ||
+        seq < 1
+      ) {
+        return null;
+      }
+      const lifecycle = lifecycleEventSchema.safeParse(event);
+      if (
+        eventType === "run_started" ||
+        eventType === "run_warning" ||
+        eventType === "run_terminated"
+      ) {
+        if (!lifecycle.success || lifecycle.data.run_id !== runId) return null;
+      } else {
+        const schema = runEventSchemas[eventType];
+        if (!schema?.safeParse(event).success) return null;
+      }
+    }
+    return {
+      ...(event as AgentEvent),
+      chat_id: chatId,
+      run_id: runId,
+      seq,
+      version: 1,
+      scope,
+    } as ParsedAgentEvent;
+  }
+
+  if (
+    value.type === "agent_message" &&
+    typeof value.content === "string" &&
+    typeof value.role === "string"
+  ) {
+    return {
+      ...(value as Extract<AgentEvent, { type: "agent_message" }>),
+      legacy: true,
+    };
+  }
+  return null;
+}
 
 /**
  * Apply the TS-side prune pass to the focused chat's transcript if the user
@@ -182,16 +556,18 @@ function maybePruneOldToolOutputs(): void {
  * events to the appropriate Zustand stores. Call once during app setup.
  */
 export async function initAgentEventBridge(): Promise<UnlistenFn> {
-  return listen<AgentEvent & { chat_id?: string }>("agent://event", (event) => {
-    const payload = event.payload;
+  return listen<unknown>("agent://event", (event) => {
+    const payload = parseAgentEventPayload(event.payload);
+    if (!payload) return;
     const store = useChatStore.getState();
     // Feed the per-chat_id run registry FIRST, before the active-session drop
     // below — this is the only sink that sees background (non-focused) runs, so
     // a project board can track every dispatched agent. Must stay above the
     // filter; the filter itself must remain so background content never leaks
     // into the focused chat's transcript/meter.
-    if (payload.chat_id) {
-      useAgentRunsStore.getState().ingest(payload.chat_id, payload);
+    if (payload.scope === "run" && payload.chat_id) {
+      const accepted = useAgentRunsStore.getState().ingest(payload.chat_id, payload);
+      if (!accepted) return;
     }
     // Persist a BACKGROUND run's assistant messages to its own thread so "Open
     // transcript" replays the result, not just the seed. The focused chat
@@ -204,23 +580,75 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
     ) {
       appendBackgroundMessage(payload.chat_id, "assistant", payload.content);
     }
+    if (payload.type === "clarification" && payload.chat_id) {
+      store.setPendingClarificationForSession(payload.chat_id, {
+        choices: payload.choices,
+        editDiff: payload.edit_diff ?? null,
+      });
+      if (payload.chat_id !== store.activeSessionId) {
+        appendBackgroundMessage(payload.chat_id, "assistant", payload.content);
+      }
+    }
+    if (
+      payload.type === "notification_created" ||
+      payload.type === "notification_updated" ||
+      payload.type === "background_job_updated"
+    ) {
+      window.dispatchEvent(
+        new CustomEvent("altai:agent-inbox-changed", {
+          detail: { ...payload },
+        }),
+      );
+    }
     // Per-session isolation: every event is tagged with the chat_id (= ALTAI
     // session id) it belongs to. Drop anything that isn't for the chat tab on
     // screen, so a still-streaming or autonomous turn from another chat (and
     // the runtime's bootstrap "initialized" message) never leaks into it.
     if (payload.chat_id && payload.chat_id !== store.activeSessionId) return;
     switch (payload.type) {
+      case "run_started":
+        if (store.agentMeta.status !== "cancelling") {
+          store.patchAgentMeta({ status: "thinking", step: null, error: null });
+        }
+        break;
+
+      case "run_warning": {
+        const warning = describeRunWarning(payload.warning);
+        store.addActivity({
+          label: "Run needs attention",
+          detail: warning,
+          kind: "agent",
+          tone: "warning",
+        });
+        if (store.agentMeta.status !== "cancelling") {
+          store.patchAgentMeta({ status: "thinking", step: warning });
+        }
+        break;
+      }
+
+      case "run_terminated": {
+        const error =
+          payload.outcome.kind === "failed"
+            ? payload.outcome.failure
+            : payload.outcome.kind === "stuck"
+              ? `Agent got stuck: ${payload.outcome.reason}`
+              : payload.outcome.kind === "budget_exhausted"
+                ? `Run budget exhausted after ${payload.outcome.budget.iterations_used} iterations`
+                : null;
+        store.patchAgentMeta({
+          status: error ? "error" : "idle",
+          step: null,
+          error,
+        });
+        store.closeAssistantTurn();
+        maybePruneOldToolOutputs();
+        break;
+      }
+
       case "agent_message":
         store.appendNativeMessage(payload.content, payload.role);
-        // A final assistant turn arrived → drop the stale "Sending to ALTAI…"
-        // (or whatever the last tool step was) so the status pill doesn't
-        // sit on stale text. System bootstrap messages ("IsanAgent runtime
-        // initialized.") keep the existing status. The Rust runtime doesn't
-        // emit a separate `done` event yet — relying on the final assistant
-        // message is the closest signal we have until that lands.
-        if (payload.role === "assistant") {
-          store.patchAgentMeta({ status: "idle", step: null });
-        }
+        // Assistant prose is content, not a lifecycle signal. Only the
+        // matching run_terminated event may transition a run to terminal.
         break;
 
       case "tool_call_start":
@@ -228,7 +656,9 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         // but we also push the tool into the message thread so the
         // history shows every call inline with input/output instead of
         // each new tool overwriting the last one on a single status line.
-        store.patchAgentMeta({ status: "streaming", step: payload.name });
+        if (store.agentMeta.status !== "cancelling") {
+          store.patchAgentMeta({ status: "streaming", step: payload.name });
+        }
         {
           const mcp = parseMcpToolName(payload.name);
           if (mcp) activeMcpCalls.set(payload.id, mcp);
@@ -266,7 +696,9 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         break;
 
       case "thinking":
-        store.patchAgentMeta({ status: "thinking", step: payload.content });
+        if (store.agentMeta.status !== "cancelling") {
+          store.patchAgentMeta({ status: "thinking", step: payload.content });
+        }
         break;
 
       case "clarification":
@@ -274,12 +706,10 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         // assistant message and expose any preset choices as clickable chips;
         // the turn yields back to the user (idle) until they reply.
         store.appendNativeMessage(payload.content, "assistant");
-        store.setPendingChoices(payload.choices);
-        // When the clarification is actually a file-edit approval, the crate
-        // attaches a structured diff so the UI can render a diff-review card
-        // instead of the plain chips. Stash it alongside the choices; the
-        // reply path ("approve"/"deny" as a normal message) is identical.
-        store.setPendingEditDiff(payload.edit_diff ?? null);
+        if (!payload.chat_id) {
+          store.setPendingChoices(payload.choices);
+          store.setPendingEditDiff(payload.edit_diff ?? null);
+        }
         store.addActivity({
           label: payload.edit_diff
             ? `Edit approval: ${payload.edit_diff.file}`
@@ -292,7 +722,9 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
           kind: "agent",
           tone: "warning",
         });
-        store.patchAgentMeta({ status: "idle", step: null });
+        if (store.agentMeta.status !== "cancelling") {
+          store.patchAgentMeta({ status: "awaiting-approval", step: null });
+        }
         break;
 
       case "usage": {
@@ -369,6 +801,23 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         });
         break;
 
+      case "notification_created":
+        store.addActivity({
+          label: payload.title,
+          detail: payload.kind,
+          kind: "agent",
+          tone: "warning",
+        });
+        break;
+
+      case "notification_updated":
+        store.addActivity({
+          label: `Notification ${payload.state}`,
+          detail: payload.notification_id,
+          kind: "agent",
+        });
+        break;
+
       // Subagent lifecycle: the main agent dispatched (or finished) a task on
       // a named/anonymous subagent via `subagent_spawn`. Track active tasks so
       // the UI can show a live "N subagents running" indicator, and surface a
@@ -417,14 +866,6 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
 
       case "done":
         store.addActivity({ label: "Agent finished", kind: "agent", tone: "success" });
-        store.patchAgentMeta({ status: "idle", step: null });
-        store.closeAssistantTurn();
-        // TS-side prune pass: collapse old tool outputs to a marker when the
-        // recency budget is exceeded. Display/persistence only — the model's
-        // own context is managed by the runtime's native compaction. Runs at
-        // most once per turn (right when the turn finishes) and only on the
-        // focused chat (background runs persist via appendBackgroundMessage).
-        maybePruneOldToolOutputs();
         break;
 
       case "error":
@@ -434,8 +875,6 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
           kind: "agent",
           tone: "error",
         });
-        store.patchAgentMeta({ status: "error", error: payload.message });
-        store.closeAssistantTurn();
         break;
 
       case "notebook_output":

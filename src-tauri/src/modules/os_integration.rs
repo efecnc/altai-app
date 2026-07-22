@@ -121,10 +121,7 @@ fn register_macos() -> Result<(), Box<dyn Error>> {
     // `-f` forces a fresh registration of the bundle from its (now patched)
     // Info.plist. The path to lsregister is stable across macOS versions.
     let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
-    let _ = Command::new(lsregister)
-        .arg("-f")
-        .arg(&app_bundle)
-        .status();
+    let _ = Command::new(lsregister).arg("-f").arg(&app_bundle).status();
 
     Ok(())
 }
@@ -168,18 +165,10 @@ fn ensure_document_types(info_plist: &std::path::Path) -> Result<(), Box<dyn Err
     // `Alternate`-ranked Viewer entry here makes ALTAI show up under
     // "Open With" for any file without stealing any app's default.
     if !claimed_files {
-        arr.push(make_document_type(
-            "All Files",
-            &["public.item"],
-            "Viewer",
-        ));
+        arr.push(make_document_type("All Files", &["public.item"], "Viewer"));
     }
     if !claimed_folders {
-        arr.push(make_document_type(
-            "Folders",
-            &["public.folder"],
-            "Viewer",
-        ));
+        arr.push(make_document_type("Folders", &["public.folder"], "Viewer"));
     }
 
     value.to_file_xml(info_plist)?;
@@ -196,16 +185,11 @@ fn uti_list_includes(entry: &plist::Value, uti: &str) -> bool {
         Some(a) => a,
         None => return false,
     };
-    arr.iter()
-        .any(|v| v.as_string() == Some(uti))
+    arr.iter().any(|v| v.as_string() == Some(uti))
 }
 
 #[cfg(target_os = "macos")]
-fn make_document_type(
-    name: &str,
-    utis: &[&str],
-    role: &str,
-) -> plist::Value {
+fn make_document_type(name: &str, utis: &[&str], role: &str) -> plist::Value {
     let mut d = plist::Dictionary::new();
     d.insert(
         "CFBundleTypeName".to_string(),
@@ -222,8 +206,7 @@ fn make_document_type(
     d.insert(
         "LSItemContentTypes".to_string(),
         plist::Value::Array(
-            utis
-                .iter()
+            utis.iter()
                 .map(|u| plist::Value::String((*u).to_string()))
                 .collect(),
         ),
@@ -338,9 +321,7 @@ Exec=\"{exe}\" --new-window\n",
 
     // Best-effort refresh; these tools may be absent on minimal installs.
     let _ = Command::new("update-desktop-database").arg(&dir).status();
-    let _ = Command::new("update-mime-database")
-        .arg("-V")
-        .status();
+    let _ = Command::new("update-mime-database").arg("-V").status();
 
     Ok(())
 }

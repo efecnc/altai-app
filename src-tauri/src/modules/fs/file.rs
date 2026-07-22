@@ -2,10 +2,10 @@ use std::io::Write;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use tauri::Emitter;
 use tempfile::NamedTempFile;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 use super::isanagentignore;
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
@@ -24,7 +24,10 @@ pub struct PdfExtractResult {
 
 fn extract_pdf(bytes: &[u8]) -> Result<PdfExtractResult, String> {
     if bytes.len() > MAX_PDF_EXTRACT_BYTES {
-        return Err(format!("PDF exceeds the {} MB extraction limit", MAX_PDF_EXTRACT_BYTES / 1024 / 1024));
+        return Err(format!(
+            "PDF exceeds the {} MB extraction limit",
+            MAX_PDF_EXTRACT_BYTES / 1024 / 1024
+        ));
     }
     if !bytes.starts_with(b"%PDF-") {
         return Err("The uploaded file is not a valid PDF".into());
@@ -41,7 +44,9 @@ fn extract_pdf(bytes: &[u8]) -> Result<PdfExtractResult, String> {
         content.push_str("\n…[PDF text truncated]");
     }
     if content.is_empty() {
-        return Err("No selectable text was found in this PDF. Scanned PDFs need OCR support.".into());
+        return Err(
+            "No selectable text was found in this PDF. Scanned PDFs need OCR support.".into(),
+        );
     }
     Ok(PdfExtractResult { content, truncated })
 }

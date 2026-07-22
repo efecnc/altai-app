@@ -159,12 +159,7 @@ impl McpStatusRegistry {
 
     /// Replace the status for one server. Stamps `updated_at_ms` from the
     /// caller so a batch of transitions share a consistent clock.
-    pub async fn set(
-        &self,
-        workspace: &Path,
-        status: McpServerStatus,
-        now_ms: u64,
-    ) {
+    pub async fn set(&self, workspace: &Path, status: McpServerStatus, now_ms: u64) {
         let key = Self::key(workspace, &status.server_id);
         let mut guard = self.inner.lock().await;
         guard.insert(
@@ -255,7 +250,8 @@ pub fn load_servers(workspace: &Path) -> Result<Vec<McpServerConfig>, String> {
     }
     let raw =
         std::fs::read_to_string(&path).map_err(|e| format!("Could not read MCP config: {e}"))?;
-    let parsed: Value = serde_json::from_str(&raw).map_err(|e| format!("Invalid MCP config: {e}"))?;
+    let parsed: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("Invalid MCP config: {e}"))?;
     let mut servers = match parsed {
         // Canonical: Claude Desktop `mcpServers` map. The id is the map key.
         Value::Object(ref obj) if obj.contains_key("mcpServers") => {
@@ -265,10 +261,8 @@ pub fn load_servers(workspace: &Path) -> Result<Vec<McpServerConfig>, String> {
                 .ok_or_else(|| "MCP config 'mcpServers' must be an object.".to_string())?;
             let mut out = Vec::with_capacity(map.len());
             for (id, body) in map {
-                let mut server: McpServerConfig =
-                    serde_json::from_value(body.clone()).map_err(|e| {
-                        format!("Invalid MCP server '{id}': {e}")
-                    })?;
+                let mut server: McpServerConfig = serde_json::from_value(body.clone())
+                    .map_err(|e| format!("Invalid MCP server '{id}': {e}"))?;
                 server.id = id.clone();
                 out.push(server);
             }
@@ -281,9 +275,7 @@ pub fn load_servers(workspace: &Path) -> Result<Vec<McpServerConfig>, String> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Invalid MCP server entry: {e}"))?,
         _ => {
-            return Err(
-                "MCP config must be a `mcpServers` object or an array of servers.".into(),
-            );
+            return Err("MCP config must be a `mcpServers` object or an array of servers.".into());
         }
     };
     for server in &mut servers {
@@ -554,7 +546,11 @@ impl Tool for McpTool {
 /// old single-underscore `mcp_<server>_<tool>` shape is deprecated; agents and
 /// transcripts referencing it still parse via a legacy fallback there.
 fn tool_name(server_id: &str, remote_name: &str) -> String {
-    format!("mcp__{}__{}", normalize_segment(server_id), normalize_segment(remote_name))
+    format!(
+        "mcp__{}__{}",
+        normalize_segment(server_id),
+        normalize_segment(remote_name)
+    )
 }
 
 /// Normalize an MCP name segment to the `[a-z0-9-]` alphabet used inside the
@@ -664,12 +660,21 @@ mod tests {
         // [a-z0-9-]; the `__` boundary stays unambiguous regardless of what
         // the server id or remote tool name contains.
         assert_eq!(tool_name("files", "Read File"), "mcp__files__read-file");
-        assert_eq!(tool_name("github", "issues/list"), "mcp__github__issues-list");
+        assert_eq!(
+            tool_name("github", "issues/list"),
+            "mcp__github__issues-list"
+        );
         // Server id with underscores must collapse to `-` so the `__` split is
         // unambiguous (the whole point of the contract change).
-        assert_eq!(tool_name("my_server", "read_file"), "mcp__my-server__read-file");
+        assert_eq!(
+            tool_name("my_server", "read_file"),
+            "mcp__my-server__read-file"
+        );
         // Mixed-case + symbols normalize predictably.
-        assert_eq!(tool_name("Ctx-7", "search__query"), "mcp__ctx-7__search-query");
+        assert_eq!(
+            tool_name("Ctx-7", "search__query"),
+            "mcp__ctx-7__search-query"
+        );
         // All-symbol input collapses to `x` so the segment is never empty.
         assert_eq!(tool_name("---", "echo"), "mcp__x__echo");
         assert_eq!(tool_name("files", ""), "mcp__files__x");

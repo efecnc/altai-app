@@ -1,14 +1,17 @@
 use async_trait::async_trait;
-use isanagent::bus::{BusMessage, OutboundMessage};
+use isanagent::bus::{BusMessage, OutboundMessage, METADATA_RUN_ID};
 use isanagent::channels::Channel;
 use log::info;
 use std::any::Any;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 
 use super::commands::DocumentArg;
-use super::runtime::Event;
+use super::runtime::{
+    admit_queued_user_message, admit_user_message, emit_event, next_run_event,
+    rollback_run_admission, Event, SendAck, SharedRunCoordinator,
+};
 
 /// A Tauri-native channel that bridges IsanAgent's bus system to the
 /// frontend via the Tauri event bus (`agent://event`).
@@ -17,14 +20,23 @@ use super::runtime::Event;
 pub struct TauriChannel {
     app: AppHandle,
     chat_id: String,
+    owner_id: String,
+    run_coordinator: SharedRunCoordinator,
     bus_tx: Mutex<Option<Sender<BusMessage>>>,
 }
 
 impl TauriChannel {
-    pub fn new(app: AppHandle, chat_id: String) -> Self {
+    pub fn new(
+        app: AppHandle,
+        chat_id: String,
+        owner_id: String,
+        run_coordinator: SharedRunCoordinator,
+    ) -> Self {
         Self {
             app,
             chat_id,
+            owner_id,
+            run_coordinator,
             bus_tx: Mutex::new(None),
         }
     }
@@ -45,7 +57,8 @@ impl TauriChannel {
         image_urls: Vec<String>,
         documents: Vec<DocumentArg>,
         chat_id: String,
-    ) -> Result<(), String> {
+        queue: bool,
+    ) -> Result<SendAck, String> {
         let guard = self.bus_tx.lock().await;
         let tx = guard.as_ref().ok_or("TauriChannel not started")?;
         let mut attachments: Vec<_> = image_urls
@@ -68,22 +81,56 @@ impl TauriChannel {
         } else {
             chat_id
         };
+        let requested_run_id = uuid::Uuid::new_v4().to_string();
+        let (run_id, queued) = if queue {
+            admit_queued_user_message(
+                &self.run_coordinator,
+                &chat_id,
+                &requested_run_id,
+                &self.owner_id,
+            )?
+        } else {
+            (
+                admit_user_message(
+                    &self.run_coordinator,
+                    &chat_id,
+                    &requested_run_id,
+                    &self.owner_id,
+                )?,
+                false,
+            )
+        };
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            METADATA_RUN_ID.to_string(),
+            serde_json::json!(run_id.clone()),
+        );
         let msg = isanagent::bus::InboundMessage {
             channel: self.name().to_string(),
             sender_id: "tauri_user".to_string(),
-            chat_id,
+            chat_id: chat_id.clone(),
             thread_id: None,
             content,
             attachments,
-            metadata: std::collections::HashMap::new(),
+            metadata,
         };
-        tx.send(BusMessage::Inbound(msg))
+        let result = tx
+            .send(BusMessage::Inbound(msg))
             .await
-            .map_err(|e| format!("Failed to send to bus: {}", e))
+            .map_err(|e| format!("Failed to send to bus: {}", e));
+        if result.is_err() {
+            rollback_run_admission(&self.run_coordinator, &chat_id, &run_id, &self.owner_id);
+        }
+        result.map(|()| SendAck {
+            chat_id,
+            run_id,
+            queued,
+        })
     }
 
-    /// Signal cancellation for a chat. `chat_id` empty → the channel default.
-    pub async fn cancel(&self, chat_id: String) -> Result<(), String> {
+    /// Queue cancellation for one exact run. A stale Stop can therefore never
+    /// cancel a newer run that happens to reuse the same chat.
+    pub async fn cancel_run(&self, chat_id: String, run_id: String) -> Result<(), String> {
         let guard = self.bus_tx.lock().await;
         let tx = guard.as_ref().ok_or("TauriChannel not started")?;
         let chat_id = if chat_id.is_empty() {
@@ -91,15 +138,45 @@ impl TauriChannel {
         } else {
             chat_id
         };
-        tx.send(BusMessage::Cancel(chat_id))
+        tx.send(BusMessage::CancelRun { chat_id, run_id })
             .await
             .map_err(|e| format!("Cancel failed: {}", e))
+    }
+
+    /// Queue new user direction for one exact active run. The runtime validates
+    /// the lease before this method is called and the owning bus router checks
+    /// it again before forwarding, so a delayed request cannot steer a later
+    /// run that happens to use the same chat.
+    pub async fn steer_run(
+        &self,
+        chat_id: String,
+        run_id: String,
+        content: String,
+    ) -> Result<(), String> {
+        let guard = self.bus_tx.lock().await;
+        let tx = guard.as_ref().ok_or("TauriChannel not started")?;
+        let chat_id = if chat_id.is_empty() {
+            self.chat_id.clone()
+        } else {
+            chat_id
+        };
+        tx.send(BusMessage::Steer {
+            chat_id,
+            run_id,
+            content,
+        })
+        .await
+        .map_err(|e| format!("Steer failed: {}", e))
     }
 
     /// Get the chat ID for this channel session.
     #[allow(dead_code)]
     pub fn chat_id(&self) -> &str {
         &self.chat_id
+    }
+
+    pub fn owner_id(&self) -> &str {
+        &self.owner_id
     }
 }
 
@@ -124,17 +201,45 @@ impl Channel for TauriChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<(), String> {
+        let chat_id = msg.chat_id;
         let event = Event::AgentMessage {
             content: msg.content,
             role: "assistant".to_string(),
         };
-        self.app
-            .emit("agent://event", &event)
-            .map_err(|e| format!("Tauri emit failed: {}", e))
+        let run = next_run_event(&self.run_coordinator, &chat_id, &self.owner_id)
+            .ok_or_else(|| format!("No active run owns outbound for chat {chat_id}"))?;
+        emit_event(&self.app, &chat_id, &event, Some(run));
+        Ok(())
     }
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+/// Map typed reasoning-run lifecycle events to the stable ALTAI event surface.
+/// The runtime adds the versioned envelope and monotonic sequence number.
+pub fn map_lifecycle_to_event(lifecycle: &isanagent::bus::RunLifecycleEvent) -> Event {
+    use isanagent::bus::RunLifecycleEvent;
+
+    match lifecycle {
+        RunLifecycleEvent::Started { run_id, .. } => Event::RunStarted {
+            run_id: run_id.clone(),
+        },
+        RunLifecycleEvent::Warning {
+            run_id, warning, ..
+        } => Event::RunWarning {
+            run_id: run_id.clone(),
+            warning: serde_json::to_value(warning)
+                .expect("run lifecycle warnings are serializable by contract"),
+        },
+        RunLifecycleEvent::Terminated {
+            run_id, outcome, ..
+        } => Event::RunTerminated {
+            run_id: run_id.clone(),
+            outcome: serde_json::to_value(outcome)
+                .expect("run lifecycle outcomes are serializable by contract"),
+        },
     }
 }
 
@@ -337,6 +442,9 @@ mod tests {
 
     fn event_type(e: &Event) -> &str {
         match e {
+            Event::RunStarted { .. } => "run_started",
+            Event::RunWarning { .. } => "run_warning",
+            Event::RunTerminated { .. } => "run_terminated",
             Event::AgentMessage { .. } => "agent_message",
             Event::ToolCallStart { .. } => "tool_call_start",
             Event::ToolCallEnd { .. } => "tool_call_end",
@@ -357,6 +465,28 @@ mod tests {
             Event::NotebookOutput { .. } => "notebook_output",
             Event::ExperimentResult { .. } => "experiment_result",
         }
+    }
+
+    #[test]
+    fn lifecycle_warning_maps_to_typed_run_warning() {
+        let lifecycle = isanagent::bus::RunLifecycleEvent::Warning {
+            run_id: "run-1".to_string(),
+            chat_id: "chat-1".to_string(),
+            warning: isanagent::bus::RunBudgetWarning {
+                reason: isanagent::bus::RunBudgetWarningReason::NoProgress { turns: 6 },
+                budget: isanagent::bus::RunBudgetSnapshot::default(),
+            },
+        };
+
+        let event = map_lifecycle_to_event(&lifecycle);
+        assert_eq!(event_type(&event), "run_warning");
+        assert!(matches!(
+            event,
+            Event::RunWarning { run_id, warning }
+                if run_id == "run-1"
+                    && warning["reason"]["kind"] == "no_progress"
+                    && warning["reason"]["turns"] == 6
+        ));
     }
 
     fn te_tool_call() -> isanagent::bus::TelemetryEvent {

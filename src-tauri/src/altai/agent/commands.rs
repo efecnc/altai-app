@@ -161,7 +161,8 @@ pub async fn agent_send(
     permission_mode: Option<String>,
     fallback: Option<FallbackArg>,
     compaction: Option<CompactionArg>,
-) -> Result<(), String> {
+    queue: Option<bool>,
+) -> Result<runtime::SendAck, String> {
     let pname = provider_name.unwrap_or_else(|| "gemini".to_string());
     let key = api_key.unwrap_or_default();
     let model = model_name.unwrap_or_else(|| "gemini-2.5-flash".to_string());
@@ -200,6 +201,7 @@ pub async fn agent_send(
         images.unwrap_or_default(),
         documents.unwrap_or_default(),
         chat_id.unwrap_or_default(),
+        queue.unwrap_or(false),
     )
     .await
 }
@@ -220,14 +222,28 @@ pub async fn agent_approve(
     Ok(())
 }
 
-/// Cancel the current agent reasoning loop for a chat, routed to the instance
-/// that owns `chat_id`. Empty → the default instance.
+/// Cancel one exact active run. The returned acknowledgement means the request
+/// was accepted by the owning runtime; completion still arrives asynchronously
+/// through the matching `run_terminated` event.
 #[tauri::command]
 pub async fn agent_cancel(
     state: State<'_, AgentRuntime>,
     chat_id: Option<String>,
-) -> Result<(), String> {
-    runtime::route_cancel(&state, chat_id.unwrap_or_default()).await
+    run_id: String,
+) -> Result<runtime::CancelAck, String> {
+    runtime::route_cancel(&state, chat_id.unwrap_or_default(), run_id).await
+}
+
+/// Add user direction to one exact running lease. Unlike an ordinary agent
+/// send, this does not create or queue a new run.
+#[tauri::command]
+pub async fn agent_steer(
+    state: State<'_, AgentRuntime>,
+    chat_id: String,
+    run_id: String,
+    content: String,
+) -> Result<runtime::SteerAck, String> {
+    runtime::route_steer(&state, chat_id, run_id, content).await
 }
 
 /// List all chat sessions persisted in the active workspace's backend memory DB.
@@ -789,9 +805,11 @@ mod tests {
         assert!(authorized_inbox_workspace(None, &registry).is_err());
         assert!(authorized_inbox_workspace(Some(&path), &registry).is_err());
 
-        registry.authorize(root.path()).expect("authorize workspace");
-        let canonical = authorized_inbox_workspace(Some(&path), &registry)
-            .expect("authorized workspace");
+        registry
+            .authorize(root.path())
+            .expect("authorize workspace");
+        let canonical =
+            authorized_inbox_workspace(Some(&path), &registry).expect("authorized workspace");
         assert_eq!(
             canonical,
             std::fs::canonicalize(root.path())
@@ -810,7 +828,10 @@ mod tests {
         }
         .into_schedule()
         .expect("one-time schedule");
-        assert!(matches!(at, isanagent::scheduler::ScheduleKind::At { at_ms: 42 }));
+        assert!(matches!(
+            at,
+            isanagent::scheduler::ScheduleKind::At { at_ms: 42 }
+        ));
 
         let every = AutomationScheduleArg {
             kind: "every".to_string(),

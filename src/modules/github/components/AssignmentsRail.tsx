@@ -49,10 +49,14 @@ const TERMINAL_ASSIGNMENT_STATES: AssignmentStatus[] = [
  *  signal (run.completed) — `idle` alone is also the initial/usage-first state
  *  and must NOT be read as finished. */
 function mapRun(run: RunState, fallback: AssignmentStatus): AssignmentStatus {
+  if (run.completed) {
+    if (run.outcome?.kind === "completed") return "done";
+    if (run.outcome?.kind === "cancelled") return "cancelled";
+    return "failed";
+  }
   if (run.status === "thinking" || run.status === "streaming") return "running";
   if (run.status === "awaiting-approval") return "awaiting-approval";
   if (run.status === "error") return "failed";
-  if (run.completed) return "done";
   return fallback;
 }
 

@@ -28,7 +28,7 @@ vi.mock("../lib/native", () => ({
   native: {
     agentStart: vi.fn(async () => {}),
     agentSend: vi.fn(async () => {}),
-    agentCancel: vi.fn(async () => {}),
+    agentCancel: vi.fn(async (chatId: string, runId: string) => ({ chatId, runId })),
     agentApprove: vi.fn(async () => {}),
   },
 }));
@@ -38,7 +38,9 @@ vi.mock("./todoStore", () => ({
   useTodosStore: { getState: () => ({ clearSession: vi.fn() }) },
 }));
 
-import { useChatStore } from "./chatStore";
+import { native } from "../lib/native";
+import { useAgentRunsStore } from "./agentRunsStore";
+import { requestStop, useChatStore } from "./chatStore";
 
 function msg(id: string, text: string): UIMessage {
   return { id, role: "user", parts: [{ type: "text", text }] } as UIMessage;
@@ -61,6 +63,7 @@ const SESSIONS = [
 
 beforeEach(() => {
   loadMessagesMock.mockReset();
+  useAgentRunsStore.setState({ runs: {} });
   useChatStore.setState({
     sessions: SESSIONS.map((s) => ({ ...s })),
     activeSessionId: "A",
@@ -105,6 +108,36 @@ describe("switchSession — race guard", () => {
     // Active id flips immediately; old thread is cleared without waiting.
     expect(useChatStore.getState().activeSessionId).toBe("B");
     expect(useChatStore.getState().nativeMessages).toEqual([]);
+  });
+
+  it("projects the target session's live run instead of showing it as idle", () => {
+    useAgentRunsStore.setState({
+      runs: {
+        B: {
+          runId: "run-b",
+          lastSeq: 3,
+          outcome: null,
+          warning: null,
+          status: "cancelling",
+          step: null,
+          tokens: { input: 10, output: 2, cached: 4 },
+          subagents: [],
+          lastResult: null,
+          verifications: [],
+          changes: [],
+          failures: [],
+          completed: false,
+        },
+      },
+    });
+    loadMessagesMock.mockReturnValue(new Promise(() => {}));
+
+    useChatStore.getState().switchSession("B");
+
+    expect(useChatStore.getState().agentMeta).toMatchObject({
+      status: "cancelling",
+      tokens: { inputTokens: 10, outputTokens: 2, cachedInputTokens: 4 },
+    });
   });
 });
 
@@ -158,5 +191,78 @@ describe("pendingChoices", () => {
     expect(useChatStore.getState().pendingChoices).toEqual(["yes", "no"]);
     useChatStore.getState().setPendingChoices([]);
     expect(useChatStore.getState().pendingChoices).toBeNull();
+  });
+});
+
+describe("requestStop", () => {
+  it("cancels the exact run and treats acknowledgement as non-terminal", async () => {
+    useAgentRunsStore.getState().ingest("A", {
+      version: 1,
+      scope: "run",
+      chat_id: "A",
+      run_id: "run-a",
+      seq: 1,
+      type: "run_started",
+    });
+
+    await expect(requestStop("A")).resolves.toBe(true);
+
+    expect(native.agentCancel).toHaveBeenCalledWith("A", "run-a");
+    expect(useAgentRunsStore.getState().runs.A).toMatchObject({
+      status: "cancelling",
+      completed: false,
+    });
+    expect(useChatStore.getState().agentMeta.status).toBe("cancelling");
+  });
+
+  it("rejects a mismatched acknowledgement without changing run state", async () => {
+    useAgentRunsStore.getState().ingest("A", {
+      version: 1,
+      scope: "run",
+      chat_id: "A",
+      run_id: "run-a",
+      seq: 1,
+      type: "run_started",
+    });
+    vi.mocked(native.agentCancel).mockResolvedValueOnce({
+      chatId: "A",
+      runId: "replacement",
+    });
+
+    await expect(requestStop("A")).rejects.toThrow("different agent run");
+    expect(useAgentRunsStore.getState().runs.A.status).toBe("thinking");
+  });
+
+  it("does not revive cancelling UI when terminal wins the acknowledgement race", async () => {
+    useAgentRunsStore.getState().ingest("A", {
+      version: 1,
+      scope: "run",
+      chat_id: "A",
+      run_id: "run-a",
+      seq: 1,
+      type: "run_started",
+    });
+    const acknowledgement = deferred<{ chatId: string; runId: string }>();
+    vi.mocked(native.agentCancel).mockReturnValueOnce(acknowledgement.promise);
+    const stopping = requestStop("A");
+
+    useAgentRunsStore.getState().ingest("A", {
+      version: 1,
+      scope: "run",
+      chat_id: "A",
+      run_id: "run-a",
+      seq: 2,
+      type: "run_terminated",
+      outcome: { kind: "completed" },
+    });
+    useChatStore.getState().patchAgentMeta({ status: "idle" });
+    acknowledgement.resolve({ chatId: "A", runId: "run-a" });
+
+    await expect(stopping).resolves.toBe(true);
+    expect(useAgentRunsStore.getState().runs.A).toMatchObject({
+      status: "idle",
+      completed: true,
+    });
+    expect(useChatStore.getState().agentMeta.status).toBe("idle");
   });
 });
