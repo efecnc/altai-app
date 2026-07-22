@@ -581,6 +581,12 @@ async function replayPersistedAgentEvents(): Promise<void> {
   const workspacePath = currentWorkspaceFolder();
   if (!workspacePath) return;
   const chat = useChatStore.getState();
+  const chatIds = chat.sessions.map((session) => session.id);
+  if (chatIds.length === 0) return;
+  // This CAS only classifies runs abandoned by process death. The backend
+  // skips every chat that still has a live coordinator lease and never resumes
+  // work; execution requires a later, explicit user send.
+  await invoke("agent_recover_interrupted_runs", { workspacePath, chatIds });
   const runs = useAgentRunsStore.getState().runs;
   const cursors = chat.sessions.map((session) => {
     const run = runs[session.id];
@@ -704,7 +710,9 @@ export function applyAgentEventPayload(raw: unknown, replay: boolean): void {
       case "run_terminated": {
         const error =
           payload.outcome.kind === "failed"
-            ? payload.outcome.failure
+            ? payload.outcome.failure === "runtime_restarted"
+              ? "The previous run stopped when the app restarted. Review its last completed step before starting a new run."
+              : payload.outcome.failure
             : payload.outcome.kind === "stuck"
               ? `Agent got stuck: ${payload.outcome.reason}`
               : payload.outcome.kind === "budget_exhausted"

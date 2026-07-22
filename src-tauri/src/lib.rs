@@ -395,6 +395,7 @@ pub fn run() {
             // ALTAI — İsanAgent commands
             agent_commands::agent_start,
             agent_commands::agent_send,
+            agent_commands::agent_recover_interrupted_runs,
             agent_commands::agent_replay_events,
             agent_commands::agent_approve,
             agent_commands::agent_cancel,

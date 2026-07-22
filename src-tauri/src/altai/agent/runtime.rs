@@ -260,6 +260,29 @@ struct AgentEventEnvelope<'a> {
     event: &'a Event,
 }
 
+#[derive(Debug)]
+pub(crate) enum AgentEventDeliveryError {
+    Serialization,
+    InvalidEnvelope,
+    Persistence(super::event_journal::JournalError),
+    Renderer(String),
+}
+
+impl std::fmt::Display for AgentEventDeliveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Serialization => formatter.write_str("Agent event serialization failed"),
+            Self::InvalidEnvelope => formatter.write_str("Agent event envelope is invalid"),
+            Self::Persistence(error) => {
+                write!(formatter, "Agent event persistence failed: {error}")
+            }
+            Self::Renderer(error) => {
+                write!(formatter, "Agent event renderer delivery failed: {error}")
+            }
+        }
+    }
+}
+
 pub(crate) type SharedRunCoordinator = Arc<StdMutex<RunCoordinator>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -691,18 +714,32 @@ pub(crate) fn emit_event(
     event: &Event,
     run: Option<(String, u64)>,
 ) -> Result<(), String> {
+    persist_and_deliver_event(journal, chat_id, event, run, |envelope| {
+        app.emit("agent://event", envelope)
+            .map_err(|error| error.to_string())
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn persist_and_deliver_event(
+    journal: &EventJournal,
+    chat_id: &str,
+    event: &Event,
+    run: Option<(String, u64)>,
+    deliver: impl FnOnce(&AgentEventEnvelope<'_>) -> Result<(), String>,
+) -> Result<(), AgentEventDeliveryError> {
     let (run_id, seq) = match run.as_ref() {
         Some((run_id, seq)) => (Some(run_id.as_str()), Some(*seq)),
         None => (None, None),
     };
     let timestamp_ms = if let Some((run_id, seq)) = run.as_ref() {
-        let payload = serde_json::to_value(event)
-            .map_err(|error| format!("Failed to serialize run event: {error}"))?;
+        let payload =
+            serde_json::to_value(event).map_err(|_| AgentEventDeliveryError::Serialization)?;
         let kind = payload
             .get("type")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| "Run event is missing its type discriminant".to_string())?;
+            .ok_or(AgentEventDeliveryError::InvalidEnvelope)?;
         let journal_event = JournalEvent::now(1, run_id, *seq, chat_id, kind, payload);
         let recorded_at_ms = journal_event.recorded_at_ms;
         let status = if matches!(event, Event::RunTerminated { .. }) {
@@ -710,7 +747,7 @@ pub(crate) fn emit_event(
         } else {
             journal.append(&journal_event)
         }
-        .map_err(|error| format!("Failed to persist run event: {error}"))?;
+        .map_err(AgentEventDeliveryError::Persistence)?;
         debug_assert!(matches!(
             status,
             AppendStatus::Appended | AppendStatus::Duplicate
@@ -719,19 +756,16 @@ pub(crate) fn emit_event(
     } else {
         now_epoch_ms()
     };
-    app.emit(
-        "agent://event",
-        &AgentEventEnvelope {
-            version: 1,
-            scope: if run.is_some() { "run" } else { "system" },
-            run_id,
-            seq,
-            timestamp_ms,
-            chat_id,
-            event,
-        },
-    )
-    .map_err(|error| format!("Failed to emit agent event: {error}"))
+    deliver(&AgentEventEnvelope {
+        version: 1,
+        scope: if run.is_some() { "run" } else { "system" },
+        run_id,
+        seq,
+        timestamp_ms,
+        chat_id,
+        event,
+    })
+    .map_err(AgentEventDeliveryError::Renderer)
 }
 
 pub(crate) fn next_run_event(
@@ -1755,6 +1789,97 @@ pub struct ReplayedAgentEvent {
     replay: bool,
 }
 
+fn validate_replay_cursor(
+    journal: &EventJournal,
+    coordinator: &SharedRunCoordinator,
+    chat_id: &str,
+    run_id: Option<&str>,
+    after_seq: u64,
+) -> Result<(), String> {
+    if run_id.is_none() && after_seq != 0 {
+        return Err(format!(
+            "Replay cursor for chat {chat_id} has a sequence without a run ID"
+        ));
+    }
+    i64::try_from(after_seq).map_err(|_| "Replay cursor sequence is too large".to_string())?;
+    let Some(run_id) = run_id else {
+        return Ok(());
+    };
+    validate_replay_run_id(run_id)?;
+    match journal
+        .run_chat_id(run_id)
+        .map_err(|error| format!("Failed to validate replay cursor: {error}"))?
+    {
+        Some(stored_chat_id) if stored_chat_id != chat_id => {
+            Err("Replay cursor run does not belong to the requested chat".to_string())
+        }
+        None => {
+            let is_active_unjournaled_run = coordinator_guard(coordinator)
+                .active_run(chat_id)
+                .is_some_and(|(active_run_id, _)| active_run_id == run_id);
+            if is_active_unjournaled_run {
+                Ok(())
+            } else {
+                Err("Replay cursor references an unknown run".to_string())
+            }
+        }
+        Some(_) => Ok(()),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveredInterruptedRun {
+    chat_id: String,
+    run_id: String,
+    terminal_seq: u64,
+}
+
+/// Classify process-abandoned runs before read-only replay. A renderer refresh
+/// while the backend is still working is not a crash: chats with an active
+/// coordinator lease are skipped. The CAS journal operation is idempotent and
+/// cannot resume an agent, provider, prompt, or tool.
+pub async fn recover_interrupted_runs(
+    runtime: &AgentRuntime,
+    workspace_path: &str,
+    chat_ids: Vec<String>,
+) -> Result<Vec<RecoveredInterruptedRun>, String> {
+    if chat_ids.len() > 200 {
+        return Err("At most 200 chats can be recovered at once".to_string());
+    }
+    let workspace_root = format!("{}/.isanagent", workspace_path.trim_end_matches('/'));
+    let journal = ensure_event_journal(runtime, &workspace_root).await?;
+    let mut seen_chats = HashSet::new();
+    let mut recovered = Vec::new();
+    for chat_id in chat_ids {
+        let chat_id = validate_tauri_chat_id(&chat_id)?.to_owned();
+        if !seen_chats.insert(chat_id.clone()) {
+            return Err(format!("Duplicate recovery request for chat {chat_id}"));
+        }
+        // Hold the admission lock through the journal CAS: otherwise a new run
+        // could be admitted in the narrow window after the active check and be
+        // mistaken for process-abandoned work.
+        let coordinator = coordinator_guard(&runtime.run_coordinator);
+        if coordinator.active_run(&chat_id).is_some() {
+            continue;
+        }
+        let terminal = journal
+            .terminate_latest_interrupted(&chat_id)
+            .map_err(|error| {
+                format!("Failed to classify interrupted run for chat {chat_id}: {error}")
+            })?;
+        drop(coordinator);
+        if let Some(event) = terminal {
+            recovered.push(RecoveredInterruptedRun {
+                chat_id,
+                run_id: event.run_id,
+                terminal_seq: event.seq,
+            });
+        }
+    }
+    Ok(recovered)
+}
+
 /// Read-only recovery path for renderer lifecycle state. This never touches an
 /// agent bus, provider, prompt, or tool registry: it only projects already
 /// committed SQLite rows back into the same frontend event envelope.
@@ -1780,11 +1905,13 @@ pub async fn replay_events(
             .as_deref()
             .map(str::trim)
             .filter(|run_id| !run_id.is_empty());
-        if acknowledged_run_id.is_none() && cursor.after_seq != 0 {
-            return Err(format!(
-                "Replay cursor for chat {chat_id} has a sequence without a run ID"
-            ));
-        }
+        validate_replay_cursor(
+            &journal,
+            &runtime.run_coordinator,
+            &chat_id,
+            acknowledged_run_id,
+            cursor.after_seq,
+        )?;
         let events = journal
             .replay_latest(&chat_id, acknowledged_run_id, cursor.after_seq)
             .map_err(|error| format!("Failed to replay chat {chat_id}: {error}"))?;
@@ -2232,6 +2359,16 @@ pub fn validate_tauri_chat_id(chat_id: &str) -> Result<&str, String> {
         return Err("chatId contains an invalid delimiter".to_string());
     }
     Ok(chat_id)
+}
+
+fn validate_replay_run_id(run_id: &str) -> Result<&str, String> {
+    let run_id = run_id.trim();
+    let parsed = uuid::Uuid::parse_str(run_id)
+        .map_err(|_| "Replay cursor runId must be a UUID".to_string())?;
+    if parsed.to_string() != run_id.to_ascii_lowercase() {
+        return Err("Replay cursor runId is not canonical".to_string());
+    }
+    Ok(run_id)
 }
 
 fn automation_workspace_root(workspace_path: Option<&str>) -> String {
@@ -3983,6 +4120,119 @@ mod run_event_tests {
         assert_eq!(value["timestampMs"], 42);
         assert_eq!(value["chatId"], "chat-a");
         assert_eq!(value["event"]["type"], "run_started");
+    }
+
+    #[test]
+    fn replay_cursor_run_ids_are_canonical_uuids() {
+        assert!(validate_replay_run_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(validate_replay_run_id("run-1").is_err());
+        assert!(validate_replay_run_id("550e8400e29b41d4a716446655440000").is_err());
+    }
+
+    #[test]
+    fn replay_cursor_rejects_wrong_chat_unknown_run_and_malformed_sequence() {
+        let journal = EventJournal::open_in_memory().expect("journal");
+        let coordinator = Arc::new(StdMutex::new(RunCoordinator::default()));
+        let run_id = "550e8400-e29b-41d4-a716-446655440000";
+        journal
+            .append(&JournalEvent::now(
+                1,
+                run_id,
+                1,
+                "chat-a",
+                "run_started",
+                serde_json::json!({ "type": "run_started", "run_id": run_id }),
+            ))
+            .expect("start");
+        assert!(validate_replay_cursor(&journal, &coordinator, "chat-a", Some(run_id), 1).is_ok());
+        assert!(validate_replay_cursor(&journal, &coordinator, "chat-b", Some(run_id), 1).is_err());
+        assert!(validate_replay_cursor(
+            &journal,
+            &coordinator,
+            "chat-a",
+            Some("6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+            1,
+        )
+        .is_err());
+        assert!(validate_replay_cursor(&journal, &coordinator, "chat-a", None, 1).is_err());
+        assert!(
+            validate_replay_cursor(&journal, &coordinator, "chat-a", Some(run_id), u64::MAX,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn run_event_is_durable_before_renderer_delivery() {
+        let journal = EventJournal::open_in_memory().expect("journal");
+        let event = Event::RunStarted {
+            run_id: "run-1".to_string(),
+        };
+        persist_and_deliver_event(
+            &journal,
+            "chat-a",
+            &event,
+            Some(("run-1".to_string(), 1)),
+            |envelope| {
+                assert_eq!(envelope.seq, Some(1));
+                assert_eq!(
+                    journal
+                        .fetch_after("run-1", 0, 10)
+                        .expect("durable row")
+                        .len(),
+                    1
+                );
+                Ok(())
+            },
+        )
+        .expect("delivery");
+    }
+
+    #[test]
+    fn renderer_failure_leaves_the_event_replayable() {
+        let journal = EventJournal::open_in_memory().expect("journal");
+        let event = Event::RunStarted {
+            run_id: "run-1".to_string(),
+        };
+        let result = persist_and_deliver_event(
+            &journal,
+            "chat-a",
+            &event,
+            Some(("run-1".to_string(), 1)),
+            |_| Err("renderer unavailable".to_string()),
+        );
+        assert!(matches!(result, Err(AgentEventDeliveryError::Renderer(_))));
+        assert_eq!(
+            journal.fetch_after("run-1", 0, 10).expect("replay").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn journal_failure_prevents_renderer_delivery() {
+        let journal = EventJournal::open_in_memory().expect("journal");
+        let event = Event::Thinking {
+            content: "must not leak past a sequence gap".to_string(),
+        };
+        let mut delivered = false;
+        let result = persist_and_deliver_event(
+            &journal,
+            "chat-a",
+            &event,
+            Some(("run-1".to_string(), 2)),
+            |_| {
+                delivered = true;
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(AgentEventDeliveryError::Persistence(_))
+        ));
+        assert!(!delivered);
+        assert!(journal
+            .fetch_after("run-1", 0, 10)
+            .expect("empty replay")
+            .is_empty());
     }
 }
 

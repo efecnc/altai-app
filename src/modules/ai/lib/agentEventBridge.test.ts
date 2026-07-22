@@ -207,20 +207,39 @@ describe("replay side-effect boundary", () => {
     );
     applyAgentEventPayload(
       envelope(
-        {
-          type: "approval_request",
-          id: "approval-1",
-          action: "shell",
-          payload: {},
-        },
+        { type: "tool_call_start", id: "tool-1", name: "shell", input: {} },
         { seq: 3, replay: true },
       ),
       true,
     );
     applyAgentEventPayload(
       envelope(
-        { type: "clarification", content: "Continue?", choices: ["Yes"] },
+        {
+          type: "tool_call_end",
+          id: "tool-1",
+          name: "shell",
+          output: { exitCode: 0 },
+        },
         { seq: 4, replay: true },
+      ),
+      true,
+    );
+    applyAgentEventPayload(
+      envelope(
+        {
+          type: "approval_request",
+          id: "approval-1",
+          action: "shell",
+          payload: {},
+        },
+        { seq: 5, replay: true },
+      ),
+      true,
+    );
+    applyAgentEventPayload(
+      envelope(
+        { type: "clarification", content: "Continue?", choices: ["Yes"] },
+        { seq: 6, replay: true },
       ),
       true,
     );
@@ -231,7 +250,7 @@ describe("replay side-effect boundary", () => {
           run_id: "run-1",
           outcome: { kind: "completed" },
         },
-        { seq: 5, replay: true },
+        { seq: 7, replay: true },
       ),
       true,
     );
@@ -242,7 +261,7 @@ describe("replay side-effect boundary", () => {
     expect(recovered.agentMeta.pendingApprovals).toEqual([]);
     expect(useAgentRunsStore.getState().runs["chat-1"]).toMatchObject({
       runId: "run-1",
-      lastSeq: 5,
+      lastSeq: 7,
       completed: true,
     });
 

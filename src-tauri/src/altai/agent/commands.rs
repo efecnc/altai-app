@@ -220,6 +220,20 @@ pub async fn agent_replay_events(
     runtime::replay_events(&state, &workspace, cursors).await
 }
 
+/// Atomically close process-abandoned runs before the renderer asks for
+/// read-only replay. Active coordinator leases are never classified as a
+/// restart, so a renderer refresh cannot terminate live work.
+#[tauri::command]
+pub async fn agent_recover_interrupted_runs(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_ids: Vec<String>,
+) -> Result<Vec<runtime::RecoveredInterruptedRun>, String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::recover_interrupted_runs(&state, &workspace, chat_ids).await
+}
+
 /// Approve or deny an agent action.
 ///
 /// Note: code-exec / destructive-shell approvals do NOT flow through this command. The runtime
