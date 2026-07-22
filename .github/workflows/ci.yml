@@ -45,6 +45,9 @@ jobs:
           workspaces: src-tauri -> target
           key: ${{ matrix.os }}
 
+      - name: Sync latest İsanAgent main
+        run: cargo update --manifest-path src-tauri/Cargo.toml -p isanagent
+
       - run: cargo check --manifest-path src-tauri/Cargo.toml
 
       - name: Clippy + tests (Linux only)

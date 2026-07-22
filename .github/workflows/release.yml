@@ -105,6 +105,12 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # Resolve the branch dependency at release time as well. This makes the
+      # release contract explicit instead of relying only on Tauri's
+      # beforeBuildCommand hook.
+      - name: Sync latest İsanAgent main
+        run: cargo update --manifest-path src-tauri/Cargo.toml -p isanagent
+
       - name: Resolve Tauri build args
         id: build_args
         shell: bash
