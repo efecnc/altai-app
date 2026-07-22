@@ -28,6 +28,7 @@ use isanagent::workspace::{resolve_workspace_root, IsanagentWorkspace};
 use isanagent::{NodeHandle, Supervisor, SupervisorPolicy};
 
 use super::commands::DocumentArg;
+use super::event_journal::{AppendStatus, EventJournal, JournalEvent};
 use super::tauri_channel::{
     map_lifecycle_to_event, map_telemetry_to_event, telemetry_chat_id, TauriChannel,
 };
@@ -258,6 +259,45 @@ struct AgentEventEnvelope<'a> {
     event: &'a Event,
 }
 
+#[derive(Debug)]
+enum RunEventDeliveryError {
+    Serialization,
+    Transition(String),
+    Persistence(String),
+    Renderer(String),
+}
+
+impl std::fmt::Display for RunEventDeliveryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Serialization => formatter.write_str("agent_event_serialization_failed"),
+            Self::Transition(detail) => {
+                write!(formatter, "agent_event_transition_rejected: {detail}")
+            }
+            Self::Persistence(detail) => {
+                write!(formatter, "agent_event_persistence_failed: {detail}")
+            }
+            Self::Renderer(detail) => {
+                write!(formatter, "agent_event_renderer_unavailable: {detail}")
+            }
+        }
+    }
+}
+
+/// Owned replay form of the live `agent://event` envelope. Replayed records
+/// intentionally preserve the same wire contract so the renderer can feed
+/// them through the exact same reducer without starting any agent work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentReplayEventEnvelope {
+    pub version: u8,
+    pub scope: String,
+    pub run_id: String,
+    pub seq: u64,
+    pub chat_id: String,
+    pub event: Event,
+}
+
 pub(crate) type SharedRunCoordinator = Arc<StdMutex<RunCoordinator>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,13 +327,14 @@ enum RunTransitionError {
     InvalidPhase,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct RunCoordinator {
     active: HashMap<String, ActiveRun>,
     pending: HashMap<String, VecDeque<PendingRun>>,
     draining_owners: HashSet<String>,
 }
 
+#[derive(Clone)]
 struct ActiveRun {
     run_id: String,
     owner_id: String,
@@ -301,6 +342,7 @@ struct ActiveRun {
     phase: RunPhase,
 }
 
+#[derive(Clone)]
 struct PendingRun {
     run_id: String,
     owner_id: String,
@@ -682,17 +724,17 @@ pub(crate) fn rollback_run_admission(
     coordinator_guard(coordinator).rollback_admission(chat_id, run_id, owner_id);
 }
 
-pub(crate) fn emit_event(
+fn emit_event(
     app: &AppHandle,
     chat_id: &str,
     event: &Event,
     run: Option<(String, u64)>,
-) {
+) -> Result<(), RunEventDeliveryError> {
     let (run_id, seq) = match run.as_ref() {
         Some((run_id, seq)) => (Some(run_id.as_str()), Some(*seq)),
         None => (None, None),
     };
-    let _ = app.emit(
+    app.emit(
         "agent://event",
         &AgentEventEnvelope {
             version: 1,
@@ -702,15 +744,108 @@ pub(crate) fn emit_event(
             chat_id,
             event,
         },
-    );
+    )
+    .map_err(|error| RunEventDeliveryError::Renderer(error.to_string()))
 }
 
-pub(crate) fn next_run_event(
+enum RunEventTransition<'a> {
+    Started(&'a str),
+    Next,
+    NextForRun(&'a str),
+    Terminated(&'a str),
+}
+
+fn persist_run_event(
+    coordinator: &SharedRunCoordinator,
+    journal: &EventJournal,
+    chat_id: &str,
+    owner_id: &str,
+    event: &Event,
+    transition: RunEventTransition<'_>,
+) -> Result<(String, u64), RunEventDeliveryError> {
+    let payload = serde_json::to_value(event).map_err(|_| RunEventDeliveryError::Serialization)?;
+    let kind = payload
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(RunEventDeliveryError::Serialization)?
+        .to_string();
+
+    // Sequence assignment and durable append are one coordinator transition.
+    // SQLite I/O is intentionally performed while the coordinator is locked:
+    // otherwise two producers could reserve the same next sequence or a later
+    // event could overtake a failed append and leave a permanent journal gap.
+    let mut coordinator = coordinator_guard(coordinator);
+    let before = coordinator.clone();
+    let run = match transition {
+        RunEventTransition::Started(run_id) => coordinator.started(chat_id, run_id, owner_id),
+        RunEventTransition::Next => coordinator.next(chat_id, owner_id),
+        RunEventTransition::NextForRun(run_id) => {
+            coordinator.next_for_run(chat_id, run_id, owner_id)
+        }
+        RunEventTransition::Terminated(run_id) => coordinator.terminated(chat_id, run_id, owner_id),
+    }
+    .map_err(|error| RunEventDeliveryError::Transition(format!("{error:?}")))?;
+
+    let journal_event = JournalEvent::now(1, run.0.clone(), run.1, chat_id, kind, payload);
+    let append = if matches!(transition, RunEventTransition::Terminated(_)) {
+        journal.append_terminal(&journal_event)
+    } else {
+        journal.append(&journal_event)
+    };
+    match append {
+        Ok(AppendStatus::Appended | AppendStatus::Duplicate) => Ok(run),
+        Err(error) => {
+            *coordinator = before;
+            Err(RunEventDeliveryError::Persistence(error.to_string()))
+        }
+    }
+}
+
+pub(crate) fn deliver_next_run_event(
+    app: &AppHandle,
+    journal: &EventJournal,
     coordinator: &SharedRunCoordinator,
     chat_id: &str,
     owner_id: &str,
-) -> Option<(String, u64)> {
-    coordinator_guard(coordinator).next(chat_id, owner_id).ok()
+    event: &Event,
+) -> Result<(), String> {
+    let result = persist_and_deliver_run_event(
+        coordinator,
+        journal,
+        chat_id,
+        owner_id,
+        event,
+        RunEventTransition::Next,
+        |run| emit_event(app, chat_id, event, Some(run.clone())),
+    );
+    match result {
+        Ok(_) => Ok(()),
+        // Persistence already advanced the durable sequence. A disconnected
+        // renderer recovers it via replay, so surfacing delivery failure to
+        // IsanAgent would only invite a duplicate semantic event.
+        Err(error @ RunEventDeliveryError::Renderer(_)) => {
+            log::warn!("Agent event for chat {chat_id} awaits replay: {error}");
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn persist_and_deliver_run_event<F>(
+    coordinator: &SharedRunCoordinator,
+    journal: &EventJournal,
+    chat_id: &str,
+    owner_id: &str,
+    event: &Event,
+    transition: RunEventTransition<'_>,
+    deliver: F,
+) -> Result<(String, u64), RunEventDeliveryError>
+where
+    F: FnOnce(&(String, u64)) -> Result<(), RunEventDeliveryError>,
+{
+    let run = persist_run_event(coordinator, journal, chat_id, owner_id, event, transition)?;
+    deliver(&run)?;
+    Ok(run)
 }
 
 fn is_system_event(event: &Event) -> bool {
@@ -940,6 +1075,7 @@ async fn stop_instance(instance: Instance) {
 /// orphaning an in-flight `ask_user` wait.
 struct WorkspaceServices {
     memory_node: NodeHandle<isanagent::memory::MemoryMessage>,
+    event_journal: Arc<EventJournal>,
     clarification_hub: Arc<ClarificationHub>,
     logger: WorkspaceLogger,
     dispatcher: Arc<WorkspaceDispatcher>,
@@ -1183,6 +1319,10 @@ async fn ensure_workspace_services(
     let db_path_str = db_path
         .to_str()
         .ok_or("workspace DB path is not valid UTF-8")?;
+    let event_journal = Arc::new(
+        EventJournal::open(dir.join(".system_generated").join("agent_event_journal.db"))
+            .map_err(|error| format!("Failed to initialize agent event journal: {error}"))?,
+    );
     let memory_actor = isanagent::memory::SqliteMemoryActor::new(db_path_str)
         .map_err(|e| format!("Failed to initialize SqliteMemoryActor: {}", e))?;
     let node = NodeHandle::<isanagent::memory::MemoryMessage>::new(
@@ -1258,6 +1398,7 @@ async fn ensure_workspace_services(
 
     let services = Arc::new(WorkspaceServices {
         memory_node: node,
+        event_journal,
         clarification_hub: ClarificationHub::shared(),
         logger: WorkspaceLogger {
             handle: logger_handle,
@@ -1284,6 +1425,83 @@ async fn ensure_memory(
         .await?
         .memory_node
         .clone())
+}
+
+/// Read durable events strictly after the renderer's last acknowledged
+/// sequence. This path only opens the workspace journal; it never constructs
+/// an agent instance, dispatches inbound work, or touches provider/tool code.
+pub async fn replay_run_events(
+    runtime: &AgentRuntime,
+    workspace_path: &str,
+    chat_id: &str,
+    run_id: &str,
+    after_seq: u64,
+    limit: usize,
+) -> Result<Vec<AgentReplayEventEnvelope>, String> {
+    let chat_id = validate_tauri_chat_id(chat_id)?;
+    let run_id = run_id.trim();
+    if run_id.is_empty() {
+        return Err("runId is required".to_string());
+    }
+    if run_id.len() > 256 {
+        return Err("runId is too long".to_string());
+    }
+    if limit == 0 || limit > 1_000 {
+        return Err("limit must be between 1 and 1000".to_string());
+    }
+
+    let workspace_root = format!("{}/.isanagent", workspace_path.trim_end_matches('/'));
+    let services = ensure_workspace_services(runtime, &workspace_root).await?;
+    replay_events_from_journal(&services.event_journal, chat_id, run_id, after_seq, limit)
+}
+
+fn replay_events_from_journal(
+    journal: &EventJournal,
+    chat_id: &str,
+    run_id: &str,
+    after_seq: u64,
+    limit: usize,
+) -> Result<Vec<AgentReplayEventEnvelope>, String> {
+    let summary = journal
+        .run_summary(run_id)
+        .map_err(|error| format!("Failed to inspect agent event journal: {error}"))?
+        .filter(|summary| summary.chat_id == chat_id)
+        .ok_or_else(|| "Run was not found for this chat".to_string())?;
+    if summary.run_id != run_id {
+        return Err("Journal returned an invalid run identity".to_string());
+    }
+
+    journal
+        .fetch_after(run_id, after_seq, limit)
+        .map_err(|error| format!("Failed to replay agent events: {error}"))?
+        .into_iter()
+        .map(|record| {
+            if record.version != 1
+                || record.run_id != run_id
+                || record.chat_id != chat_id
+                || record.seq <= after_seq
+            {
+                return Err("Journal returned an invalid event envelope".to_string());
+            }
+            let payload_kind = record
+                .payload
+                .get("type")
+                .and_then(serde_json::Value::as_str);
+            if payload_kind != Some(record.kind.as_str()) {
+                return Err("Journal event type does not match its payload".to_string());
+            }
+            let event = serde_json::from_value(record.payload)
+                .map_err(|error| format!("Journal contains an invalid agent event: {error}"))?;
+            Ok(AgentReplayEventEnvelope {
+                version: 1,
+                scope: "run".to_string(),
+                run_id: record.run_id,
+                seq: record.seq,
+                chat_id: record.chat_id,
+                event,
+            })
+        })
+        .collect()
 }
 
 /// Ensure an instance exists for this config and return its channel. The app
@@ -1410,6 +1628,7 @@ async fn ensure_instance(
         services.clarification_hub.clone(),
         services.logger.handle.clone(),
         services.cron.node.clone(),
+        services.event_journal.clone(),
         runtime.run_coordinator.clone(),
         provider_name,
         api_key,
@@ -2720,6 +2939,7 @@ async fn build_instance(
     clarification_hub: Arc<ClarificationHub>,
     logger_handle: isanagent::logging::LoggerHandle,
     cron_node: NodeHandle<String>,
+    event_journal: Arc<EventJournal>,
     run_coordinator: SharedRunCoordinator,
     provider_name: &str,
     api_key: &str,
@@ -2748,6 +2968,7 @@ async fn build_instance(
         uuid::Uuid::new_v4().to_string(),
         owner_id.clone(),
         run_coordinator.clone(),
+        event_journal.clone(),
     ));
 
     // Resolve workspace — `<selected-folder>/.isanagent`, or `~/.isanagent`.
@@ -3425,6 +3646,7 @@ async fn build_instance(
     // ALTAI…" and the final answer.
     let app_for_outbound = app.clone();
     let coordinator_for_outbound = run_coordinator.clone();
+    let journal_for_outbound = event_journal.clone();
     let owner_for_outbound = owner_id.clone();
     let outbound_router = async_runtime::spawn(async move {
         while let Some(out_msg) = global_outbound_rx.recv().await {
@@ -3466,32 +3688,59 @@ async fn build_instance(
                             role: "assistant".to_string(),
                         }
                     };
-                    let run = coordinator_guard(&coordinator_for_outbound)
-                        .next(&chat_id, &owner_for_outbound)
-                        .ok();
-                    let accepted = run.is_some();
-                    if is_clarification && accepted {
-                        if let Err(error) = coordinator_guard(&coordinator_for_outbound)
-                            .mark_waiting_user(&chat_id, &owner_for_outbound)
-                        {
-                            log::warn!(
-                                "Could not mark clarification wait for chat {chat_id}: {error:?}"
-                            );
+                    let transition = persist_run_event(
+                        &coordinator_for_outbound,
+                        &journal_for_outbound,
+                        &chat_id,
+                        &owner_for_outbound,
+                        &event,
+                        RunEventTransition::Next,
+                    );
+                    match transition {
+                        Ok(run) => {
+                            // Waiting-user is runtime state, not renderer
+                            // state. Commit it after durability even when the
+                            // live window is gone and must replay the prompt.
+                            if is_clarification {
+                                if let Err(error) = coordinator_guard(&coordinator_for_outbound)
+                                    .mark_waiting_user(&chat_id, &owner_for_outbound)
+                                {
+                                    log::warn!(
+                                        "Could not mark clarification wait for chat {chat_id}: {error:?}"
+                                    );
+                                }
+                            }
+                            if let Err(error) =
+                                emit_event(&app_for_outbound, &chat_id, &event, Some(run))
+                            {
+                                log::warn!("Agent event for chat {chat_id} awaits replay: {error}");
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("Dropped outbound event for chat {chat_id}: {error}")
                         }
                     }
-                    emit_event(&app_for_outbound, &chat_id, &event, run);
                 }
                 BusMessage::Telemetry(ref telemetry) => {
                     if let Some(event) = map_telemetry_to_event(telemetry) {
                         let chat_id = telemetry_chat_id(telemetry).unwrap_or("");
-                        let run = if is_system_event(&event) {
-                            None
+                        if is_system_event(&event) {
+                            if let Err(error) = emit_event(&app_for_outbound, chat_id, &event, None)
+                            {
+                                log::warn!("Could not deliver system event: {error}");
+                            }
                         } else {
-                            coordinator_guard(&coordinator_for_outbound)
-                                .next(chat_id, &owner_for_outbound)
-                                .ok()
-                        };
-                        emit_event(&app_for_outbound, chat_id, &event, run);
+                            if let Err(error) = deliver_next_run_event(
+                                &app_for_outbound,
+                                &journal_for_outbound,
+                                &coordinator_for_outbound,
+                                chat_id,
+                                &owner_for_outbound,
+                                &event,
+                            ) {
+                                log::warn!("Dropped telemetry event for chat {chat_id}: {error}");
+                            }
+                        }
                     }
                 }
                 BusMessage::RunLifecycle(lifecycle) => {
@@ -3500,14 +3749,19 @@ async fn build_instance(
                     let event = map_lifecycle_to_event(&lifecycle);
                     match lifecycle {
                         RunLifecycleEvent::Started { run_id, chat_id } => {
-                            let transition = coordinator_guard(&coordinator_for_outbound).started(
+                            let transition = persist_run_event(
+                                &coordinator_for_outbound,
+                                &journal_for_outbound,
                                 &chat_id,
-                                &run_id,
                                 &owner_for_outbound,
+                                &event,
+                                RunEventTransition::Started(&run_id),
                             );
                             match transition {
                                 Ok(run) => {
-                                    emit_event(&app_for_outbound, &chat_id, &event, Some(run));
+                                    if let Err(error) = emit_event(&app_for_outbound, &chat_id, &event, Some(run)) {
+                                        log::warn!("Could not deliver persisted run_started for chat {chat_id}: {error}");
+                                    }
                                 }
                                 Err(error) => log::warn!(
                                     "Dropped invalid run_started transition for chat {chat_id}: {error:?}"
@@ -3517,11 +3771,19 @@ async fn build_instance(
                         RunLifecycleEvent::Warning {
                             run_id, chat_id, ..
                         } => {
-                            let transition = coordinator_guard(&coordinator_for_outbound)
-                                .next_for_run(&chat_id, &run_id, &owner_for_outbound);
+                            let transition = persist_run_event(
+                                &coordinator_for_outbound,
+                                &journal_for_outbound,
+                                &chat_id,
+                                &owner_for_outbound,
+                                &event,
+                                RunEventTransition::NextForRun(&run_id),
+                            );
                             match transition {
                                 Ok(run) => {
-                                    emit_event(&app_for_outbound, &chat_id, &event, Some(run));
+                                    if let Err(error) = emit_event(&app_for_outbound, &chat_id, &event, Some(run)) {
+                                        log::warn!("Could not deliver persisted run_warning for chat {chat_id}: {error}");
+                                    }
                                 }
                                 Err(error) => log::warn!(
                                     "Dropped invalid run_warning transition for chat {chat_id}: {error:?}"
@@ -3531,11 +3793,19 @@ async fn build_instance(
                         RunLifecycleEvent::Terminated {
                             run_id, chat_id, ..
                         } => {
-                            let transition = coordinator_guard(&coordinator_for_outbound)
-                                .terminated(&chat_id, &run_id, &owner_for_outbound);
+                            let transition = persist_run_event(
+                                &coordinator_for_outbound,
+                                &journal_for_outbound,
+                                &chat_id,
+                                &owner_for_outbound,
+                                &event,
+                                RunEventTransition::Terminated(&run_id),
+                            );
                             match transition {
                                 Ok(run) => {
-                                    emit_event(&app_for_outbound, &chat_id, &event, Some(run));
+                                    if let Err(error) = emit_event(&app_for_outbound, &chat_id, &event, Some(run)) {
+                                        log::warn!("Could not deliver persisted run_terminated for chat {chat_id}: {error}");
+                                    }
                                 }
                                 Err(error) => log::warn!(
                                     "Dropped invalid run_terminated transition for chat {chat_id}: {error:?}"
@@ -3552,7 +3822,7 @@ async fn build_instance(
     // Emit ready event under the runtime's bootstrap chat_id. It does not match
     // any ALTAI chat tab, so the frontend filters it out — it exists only as a
     // lifecycle signal, not a message to render in a user's chat.
-    emit_event(
+    if let Err(error) = emit_event(
         &app,
         channel.chat_id(),
         &Event::AgentMessage {
@@ -3560,7 +3830,9 @@ async fn build_instance(
             role: "system".to_string(),
         },
         None,
-    );
+    ) {
+        log::warn!("Could not deliver runtime bootstrap event: {error}");
+    }
 
     Ok((channel, bus_tx, shutdown_tx, bus_router, outbound_router))
 }
@@ -3568,6 +3840,255 @@ async fn build_instance(
 #[cfg(test)]
 mod run_event_tests {
     use super::*;
+
+    fn journal() -> (tempfile::TempDir, EventJournal) {
+        let directory = tempfile::tempdir().expect("journal directory");
+        let journal = EventJournal::open(directory.path().join("events.db")).expect("open journal");
+        (directory, journal)
+    }
+
+    fn admitted_coordinator() -> SharedRunCoordinator {
+        let coordinator = Arc::new(StdMutex::new(RunCoordinator::default()));
+        coordinator_guard(&coordinator)
+            .admit("chat-a", "run-1", "owner-1")
+            .expect("admit run");
+        coordinator
+    }
+
+    #[test]
+    fn journal_append_precedes_delivery() {
+        let (_directory, journal) = journal();
+        let coordinator = admitted_coordinator();
+        let event = Event::RunStarted {
+            run_id: "run-1".to_string(),
+        };
+
+        persist_and_deliver_run_event(
+            &coordinator,
+            &journal,
+            "chat-a",
+            "owner-1",
+            &event,
+            RunEventTransition::Started("run-1"),
+            |run| {
+                let persisted = journal.fetch_after("run-1", 0, 10).expect("replay");
+                assert_eq!(
+                    (persisted[0].run_id.as_str(), persisted[0].seq),
+                    (run.0.as_str(), run.1)
+                );
+                Ok(())
+            },
+        )
+        .expect("persist and deliver");
+    }
+
+    #[test]
+    fn delivery_failure_leaves_event_replayable() {
+        let (_directory, journal) = journal();
+        let coordinator = admitted_coordinator();
+        let started = Event::RunStarted {
+            run_id: "run-1".to_string(),
+        };
+        persist_run_event(
+            &coordinator,
+            &journal,
+            "chat-a",
+            "owner-1",
+            &started,
+            RunEventTransition::Started("run-1"),
+        )
+        .expect("start run");
+        let message = Event::AgentMessage {
+            content: "durable".to_string(),
+            role: "assistant".to_string(),
+        };
+
+        let error = persist_and_deliver_run_event(
+            &coordinator,
+            &journal,
+            "chat-a",
+            "owner-1",
+            &message,
+            RunEventTransition::Next,
+            |_| Err(RunEventDeliveryError::Renderer("unavailable".to_string())),
+        )
+        .expect_err("delivery must fail");
+
+        assert!(matches!(error, RunEventDeliveryError::Renderer(_)));
+        let replay = journal.fetch_after("run-1", 1, 10).expect("replay");
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].seq, 2);
+        assert_eq!(replay[0].payload["content"], "durable");
+    }
+
+    #[test]
+    fn journal_failure_blocks_delivery_and_rolls_back_sequence() {
+        let (_directory, journal) = journal();
+        journal
+            .append(&JournalEvent::now(
+                1,
+                "run-1",
+                1,
+                "other-chat",
+                "run_started",
+                serde_json::json!({"type":"run_started","run_id":"run-1"}),
+            ))
+            .expect("seed conflicting ownership");
+        let coordinator = admitted_coordinator();
+        let event = Event::RunStarted {
+            run_id: "run-1".to_string(),
+        };
+        let delivered = std::cell::Cell::new(false);
+
+        assert!(persist_and_deliver_run_event(
+            &coordinator,
+            &journal,
+            "chat-a",
+            "owner-1",
+            &event,
+            RunEventTransition::Started("run-1"),
+            |_| {
+                delivered.set(true);
+                Ok(())
+            },
+        )
+        .is_err());
+        assert!(!delivered.get());
+        assert_eq!(
+            coordinator_guard(&coordinator).started("chat-a", "run-1", "owner-1"),
+            Ok(("run-1".to_string(), 1))
+        );
+    }
+
+    #[test]
+    fn terminal_transition_commits_event_and_summary_together() {
+        let (_directory, journal) = journal();
+        let coordinator = admitted_coordinator();
+        persist_run_event(
+            &coordinator,
+            &journal,
+            "chat-a",
+            "owner-1",
+            &Event::RunStarted {
+                run_id: "run-1".to_string(),
+            },
+            RunEventTransition::Started("run-1"),
+        )
+        .expect("start run");
+        persist_run_event(
+            &coordinator,
+            &journal,
+            "chat-a",
+            "owner-1",
+            &Event::RunTerminated {
+                run_id: "run-1".to_string(),
+                outcome: serde_json::json!({"status":"completed"}),
+            },
+            RunEventTransition::Terminated("run-1"),
+        )
+        .expect("terminate run");
+
+        let summary = journal
+            .run_summary("run-1")
+            .expect("summary")
+            .expect("run summary");
+        assert_eq!(summary.last_seq, 2);
+        assert_eq!(summary.terminal_seq, Some(2));
+        assert_eq!(summary.terminal_kind.as_deref(), Some("run_terminated"));
+        assert_eq!(
+            coordinator_guard(&coordinator).next("chat-a", "owner-1"),
+            Err(RunTransitionError::MissingLease)
+        );
+    }
+
+    #[test]
+    fn replay_is_exclusive_ordered_and_chat_scoped() {
+        let (_directory, journal) = journal();
+        let coordinator = admitted_coordinator();
+        for (event, transition) in [
+            (
+                Event::RunStarted {
+                    run_id: "run-1".to_string(),
+                },
+                RunEventTransition::Started("run-1"),
+            ),
+            (
+                Event::Thinking {
+                    content: "step".to_string(),
+                },
+                RunEventTransition::Next,
+            ),
+            (
+                Event::RunTerminated {
+                    run_id: "run-1".to_string(),
+                    outcome: serde_json::json!({"status":"completed"}),
+                },
+                RunEventTransition::Terminated("run-1"),
+            ),
+        ] {
+            persist_run_event(
+                &coordinator,
+                &journal,
+                "chat-a",
+                "owner-1",
+                &event,
+                transition,
+            )
+            .expect("persist event");
+        }
+
+        let replay = replay_events_from_journal(&journal, "chat-a", "run-1", 1, 10)
+            .expect("replay after acknowledged sequence");
+        assert_eq!(
+            replay.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert!(replay_events_from_journal(&journal, "chat-b", "run-1", 0, 10).is_err());
+        assert!(replay_events_from_journal(&journal, "chat-a", "unknown", 0, 10).is_err());
+    }
+
+    #[test]
+    fn concurrent_replay_reads_are_identical_and_read_only() {
+        let (_directory, journal) = journal();
+        let journal = Arc::new(journal);
+        journal
+            .append(&JournalEvent::now(
+                1,
+                "run-1",
+                1,
+                "chat-a",
+                "run_started",
+                serde_json::json!({"type":"run_started","run_id":"run-1"}),
+            ))
+            .expect("seed event");
+
+        let reads = std::thread::scope(|scope| {
+            let left_journal = journal.clone();
+            let right_journal = journal.clone();
+            let left = scope.spawn(move || {
+                replay_events_from_journal(&left_journal, "chat-a", "run-1", 0, 10)
+                    .map(|events| serde_json::to_value(events).expect("serialize replay"))
+            });
+            let right = scope.spawn(move || {
+                replay_events_from_journal(&right_journal, "chat-a", "run-1", 0, 10)
+                    .map(|events| serde_json::to_value(events).expect("serialize replay"))
+            });
+            (
+                left.join().expect("left replay").expect("left result"),
+                right.join().expect("right replay").expect("right result"),
+            )
+        });
+
+        assert_eq!(reads.0, reads.1);
+        assert_eq!(
+            journal
+                .run_summary("run-1")
+                .expect("summary")
+                .expect("run")
+                .last_seq,
+            1
+        );
+    }
 
     #[test]
     fn sequence_is_monotonic_and_terminal_closes_only_the_matching_run() {

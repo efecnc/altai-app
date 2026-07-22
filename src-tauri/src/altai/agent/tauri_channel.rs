@@ -8,9 +8,10 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 
 use super::commands::DocumentArg;
+use super::event_journal::EventJournal;
 use super::runtime::{
-    admit_queued_user_message, admit_user_message, emit_event, next_run_event,
-    rollback_run_admission, Event, SendAck, SharedRunCoordinator,
+    admit_queued_user_message, admit_user_message, deliver_next_run_event, rollback_run_admission,
+    Event, SendAck, SharedRunCoordinator,
 };
 
 /// A Tauri-native channel that bridges IsanAgent's bus system to the
@@ -22,6 +23,7 @@ pub struct TauriChannel {
     chat_id: String,
     owner_id: String,
     run_coordinator: SharedRunCoordinator,
+    event_journal: std::sync::Arc<EventJournal>,
     bus_tx: Mutex<Option<Sender<BusMessage>>>,
 }
 
@@ -31,12 +33,14 @@ impl TauriChannel {
         chat_id: String,
         owner_id: String,
         run_coordinator: SharedRunCoordinator,
+        event_journal: std::sync::Arc<EventJournal>,
     ) -> Self {
         Self {
             app,
             chat_id,
             owner_id,
             run_coordinator,
+            event_journal,
             bus_tx: Mutex::new(None),
         }
     }
@@ -206,10 +210,14 @@ impl Channel for TauriChannel {
             content: msg.content,
             role: "assistant".to_string(),
         };
-        let run = next_run_event(&self.run_coordinator, &chat_id, &self.owner_id)
-            .ok_or_else(|| format!("No active run owns outbound for chat {chat_id}"))?;
-        emit_event(&self.app, &chat_id, &event, Some(run));
-        Ok(())
+        deliver_next_run_event(
+            &self.app,
+            &self.event_journal,
+            &self.run_coordinator,
+            &chat_id,
+            &self.owner_id,
+            &event,
+        )
     }
 
     fn as_any(&self) -> &dyn Any {
