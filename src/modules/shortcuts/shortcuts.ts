@@ -331,11 +331,21 @@ export function matchBinding(
 ): boolean {
   const eventKey = e.key.toLowerCase();
   const bindingKey = binding.key.toLowerCase();
+  // KeyboardEvent.key follows the active keyboard layout. On a Turkish (and
+  // several other non-English) layout, pressing the physical I key can yield
+  // `ı` rather than `i`, making Cmd/Ctrl+I appear broken. Built-in letter
+  // shortcuts are intended to follow their physical key, like VS Code does;
+  // retain `key` as the primary match and use the layout-independent code as
+  // a fallback only for single Latin-letter bindings.
+  const matchesLetterCode =
+    bindingKey.length === 1 &&
+    /^[a-z]$/.test(bindingKey) &&
+    e.code === `Key${bindingKey.toUpperCase()}`;
 
   // Special case for Jump to Tab 1-9
   if (id === "tab.selectByIndex") {
     if (!/^[1-9]$/.test(e.key)) return false;
-  } else if (eventKey !== bindingKey) {
+  } else if (eventKey !== bindingKey && !matchesLetterCode) {
     return false;
   }
 
