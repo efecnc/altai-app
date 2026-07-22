@@ -147,8 +147,6 @@ export type AgentEvent =
       notification_id: string;
       state: string;
     }
-  | { type: "done"; reason: string }
-  | { type: "error"; message: string }
   | {
       type: "subagent_spawned";
       task_id: string;
@@ -257,8 +255,6 @@ const AGENT_EVENT_TYPES = new Set<AgentEvent["type"]>([
   "background_job_updated",
   "notification_created",
   "notification_updated",
-  "done",
-  "error",
   "subagent_spawned",
   "subagent_finished",
   "notebook_output",
@@ -331,8 +327,6 @@ const runEventSchemas: Partial<Record<AgentEvent["type"], z.ZodType>> = {
     role: nonBlankString,
   }),
   thinking: z.object({ type: z.literal("thinking"), content: z.string() }),
-  error: z.object({ type: z.literal("error"), message: nonBlankString }),
-  done: z.object({ type: z.literal("done"), reason: z.string() }),
   tool_call_start: z.object({
     type: z.literal("tool_call_start"),
     id: nonBlankString,
@@ -952,19 +946,6 @@ export function applyAgentEventPayload(raw: unknown, replay: boolean): void {
         store.patchAgentMeta({ step: `${label} ${payload.status}` });
         break;
       }
-
-      case "done":
-        store.addActivity({ label: "Agent finished", kind: "agent", tone: "success" });
-        break;
-
-      case "error":
-        store.addActivity({
-          label: "Agent run failed",
-          detail: payload.message,
-          kind: "agent",
-          tone: "error",
-        });
-        break;
 
       case "notebook_output":
         // Dispatched to the notebook store when it exists.

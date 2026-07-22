@@ -234,6 +234,20 @@ pub async fn agent_recover_interrupted_runs(
     runtime::recover_interrupted_runs(&state, &workspace, chat_ids).await
 }
 
+/// Trigger one between-turns compaction directly on the owning backend FIFO.
+/// This never turns the request into a model prompt or a new reasoning run.
+#[tauri::command]
+pub async fn agent_compact(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+    focus_instructions: Option<String>,
+) -> Result<runtime::ManualCompactionAck, String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::route_manual_compaction(&state, &workspace, chat_id, focus_instructions).await
+}
+
 fn unsupported_approval_result() -> Result<(), String> {
     Err("ID-based approvals are unsupported; answer the active clarification in chat".to_string())
 }

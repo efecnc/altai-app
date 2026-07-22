@@ -397,6 +397,7 @@ pub fn run() {
             agent_commands::agent_send,
             agent_commands::agent_recover_interrupted_runs,
             agent_commands::agent_replay_events,
+            agent_commands::agent_compact,
             agent_commands::agent_approve,
             agent_commands::agent_cancel,
             agent_commands::agent_steer,

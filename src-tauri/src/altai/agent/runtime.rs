@@ -165,12 +165,6 @@ pub enum Event {
         cache_read_tokens: u32,
         cache_creation_tokens: u32,
     },
-    Done {
-        reason: String,
-    },
-    Error {
-        message: String,
-    },
     /// A synchronous `execution_run` completed.
     ExecutionRunFinished {
         provider_id: String,
@@ -1959,6 +1953,74 @@ pub struct CancelAck {
 pub struct SteerAck {
     pub chat_id: String,
     pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualCompactionAck {
+    pub chat_id: String,
+}
+
+fn enqueue_manual_compaction(
+    bus_tx: &mpsc::Sender<BusMessage>,
+    chat_id: &str,
+    focus_instructions: Option<String>,
+) -> Result<(), String> {
+    let session_key = isanagent::bus::clarification_session_key("tauri", chat_id, None);
+    bus_tx
+        .try_send(BusMessage::TriggerCompaction {
+            session_key,
+            focus_instructions,
+            trigger: Some(isanagent::bus::CompactionTrigger::Manual),
+        })
+        .map_err(|error| format!("Could not enqueue manual compaction: {error}"))
+}
+
+/// Enqueue exactly one caller-driven compaction on the runtime that last owned
+/// this workspace chat. No inbound prompt or agent run is created. Admission
+/// and enqueue share the coordinator lock so a new foreground run cannot jump
+/// ahead of the compaction request.
+pub async fn route_manual_compaction(
+    runtime: &AgentRuntime,
+    workspace_path: &str,
+    chat_id: String,
+    focus_instructions: Option<String>,
+) -> Result<ManualCompactionAck, String> {
+    let chat_id = validate_tauri_chat_id(&chat_id)?.to_owned();
+    let focus_instructions = focus_instructions
+        .map(|focus| focus.trim().to_string())
+        .filter(|focus| !focus.is_empty());
+    if focus_instructions
+        .as_ref()
+        .is_some_and(|focus| focus.len() > 4_000)
+    {
+        return Err("Compaction focus instructions are too long".to_string());
+    }
+    let workspace_root = format!("{}/.isanagent", workspace_path.trim_end_matches('/'));
+    let fingerprint = runtime
+        .chat_owner_by_workspace
+        .lock()
+        .await
+        .get(&(workspace_root, chat_id.clone()))
+        .cloned()
+        .ok_or_else(|| {
+            "This chat has no active runtime in the current app session; send a message first"
+                .to_string()
+        })?;
+    let bus_tx = runtime
+        .instances
+        .lock()
+        .await
+        .get(&fingerprint)
+        .map(|instance| instance.bus_tx.clone())
+        .ok_or_else(|| "The chat's agent runtime is unavailable".to_string())?;
+    let coordinator = coordinator_guard(&runtime.run_coordinator);
+    if coordinator.active_run(&chat_id).is_some() {
+        return Err("Wait for the active run to finish before compacting context".to_string());
+    }
+    enqueue_manual_compaction(&bus_tx, &chat_id, focus_instructions)?;
+    drop(coordinator);
+    Ok(ManualCompactionAck { chat_id })
 }
 
 pub async fn route_cancel(
@@ -4313,6 +4375,32 @@ mod compaction_tests {
             tail_turns: 9,
         };
         assert_eq!(c.fingerprint_tuple(), (false, 12_345, 9));
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_enqueues_exactly_one_backend_command() {
+        let (tx, mut rx) = mpsc::channel(4);
+        enqueue_manual_compaction(&tx, "chat-1", Some("keep API decisions".to_string()))
+            .expect("enqueue");
+        match rx.recv().await.expect("command") {
+            BusMessage::TriggerCompaction {
+                session_key,
+                focus_instructions,
+                trigger,
+            } => {
+                assert_eq!(session_key, "tauri:chat-1:");
+                assert_eq!(focus_instructions.as_deref(), Some("keep API decisions"));
+                assert!(matches!(
+                    trigger,
+                    Some(isanagent::bus::CompactionTrigger::Manual)
+                ));
+            }
+            other => panic!("expected TriggerCompaction, got {other:?}"),
+        }
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
     }
 }
 

@@ -456,8 +456,6 @@ mod tests {
             Event::Thinking { .. } => "thinking",
             Event::Clarification { .. } => "clarification",
             Event::Usage { .. } => "usage",
-            Event::Done { .. } => "done",
-            Event::Error { .. } => "error",
             Event::ExecutionRunFinished { .. } => "execution_run_finished",
             Event::ExecutionJobFinished { .. } => "execution_job_finished",
             Event::BackgroundJobUpdated { .. } => "background_job_updated",
