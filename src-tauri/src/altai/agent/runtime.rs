@@ -1772,6 +1772,7 @@ async fn ensure_instance(
         workspace_root_opt,
         permission_mode,
         compaction,
+        fallback,
     )
     .await?;
 
@@ -1847,22 +1848,6 @@ pub async fn route_send(
         fallback.as_ref(),
     )
     .await?;
-
-    // IsanAgent #91 explicitly restored the pre-#90 process-wide fallback
-    // registry. Refresh it immediately before dispatch so this send observes
-    // the requested fallback as closely as that API permits. Concurrent chats
-    // can still overwrite one another before failover is evaluated; that is a
-    // known limitation of the intentionally restored upstream contract.
-    let fallback_providers = match fallback {
-        Some(fallback) => isanagent::agent::build_fallback_specs(
-            provider_name,
-            base_url_override.unwrap_or(""),
-            model_name,
-            vec![fallback],
-        ),
-        None => Vec::new(),
-    };
-    isanagent::agent::set_fallback_providers(fallback_providers);
 
     let acknowledgement = channel
         .inject_user_message(message, images, documents, chat_id.clone(), queue)
@@ -3166,6 +3151,7 @@ async fn build_instance(
     workspace_root: Option<&str>,
     permission_mode: Option<&str>,
     compaction: Option<&CompactionArg>,
+    fallback: Option<&isanagent::agent::FallbackProviderSpec>,
 ) -> Result<
     (
         Arc<TauriChannel>,
@@ -3593,6 +3579,17 @@ async fn build_instance(
         api_key: api_key.to_string(),
         model_name: model_name.to_string(),
     };
+    let fallback_providers = fallback
+        .cloned()
+        .map(|fallback| {
+            isanagent::agent::build_fallback_specs(
+                provider_name,
+                &resolved_base_url,
+                model_name,
+                vec![fallback],
+            )
+        })
+        .unwrap_or_default();
     // System prompt
     let mut system_prompt = workspace.compile_system_prompt();
     if workspace.config.ml_engineer_harness_enabled() {
@@ -3716,30 +3713,33 @@ async fn build_instance(
         harness_ref,
     );
 
-    let agent_logic = AgentLogic::new(AgentLogicParams {
-        name: "altai-agent".to_string(),
-        provider: llm_provider,
-        provider_credentials,
-        session_manager,
-        tools,
-        skills,
-        system_prompt,
-        max_iterations,
-        max_tool_output_chars,
-        max_recent_summaries,
-        short_term_threshold_turns,
-        short_term_threshold_tokens,
-        outbound_tx: global_outbound_tx.clone(),
-        logger_tx: logger_handle,
-        clarification_hub,
-        subagent,
-        doom_loop_enabled: workspace.config.doom_loop_enabled(),
-        harness_runtime_summary,
-        subagent_system_prompt,
-        forbid_final_without_tools,
-        shell_policy,
-        hook_tool_ctx,
-    });
+    let agent_logic = AgentLogic::new_with_fallback_providers(
+        AgentLogicParams {
+            name: "altai-agent".to_string(),
+            provider: llm_provider,
+            provider_credentials,
+            session_manager,
+            tools,
+            skills,
+            system_prompt,
+            max_iterations,
+            max_tool_output_chars,
+            max_recent_summaries,
+            short_term_threshold_turns,
+            short_term_threshold_tokens,
+            outbound_tx: global_outbound_tx.clone(),
+            logger_tx: logger_handle,
+            clarification_hub,
+            subagent,
+            doom_loop_enabled: workspace.config.doom_loop_enabled(),
+            harness_runtime_summary,
+            subagent_system_prompt,
+            forbid_final_without_tools,
+            shell_policy,
+            hook_tool_ctx,
+        },
+        fallback_providers,
+    );
 
     let agent_node = NodeHandle::<BusMessage>::new(agent_logic, 100, 3, Duration::from_millis(50));
 
