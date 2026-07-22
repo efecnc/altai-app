@@ -4,9 +4,9 @@
   "version": "0.6.1",
   "identifier": "dev.altai.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm isanagent:sync && pnpm dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm isanagent:sync && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
