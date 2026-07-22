@@ -292,6 +292,31 @@ pub async fn agent_get_session_messages(
         .map_err(|e| format!("Failed to serialize messages: {}", e))
 }
 
+/// Recover run-scoped events missed by a renderer reload/disconnect. The
+/// workspace is authorized before its journal is opened, and chat ownership
+/// is checked again against the durable run summary.
+#[tauri::command]
+pub async fn agent_replay_events(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+    run_id: String,
+    after_seq: u64,
+    limit: Option<usize>,
+) -> Result<Vec<runtime::AgentReplayEventEnvelope>, String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::replay_run_events(
+        &state,
+        &workspace,
+        &chat_id,
+        &run_id,
+        after_seq,
+        limit.unwrap_or(500),
+    )
+    .await
+}
+
 /// Rewind a chat's backend history to the N-th user message.
 ///
 /// Sends `TruncateAfterUserMessage` to the per-workspace memory actor: keep
