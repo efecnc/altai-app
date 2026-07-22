@@ -43,11 +43,7 @@ export type RunState = {
   changes: RunChange[];
   /** Non-verification tool errors, surfaced in the final outcome. */
   failures: string[];
-  /**
-   * True only after a real terminal signal (final assistant message / done).
-   * The initial/`usage`-first state is `idle` too, so `idle` alone must NOT be
-   * read as "finished" — callers gate "done" on this flag.
-   */
+  /** True only after the matching protocol-v1 `run_terminated` event. */
   completed: boolean;
 };
 
@@ -301,10 +297,6 @@ function reduce(cur: RunState, ev: ParsedAgentEvent): RunState {
         outcome: ev.outcome,
       };
     }
-    case "done":
-      return cur;
-    case "error":
-      return { ...cur, failures: [...cur.failures, ev.message].slice(-10) };
     default:
       return cur;
   }

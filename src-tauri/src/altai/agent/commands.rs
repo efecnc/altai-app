@@ -234,20 +234,20 @@ pub async fn agent_recover_interrupted_runs(
     runtime::recover_interrupted_runs(&state, &workspace, chat_ids).await
 }
 
-/// Approve or deny an agent action.
-///
-/// Note: code-exec / destructive-shell approvals do NOT flow through this command. The runtime
-/// gate (driven by the active permission mode via `agent_start`) raises an `ask_user`
-/// clarification, which surfaces to the UI as a `Clarification` event with approve/deny choices;
-/// replying resolves the pending wait. This ID-based command is retained for a future
-/// non-clarification approval surface and is intentionally a no-op today.
+fn unsupported_approval_result() -> Result<(), String> {
+    Err("ID-based approvals are unsupported; answer the active clarification in chat".to_string())
+}
+
+/// Reject the legacy ID-based approval surface explicitly. Runtime permission
+/// gates use chat clarifications; returning success here would falsely tell the
+/// renderer that an action had been approved or denied.
 #[tauri::command]
 pub async fn agent_approve(
     _state: State<'_, AgentRuntime>,
     _approval_id: String,
     _approved: bool,
 ) -> Result<(), String> {
-    Ok(())
+    unsupported_approval_result()
 }
 
 /// Cancel one exact active run. The returned acknowledgement means the request
@@ -906,5 +906,12 @@ mod tests {
         // The global checkpoint store is only init'd by the live runtime, never
         // in unit tests — so listing yields nothing rather than panicking.
         assert!(checkpoint_list().is_empty());
+    }
+
+    #[test]
+    fn id_based_approval_is_explicitly_unsupported() {
+        let error = unsupported_approval_result().expect_err("must reject false success");
+        assert!(error.contains("unsupported"));
+        assert!(error.contains("clarification"));
     }
 }

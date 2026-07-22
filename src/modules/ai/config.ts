@@ -916,7 +916,6 @@ export function getAutocompleteEligibleModels(): readonly ModelInfo[] {
 export const LMSTUDIO_DEFAULT_BASE_URL = "http://localhost:1234/v1";
 export const MLX_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1";
 export const OPENAI_COMPATIBLE_DEFAULT_BASE_URL = "";
-export const MAX_AGENT_STEPS = 24;
 export const TERMINAL_BUFFER_LINES = 300;
 
 export const SYSTEM_PROMPT = `You are ALTAI, an AI agent embedded in a developer terminal emulator. You are a hands-on engineer, not a chat bot — your job is to *do* the work, not narrate it.
