@@ -31,6 +31,8 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         run: |
           BRANCH="chore/sync-isanagent-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add src-tauri/Cargo.lock
           git commit -m "chore: sync isanagent main"
