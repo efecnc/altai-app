@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type {
   AgentEvent,
   ParsedAgentEvent,
+  RunBudgetWarning,
   RunOutcome,
 } from "../lib/agentEventBridge";
 import type { AgentRunStatus, SubagentTask } from "./chatStore";
@@ -29,6 +30,7 @@ export type RunState = {
   runId: string | null;
   lastSeq: number;
   outcome: RunOutcome | null;
+  warning: RunBudgetWarning | null;
   status: AgentRunStatus;
   step: string | null;
   tokens: RunTokens;
@@ -53,6 +55,7 @@ const EMPTY: RunState = {
   runId: null,
   lastSeq: 0,
   outcome: null,
+  warning: null,
   status: "idle",
   step: null,
   tokens: { input: 0, output: 0, cached: 0 },
@@ -280,6 +283,12 @@ function reduce(cur: RunState, ev: ParsedAgentEvent): RunState {
           cur.runId === ev.run_id && cur.status === "cancelling"
             ? "cancelling"
             : "thinking",
+      };
+    case "run_warning":
+      return {
+        ...cur,
+        status: cur.status === "cancelling" ? "cancelling" : "thinking",
+        warning: ev.warning,
       };
     case "run_terminated": {
       const succeeded =

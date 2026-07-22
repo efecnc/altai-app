@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -99,6 +100,10 @@ pub struct EditDiffPayload {
 pub enum Event {
     RunStarted {
         run_id: String,
+    },
+    RunWarning {
+        run_id: String,
+        warning: serde_json::Value,
     },
     RunTerminated {
         run_id: String,
@@ -429,6 +434,22 @@ impl RunCoordinator {
         Ok((active.run_id.clone(), seq))
     }
 
+    fn next_for_run(
+        &mut self,
+        chat_id: &str,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<(String, u64), RunTransitionError> {
+        let active = self
+            .active
+            .get(chat_id)
+            .ok_or(RunTransitionError::MissingLease)?;
+        if active.run_id != run_id {
+            return Err(RunTransitionError::RunMismatch);
+        }
+        self.next(chat_id, owner_id)
+    }
+
     fn cancel_requested(
         &mut self,
         chat_id: &str,
@@ -732,7 +753,34 @@ fn parse_edit_diff(value: &serde_json::Value) -> Option<EditDiffPayload> {
     })
 }
 
-/// Identifies a particular `(provider, model, key, base_url, persona)`
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FallbackFingerprint {
+    provider_name: String,
+    model_name: String,
+    base_url: String,
+    secret_identity: String,
+}
+
+impl From<&isanagent::agent::FallbackProviderSpec> for FallbackFingerprint {
+    fn from(spec: &isanagent::agent::FallbackProviderSpec) -> Self {
+        Self {
+            provider_name: spec.provider_name.clone(),
+            model_name: spec.model_name.clone(),
+            base_url: spec.base_url.trim_end_matches('/').to_string(),
+            secret_identity: secret_identity(&spec.api_key),
+        }
+    }
+}
+
+fn secret_identity(secret: &str) -> String {
+    if secret.is_empty() {
+        return "none".to_string();
+    }
+    let digest = Sha256::digest(secret.as_bytes());
+    format!("sha256:{}", &hex::encode(digest)[..16])
+}
+
+/// Identifies a particular `(provider, model, secret identity, base_url, persona, fallback)`
 /// configuration of the running runtime. When `start_agent` is called
 /// with a different fingerprint we tear down the existing bus and
 /// agent node and re-init — without this guard the runtime locked in
@@ -743,8 +791,10 @@ fn parse_edit_diff(value: &serde_json::Value) -> Option<EditDiffPayload> {
 struct RuntimeFingerprint {
     provider_name: String,
     model_name: String,
-    api_key: String,
+    /// Non-reversible stable identity; raw provider credentials never enter Hash/Debug state.
+    secret_identity: String,
     base_url: String,
+    fallback: Option<FallbackFingerprint>,
     persona: String,
     /// Resolved IsanAgent workspace root (`<selected-folder>/.isanagent`, or
     /// the `~/.isanagent` default). Switching workspaces reinitializes the
@@ -1082,6 +1132,7 @@ fn make_fingerprint(
     workspace_path: Option<&str>,
     permission_mode: Option<&str>,
     compaction: Option<&CompactionArg>,
+    fallback: Option<&isanagent::agent::FallbackProviderSpec>,
 ) -> RuntimeFingerprint {
     let workspace_root = workspace_path
         .map(|p| format!("{}/.isanagent", p.trim_end_matches('/')))
@@ -1097,8 +1148,9 @@ fn make_fingerprint(
     RuntimeFingerprint {
         provider_name: provider_name.to_string(),
         model_name: model_name.to_string(),
-        api_key: api_key.to_string(),
+        secret_identity: secret_identity(api_key),
         base_url: base_url_override.unwrap_or("").to_string(),
+        fallback: fallback.map(FallbackFingerprint::from),
         persona: persona_instructions.unwrap_or("").to_string(),
         workspace_root,
         permission_mode: permission_mode.unwrap_or("").to_string(),
@@ -1248,6 +1300,7 @@ async fn ensure_instance(
     workspace_path: Option<&str>,
     permission_mode: Option<&str>,
     compaction: Option<&CompactionArg>,
+    fallback: Option<&isanagent::agent::FallbackProviderSpec>,
 ) -> Result<Arc<TauriChannel>, String> {
     let fp = make_fingerprint(
         provider_name,
@@ -1258,6 +1311,7 @@ async fn ensure_instance(
         workspace_path,
         permission_mode,
         compaction,
+        fallback,
     );
     let workspace_root = fp.workspace_root.clone();
 
@@ -1365,6 +1419,7 @@ async fn ensure_instance(
         workspace_root_opt,
         permission_mode,
         compaction,
+        fallback,
     )
     .await?;
 
@@ -1425,6 +1480,7 @@ pub async fn route_send(
         workspace_path,
         permission_mode,
         compaction,
+        fallback.as_ref(),
     );
     let channel = ensure_instance(
         runtime,
@@ -1436,32 +1492,9 @@ pub async fn route_send(
         workspace_path,
         permission_mode,
         compaction,
+        fallback.as_ref(),
     )
     .await?;
-
-    // Cross-provider failover: refresh the process-global fallback list per send
-    // so it tracks the current primary. `build_fallback_specs` drops the
-    // candidate if it equals the primary (so the primary is never its own
-    // fallback). Empty list = failover off.
-    //
-    // CAVEAT: `set_fallback_providers` is process-GLOBAL (isanagent owns one
-    // list), so concurrent sends from different chats race here — last writer
-    // wins until each call's `chat_with_retry` reads it. Failover only fires on
-    // primary exhaustion (a rare, mostly-sequential path), so a stray cross-chat
-    // fallback is benign; truly per-chat fallback would need a per-instance list
-    // upstream in isanagent.
-    match fallback {
-        Some(fb) => {
-            let specs = isanagent::agent::build_fallback_specs(
-                provider_name,
-                base_url_override.unwrap_or(""),
-                model_name,
-                vec![fb],
-            );
-            isanagent::agent::set_fallback_providers(specs);
-        }
-        None => isanagent::agent::set_fallback_providers(Vec::new()),
-    }
 
     let acknowledgement = channel
         .inject_user_message(message, images, documents, chat_id.clone(), queue)
@@ -2639,6 +2672,7 @@ pub async fn start_agent(
         workspace_path,
         permission_mode,
         compaction,
+        None,
     )
     .await
     .map(|_| ())
@@ -2695,6 +2729,7 @@ async fn build_instance(
     workspace_root: Option<&str>,
     permission_mode: Option<&str>,
     compaction: Option<&CompactionArg>,
+    fallback: Option<&isanagent::agent::FallbackProviderSpec>,
 ) -> Result<
     (
         Arc<TauriChannel>,
@@ -3115,6 +3150,13 @@ async fn build_instance(
     };
     let llm_provider =
         provider::create_provider(provider_name, &resolved_base_url, api_key, model_name);
+    let provider_credentials = isanagent::provider::ProviderCredentials {
+        provider_name: provider_name.to_string(),
+        base_url: resolved_base_url.clone(),
+        api_key: api_key.to_string(),
+        model_name: model_name.to_string(),
+    };
+    let fallback_providers = fallback.cloned().into_iter().collect();
 
     // System prompt
     let mut system_prompt = workspace.compile_system_prompt();
@@ -3239,30 +3281,33 @@ async fn build_instance(
         harness_ref,
     );
 
-    let agent_logic = AgentLogic::new(AgentLogicParams {
-        name: "altai-agent".to_string(),
-        provider: llm_provider,
-        provider_credentials: isanagent::provider::ProviderCredentials::empty(),
-        session_manager,
-        tools,
-        skills,
-        system_prompt,
-        max_iterations,
-        max_tool_output_chars,
-        max_recent_summaries,
-        short_term_threshold_turns,
-        short_term_threshold_tokens,
-        outbound_tx: global_outbound_tx.clone(),
-        logger_tx: logger_handle,
-        clarification_hub,
-        subagent,
-        doom_loop_enabled: workspace.config.doom_loop_enabled(),
-        harness_runtime_summary,
-        subagent_system_prompt,
-        forbid_final_without_tools,
-        shell_policy,
-        hook_tool_ctx,
-    });
+    let agent_logic = AgentLogic::new_with_fallback_providers(
+        AgentLogicParams {
+            name: "altai-agent".to_string(),
+            provider: llm_provider,
+            provider_credentials,
+            session_manager,
+            tools,
+            skills,
+            system_prompt,
+            max_iterations,
+            max_tool_output_chars,
+            max_recent_summaries,
+            short_term_threshold_turns,
+            short_term_threshold_tokens,
+            outbound_tx: global_outbound_tx.clone(),
+            logger_tx: logger_handle,
+            clarification_hub,
+            subagent,
+            doom_loop_enabled: workspace.config.doom_loop_enabled(),
+            harness_runtime_summary,
+            subagent_system_prompt,
+            forbid_final_without_tools,
+            shell_policy,
+            hook_tool_ctx,
+        },
+        fallback_providers,
+    );
 
     let agent_node = NodeHandle::<BusMessage>::new(agent_logic, 100, 3, Duration::from_millis(50));
 
@@ -3469,6 +3514,20 @@ async fn build_instance(
                                 ),
                             }
                         }
+                        RunLifecycleEvent::Warning {
+                            run_id, chat_id, ..
+                        } => {
+                            let transition = coordinator_guard(&coordinator_for_outbound)
+                                .next_for_run(&chat_id, &run_id, &owner_for_outbound);
+                            match transition {
+                                Ok(run) => {
+                                    emit_event(&app_for_outbound, &chat_id, &event, Some(run));
+                                }
+                                Err(error) => log::warn!(
+                                    "Dropped invalid run_warning transition for chat {chat_id}: {error:?}"
+                                ),
+                            }
+                        }
                         RunLifecycleEvent::Terminated {
                             run_id, chat_id, ..
                         } => {
@@ -3535,6 +3594,26 @@ mod run_event_tests {
         assert_eq!(
             coordinator.next("chat-a", "owner-1"),
             Err(RunTransitionError::MissingLease)
+        );
+    }
+
+    #[test]
+    fn stale_run_warning_cannot_consume_the_active_sequence() {
+        let mut coordinator = RunCoordinator::default();
+        coordinator
+            .admit("chat-a", "run-1", "owner-1")
+            .expect("admit run");
+        coordinator
+            .started("chat-a", "run-1", "owner-1")
+            .expect("start run");
+
+        assert_eq!(
+            coordinator.next_for_run("chat-a", "stale-run", "owner-1"),
+            Err(RunTransitionError::RunMismatch)
+        );
+        assert_eq!(
+            coordinator.next_for_run("chat-a", "run-1", "owner-1"),
+            Ok(("run-1".to_string(), 2))
         );
     }
 
@@ -3783,6 +3862,79 @@ mod compaction_tests {
             tail_turns: 9,
         };
         assert_eq!(c.fingerprint_tuple(), (false, 12_345, 9));
+    }
+}
+
+#[cfg(test)]
+mod provider_fingerprint_tests {
+    use super::*;
+
+    fn fallback(
+        provider: &str,
+        model: &str,
+        api_key: &str,
+    ) -> isanagent::agent::FallbackProviderSpec {
+        isanagent::agent::FallbackProviderSpec {
+            provider_name: provider.to_string(),
+            base_url: format!("https://{provider}.test/v1"),
+            api_key: api_key.to_string(),
+            model_name: model.to_string(),
+        }
+    }
+
+    fn fingerprint(
+        primary_key: &str,
+        fallback: Option<&isanagent::agent::FallbackProviderSpec>,
+    ) -> RuntimeFingerprint {
+        make_fingerprint(
+            "primary",
+            primary_key,
+            "primary-model",
+            None,
+            Some("https://primary.test/v1"),
+            Some("/tmp/altai-provider-fingerprint-test"),
+            Some("ask"),
+            None,
+            fallback,
+        )
+    }
+
+    #[test]
+    fn fingerprint_debug_uses_secret_identity_instead_of_raw_keys() {
+        let fallback = fallback("backup", "backup-model", "fallback-secret-value");
+        let runtime_fingerprint = fingerprint("primary-secret-value", Some(&fallback));
+        let debug = format!("{runtime_fingerprint:?}");
+
+        assert!(!debug.contains("primary-secret-value"), "{debug}");
+        assert!(!debug.contains("fallback-secret-value"), "{debug}");
+        assert!(debug.contains("sha256:"), "{debug}");
+        assert_ne!(
+            fingerprint("primary-secret-value", Some(&fallback)),
+            fingerprint("different-primary-secret", Some(&fallback))
+        );
+    }
+
+    #[test]
+    fn two_concurrent_chat_configurations_keep_distinct_fallback_identity() {
+        let fallback_a = fallback("backup-a", "model-a", "fallback-key-a");
+        let fallback_b = fallback("backup-b", "model-b", "fallback-key-b");
+        let (config_a, config_b) = std::thread::scope(|scope| {
+            let config_a = scope.spawn(|| fingerprint("shared-primary-key", Some(&fallback_a)));
+            let config_b = scope.spawn(|| fingerprint("shared-primary-key", Some(&fallback_b)));
+            (
+                config_a.join().expect("chat-a fingerprint"),
+                config_b.join().expect("chat-b fingerprint"),
+            )
+        });
+
+        let mut owners = HashMap::new();
+        owners.insert(config_a.clone(), "chat-a");
+        owners.insert(config_b.clone(), "chat-b");
+
+        assert_ne!(config_a, config_b);
+        assert_eq!(owners.len(), 2);
+        assert_eq!(owners.get(&config_a), Some(&"chat-a"));
+        assert_eq!(owners.get(&config_b), Some(&"chat-b"));
     }
 }
 

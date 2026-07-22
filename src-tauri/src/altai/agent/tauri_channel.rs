@@ -226,6 +226,13 @@ pub fn map_lifecycle_to_event(lifecycle: &isanagent::bus::RunLifecycleEvent) -> 
         RunLifecycleEvent::Started { run_id, .. } => Event::RunStarted {
             run_id: run_id.clone(),
         },
+        RunLifecycleEvent::Warning {
+            run_id, warning, ..
+        } => Event::RunWarning {
+            run_id: run_id.clone(),
+            warning: serde_json::to_value(warning)
+                .expect("run lifecycle warnings are serializable by contract"),
+        },
         RunLifecycleEvent::Terminated {
             run_id, outcome, ..
         } => Event::RunTerminated {
@@ -436,6 +443,7 @@ mod tests {
     fn event_type(e: &Event) -> &str {
         match e {
             Event::RunStarted { .. } => "run_started",
+            Event::RunWarning { .. } => "run_warning",
             Event::RunTerminated { .. } => "run_terminated",
             Event::AgentMessage { .. } => "agent_message",
             Event::ToolCallStart { .. } => "tool_call_start",
@@ -457,6 +465,28 @@ mod tests {
             Event::NotebookOutput { .. } => "notebook_output",
             Event::ExperimentResult { .. } => "experiment_result",
         }
+    }
+
+    #[test]
+    fn lifecycle_warning_maps_to_typed_run_warning() {
+        let lifecycle = isanagent::bus::RunLifecycleEvent::Warning {
+            run_id: "run-1".to_string(),
+            chat_id: "chat-1".to_string(),
+            warning: isanagent::bus::RunBudgetWarning {
+                reason: isanagent::bus::RunBudgetWarningReason::NoProgress { turns: 6 },
+                budget: isanagent::bus::RunBudgetSnapshot::default(),
+            },
+        };
+
+        let event = map_lifecycle_to_event(&lifecycle);
+        assert_eq!(event_type(&event), "run_warning");
+        assert!(matches!(
+            event,
+            Event::RunWarning { run_id, warning }
+                if run_id == "run-1"
+                    && warning["reason"]["kind"] == "no_progress"
+                    && warning["reason"]["turns"] == 6
+        ));
     }
 
     fn te_tool_call() -> isanagent::bus::TelemetryEvent {

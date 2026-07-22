@@ -82,6 +82,29 @@ describe("agentRunsStore lifecycle admission", () => {
     });
   });
 
+  it("stores a typed warning without completing or rewriting the run", () => {
+    const ingest = useAgentRunsStore.getState().ingest;
+    ingest("chat-1", event(1, { type: "run_started" }));
+    expect(
+      ingest(
+        "chat-1",
+        event(2, {
+          type: "run_warning",
+          warning: {
+            reason: { kind: "repeated_root_cause", failures: 2 },
+            budget: { iterations_used: 4, iterations_limit: 50 },
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(useAgentRunsStore.getState().runs["chat-1"]).toMatchObject({
+      runId: "run-1",
+      lastSeq: 2,
+      completed: false,
+      warning: { reason: { kind: "repeated_root_cause", failures: 2 } },
+    });
+  });
+
   it("marks only the exact live run as cancelling and waits for termination", () => {
     const store = useAgentRunsStore.getState();
     store.ingest("chat-1", event(1, { type: "run_started" }));

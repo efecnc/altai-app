@@ -1270,6 +1270,18 @@ export async function sendMessage(
   return accepted;
 }
 
+/**
+ * Retry a provider-level failure without rewinding the conversation. Rewinding
+ * could repeat tool calls that already succeeded earlier in the failed run;
+ * this creates a fresh run in the same chat context and tells the agent to
+ * resume only the interrupted provider step.
+ */
+export async function retryFailedRun(): Promise<boolean> {
+  return sendMessage(
+    "Retry the provider request that interrupted the previous run. Continue from the existing context, do not repeat successful tool calls or side effects, and complete the original task.",
+  );
+}
+
 async function sendViaIsanAgent(
   text: string,
   chatId: string,
@@ -1324,9 +1336,8 @@ async function sendViaIsanAgent(
     prefs.bypassPermissionsEnabled,
   );
 
-  // Configured failover model. The runtime refreshes its process-global
-  // fallback list per send so the agent retries here when the primary provider
-  // is exhausted; null when no failover model is set or it can't be resolved.
+  // Configured failover model. The runtime snapshots it into this run's
+  // immutable provider context; null means failover is disabled for the run.
   const fallback = resolveFallbackSpec(prefs.fallbackModelId, store.apiKeys, {
     lmstudioBaseURL: prefs.lmstudioBaseURL,
     lmstudioModelId: prefs.lmstudioModelId,

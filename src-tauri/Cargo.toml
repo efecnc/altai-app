@@ -51,9 +51,9 @@ base64 = "0.22"
 pdf-extract = "0.12"
 
 # İsanAgent — embedded as Rust crate (direct API, no sidecar)
-# Pinned to the merged upstream baseline through #82, including native PDF
-# inputs, exact-run steering, lifecycle outcomes, and typed tool results.
-isanagent = { git = "https://github.com/altaidevorg/isanagent.git", rev = "d39c96aaba83301a02d10c9138b67c878bb80265" }
+# Stacked harness baseline: exact-run lifecycle, progress-aware budgets, and
+# immutable per-run provider/fallback configuration.
+isanagent = { git = "https://github.com/altaidevorg/isanagent.git", rev = "169f497e9776f7756fcce1e37d7a1aa7543c482e" }
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"
 tauri-plugin-deep-link = "2"

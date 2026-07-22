@@ -117,6 +117,7 @@ describe("switchSession — race guard", () => {
           runId: "run-b",
           lastSeq: 3,
           outcome: null,
+          warning: null,
           status: "cancelling",
           step: null,
           tokens: { input: 10, output: 2, cached: 4 },

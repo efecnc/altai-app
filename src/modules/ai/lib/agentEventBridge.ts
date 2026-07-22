@@ -76,6 +76,7 @@ function ingestTodoWrite(input: unknown, sessionId: string | null): void {
  */
 export type AgentEvent =
   | { type: "run_started"; run_id: string }
+  | { type: "run_warning"; run_id: string; warning: RunBudgetWarning }
   | { type: "run_terminated"; run_id: string; outcome: RunOutcome }
   | { type: "agent_message"; content: string; role: string }
   | { type: "tool_call_start"; id: string; name: string; input: unknown }
@@ -164,6 +165,30 @@ export type AgentEvent =
   | { type: "notebook_output"; notebook_id: string; cell_index: number; output: unknown }
   | { type: "experiment_result"; experiment_id: string; metrics: unknown; artifacts: string[] };
 
+export type RunBudgetSnapshot = {
+  iterations_used: number;
+  iterations_limit: number;
+  elapsed_ms?: number;
+  elapsed_limit_ms?: number;
+  tokens_used?: number;
+  tokens_limit?: number;
+  provider_retries_used?: number;
+  provider_retries_limit?: number;
+  context_recoveries_used?: number;
+  context_recoveries_limit?: number;
+  no_progress_turns?: number;
+  repeated_root_cause_failures?: number;
+  exhausted_limit?: string;
+};
+
+export type RunBudgetWarning = {
+  reason:
+    | { kind: "approaching_limit"; limit: string }
+    | { kind: "repeated_root_cause"; failures: number }
+    | { kind: "no_progress"; turns: number };
+  budget: RunBudgetSnapshot;
+};
+
 export type RunOutcome =
   | { kind: "completed" }
   | { kind: "cancelled" }
@@ -171,8 +196,25 @@ export type RunOutcome =
   | { kind: "stuck"; reason: string }
   | {
       kind: "budget_exhausted";
-      budget: { iterations_used: number; iterations_limit: number };
+      budget: RunBudgetSnapshot;
     };
+
+export function isRetryableRunOutcome(
+  outcome: RunOutcome | null | undefined,
+): boolean {
+  return outcome?.kind === "failed" && outcome.retryable;
+}
+
+export function describeRunWarning(warning: RunBudgetWarning): string {
+  switch (warning.reason.kind) {
+    case "approaching_limit":
+      return `Run is approaching its ${warning.reason.limit.replace(/_/g, " ")} limit`;
+    case "repeated_root_cause":
+      return `The same typed failure repeated ${warning.reason.failures} times`;
+    case "no_progress":
+      return `No measurable progress for ${warning.reason.turns} turns`;
+  }
+}
 
 export type VersionedAgentEventEnvelope = {
   version: 1;
@@ -194,6 +236,7 @@ export type ParsedAgentEvent = AgentEvent & {
 
 const AGENT_EVENT_TYPES = new Set<AgentEvent["type"]>([
   "run_started",
+  "run_warning",
   "run_terminated",
   "agent_message",
   "tool_call_start",
@@ -219,6 +262,35 @@ const AGENT_EVENT_TYPES = new Set<AgentEvent["type"]>([
 const nonBlankString = z.string().trim().min(1);
 const nullableString = z.string().nullable();
 const nonnegativeInteger = z.number().int().nonnegative();
+const budgetSnapshotSchema = z.object({
+  iterations_used: nonnegativeInteger,
+  iterations_limit: z.number().int().positive(),
+  elapsed_ms: nonnegativeInteger.optional(),
+  elapsed_limit_ms: nonnegativeInteger.optional(),
+  tokens_used: nonnegativeInteger.optional(),
+  tokens_limit: nonnegativeInteger.optional(),
+  provider_retries_used: nonnegativeInteger.optional(),
+  provider_retries_limit: nonnegativeInteger.optional(),
+  context_recoveries_used: nonnegativeInteger.optional(),
+  context_recoveries_limit: nonnegativeInteger.optional(),
+  no_progress_turns: nonnegativeInteger.optional(),
+  repeated_root_cause_failures: nonnegativeInteger.optional(),
+  exhausted_limit: nonBlankString.optional(),
+});
+const runBudgetWarningSchema = z.object({
+  reason: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("approaching_limit"), limit: nonBlankString }),
+    z.object({
+      kind: z.literal("repeated_root_cause"),
+      failures: z.number().int().positive(),
+    }),
+    z.object({
+      kind: z.literal("no_progress"),
+      turns: z.number().int().positive(),
+    }),
+  ]),
+  budget: budgetSnapshotSchema,
+});
 const runOutcomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("completed") }),
   z.object({ kind: z.literal("cancelled") }),
@@ -230,14 +302,16 @@ const runOutcomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("stuck"), reason: nonBlankString }),
   z.object({
     kind: z.literal("budget_exhausted"),
-    budget: z.object({
-      iterations_used: nonnegativeInteger,
-      iterations_limit: z.number().int().positive(),
-    }),
+    budget: budgetSnapshotSchema,
   }),
 ]);
 const lifecycleEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run_started"), run_id: nonBlankString }),
+  z.object({
+    type: z.literal("run_warning"),
+    run_id: nonBlankString,
+    warning: runBudgetWarningSchema,
+  }),
   z.object({
     type: z.literal("run_terminated"),
     run_id: nonBlankString,
@@ -417,7 +491,11 @@ export function parseAgentEventPayload(payload: unknown): ParsedAgentEvent | nul
         return null;
       }
       const lifecycle = lifecycleEventSchema.safeParse(event);
-      if (eventType === "run_started" || eventType === "run_terminated") {
+      if (
+        eventType === "run_started" ||
+        eventType === "run_warning" ||
+        eventType === "run_terminated"
+      ) {
         if (!lifecycle.success || lifecycle.data.run_id !== runId) return null;
       } else {
         const schema = runEventSchemas[eventType];
@@ -533,6 +611,20 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
           store.patchAgentMeta({ status: "thinking", step: null, error: null });
         }
         break;
+
+      case "run_warning": {
+        const warning = describeRunWarning(payload.warning);
+        store.addActivity({
+          label: "Run needs attention",
+          detail: warning,
+          kind: "agent",
+          tone: "warning",
+        });
+        if (store.agentMeta.status !== "cancelling") {
+          store.patchAgentMeta({ status: "thinking", step: warning });
+        }
+        break;
+      }
 
       case "run_terminated": {
         const error =

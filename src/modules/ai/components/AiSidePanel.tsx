@@ -24,10 +24,16 @@ import { type ReactElement, useEffect, useState } from "react";
 import type { AgentIconId } from "../lib/agents";
 import { EditApprovalCard } from "./EditApprovalCard";
 import {
+  retryFailedRun,
   sendMessage,
   stop as stopAgent,
   useChatStore,
 } from "../store/chatStore";
+import { useAgentRunsStore } from "../store/agentRunsStore";
+import {
+  describeRunWarning,
+  isRetryableRunOutcome,
+} from "../lib/agentEventBridge";
 import { useAgentsStore } from "../store/agentsStore";
 import { usePlanStore, type AppliedPlanEdit } from "../store/planStore";
 import { useTodosStore } from "../store/todoStore";
@@ -1038,7 +1044,115 @@ function Body() {
         )}
       </div>
 
+      <RunRecoveryActions />
       <ClarificationChoices />
+    </div>
+  );
+}
+
+function RunRecoveryActions() {
+  const sessionId = useChatStore((s) => s.activeSessionId);
+  const focusInput = useChatStore((s) => s.focusInput);
+  const run = useAgentRunsStore((s) =>
+    sessionId ? s.runs[sessionId] : undefined,
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  if (!run?.runId) return null;
+  const warning = !run.completed ? run.warning : null;
+  const outcome = run.completed ? run.outcome : null;
+  const canContinue =
+    outcome?.kind === "stuck" || outcome?.kind === "budget_exhausted";
+  const canRetry = isRetryableRunOutcome(outcome);
+  if (!warning && !canContinue && !canRetry) return null;
+
+  const detail = warning
+    ? `${describeRunWarning(warning)}. The run is still active.`
+    : outcome?.kind === "stuck"
+      ? `The run stopped because it was ${outcome.reason.replace(/_/g, " ")}.`
+      : outcome?.kind === "budget_exhausted"
+        ? `The run exhausted its ${outcome.budget.exhausted_limit?.replace(/_/g, " ") ?? "execution"} budget.`
+        : "The provider request failed after its retry policy was exhausted.";
+
+  const continueRun = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await sendMessage(
+        "Continue the previous task from where it stopped. Reuse the existing context, avoid repeating successful side effects, and make measurable progress before completing.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const retryRun = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await retryFailedRun();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      role={warning ? "status" : "alert"}
+      className="mx-3 mb-1 rounded-lg border border-amber-500/35 bg-amber-500/[0.08] px-3 py-2"
+    >
+      <div className="text-[11px] font-medium text-foreground">
+        {warning ? "Run needs attention" : canRetry ? "Retry available" : "Run stopped"}
+      </div>
+      <div className="mt-0.5 text-[10.5px] leading-relaxed text-muted-foreground">
+        {detail}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {canContinue ? (
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => void continueRun()}
+            className="rounded-md bg-foreground px-2 py-1 text-[10.5px] font-medium text-background disabled:opacity-50"
+          >
+            Continue
+          </button>
+        ) : null}
+        {canRetry ? (
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => void retryRun()}
+            className="rounded-md bg-foreground px-2 py-1 text-[10.5px] font-medium text-background disabled:opacity-50"
+          >
+            Retry
+          </button>
+        ) : null}
+        {warning || canContinue ? (
+          <button
+            type="button"
+            onClick={() =>
+              focusInput(
+                warning
+                  ? "Adjust the active run with this direction: "
+                  : "Continue the previous run with this adjustment: ",
+              )
+            }
+            className="rounded-md border border-border/60 bg-background/60 px-2 py-1 text-[10.5px] font-medium text-foreground"
+          >
+            Steer
+          </button>
+        ) : null}
+        {warning ? (
+          <button
+            type="button"
+            onClick={stopAgent}
+            className="rounded-md border border-border/60 bg-background/60 px-2 py-1 text-[10.5px] font-medium text-foreground"
+          >
+            Stop
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

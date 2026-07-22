@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseAgentEventPayload } from "./agentEventBridge";
+import {
+  isRetryableRunOutcome,
+  parseAgentEventPayload,
+} from "./agentEventBridge";
 
 const envelope = (event: unknown, overrides: Record<string, unknown> = {}) => ({
   version: 1,
@@ -9,6 +12,28 @@ const envelope = (event: unknown, overrides: Record<string, unknown> = {}) => ({
   chatId: "chat-1",
   event,
   ...overrides,
+});
+
+describe("isRetryableRunOutcome", () => {
+  it("permits retry only for a typed retryable failure", () => {
+    expect(
+      isRetryableRunOutcome({
+        kind: "failed",
+        failure: "provider_retries_exhausted",
+        retryable: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      isRetryableRunOutcome({
+        kind: "failed",
+        failure: "provider",
+        retryable: false,
+      }),
+    ).toBe(false);
+    expect(isRetryableRunOutcome({ kind: "stuck", reason: "doom_loop" })).toBe(false);
+    expect(isRetryableRunOutcome(null)).toBe(false);
+  });
 });
 
 describe("parseAgentEventPayload", () => {
@@ -25,6 +50,24 @@ describe("parseAgentEventPayload", () => {
         }),
       ),
     ).toMatchObject({ type: "run_terminated", run_id: "run-1" });
+  });
+
+  it("accepts a typed non-terminal budget warning", () => {
+    expect(
+      parseAgentEventPayload(
+        envelope({
+          type: "run_warning",
+          run_id: "run-1",
+          warning: {
+            reason: { kind: "no_progress", turns: 6 },
+            budget: { iterations_used: 6, iterations_limit: 50 },
+          },
+        }),
+      ),
+    ).toMatchObject({
+      type: "run_warning",
+      warning: { reason: { kind: "no_progress", turns: 6 } },
+    });
   });
 
   it("rejects unknown versions even when they look legacy", () => {

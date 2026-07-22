@@ -627,9 +627,8 @@ export const native = {
       workspacePath?: string;
       /// "ask" | "auto-edit" | "bypass" — gates code-exec/destructive-shell.
       permissionMode?: string;
-      // Failover provider. The Rust side refreshes the process-global fallback
-      // list per send (via `set_fallback_providers`) so the agent retries on
-      // this model when the primary provider is exhausted. Null = failover off.
+      // Failover provider snapshotted into the immutable run configuration.
+      // Null disables failover for this run.
       fallback?: {
         providerName: string;
         baseUrl: string;
