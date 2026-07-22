@@ -299,8 +299,14 @@ export default function App() {
   // Keep the terminal drawer out of the way on launch. It opens when the user
   // explicitly toggles it, creates a terminal, or sends a command to it.
   const [terminalDrawerOpen, setTerminalDrawerOpen] = useState(false);
+  // React state can lag behind repeated keydown events by a render. Keep a
+  // synchronous mirror so a quick shortcut sequence always toggles from the
+  // latest requested state instead of reopening an already-open drawer.
+  const terminalDrawerOpenRef = useRef(false);
   const terminalDrawerRef = useRef<PanelImperativeHandle | null>(null);
   const terminalDrawerHeightRef = useRef(readTerminalDrawerHeight());
+  const terminalDrawerHeightWriteTimerRef = useRef(0);
+  const terminalCreationPendingRef = useRef(false);
   // Guards against a 0px ResizeObserver tick on mount — only mirror genuine
   // user-driven drawer collapses after it has been opened once.
   const terminalDrawerSeenOpenRef = useRef(false);
@@ -323,20 +329,35 @@ export default function App() {
   const toggleSidebar = useCallback(() => {
     const p = sidebarRef.current;
     if (!p) return;
-    if (p.getSize().asPercentage <= 0) p.expand();
+    if (p.isCollapsed()) p.resize(`${sidebarWidthRef.current}px`);
     else p.collapse();
   }, []);
+  const setTerminalDrawerVisibility = useCallback((open: boolean) => {
+    terminalDrawerOpenRef.current = open;
+    setTerminalDrawerOpen(open);
+  }, []);
   const toggleTerminalDrawer = useCallback(() => {
-    const willOpen = !terminalDrawerOpen;
+    const willOpen = !terminalDrawerOpenRef.current;
     // Opening with no terminal yet — spin one up (outside the state updater,
     // which must stay pure).
-    if (willOpen && activeTerminalId == null) newTab();
-    setTerminalDrawerOpen(willOpen);
-  }, [terminalDrawerOpen, activeTerminalId, newTab]);
+    if (
+      willOpen &&
+      activeTerminalId == null &&
+      !terminalCreationPendingRef.current
+    ) {
+      terminalCreationPendingRef.current = true;
+      newTab();
+    }
+    setTerminalDrawerVisibility(willOpen);
+  }, [activeTerminalId, newTab, setTerminalDrawerVisibility]);
+
+  useEffect(() => {
+    if (activeTerminalId != null) terminalCreationPendingRef.current = false;
+  }, [activeTerminalId]);
   const cycleSidebarView = useCallback(
     (view: SidebarViewId) => {
       const panel = sidebarRef.current;
-      const collapsed = panel ? panel.getSize().asPercentage <= 0 : false;
+      const collapsed = panel?.isCollapsed() ?? false;
       if (collapsed) {
         if (panel) panel.resize(`${sidebarWidthRef.current}px`);
         if (view !== sidebarView) persistSidebarView(view);
@@ -382,6 +403,24 @@ export default function App() {
       }
     }, 200);
   }, []);
+  const persistTerminalDrawerHeight = useCallback((next: number) => {
+    const clamped = clampTerminalDrawerHeight(next);
+    terminalDrawerHeightRef.current = clamped;
+    if (terminalDrawerHeightWriteTimerRef.current) {
+      window.clearTimeout(terminalDrawerHeightWriteTimerRef.current);
+    }
+    terminalDrawerHeightWriteTimerRef.current = window.setTimeout(() => {
+      terminalDrawerHeightWriteTimerRef.current = 0;
+      try {
+        window.localStorage.setItem(
+          TERMINAL_DRAWER_HEIGHT_STORAGE_KEY,
+          String(clamped),
+        );
+      } catch {
+        // ignore
+      }
+    }, 200);
+  }, []);
   useEffect(() => {
     return () => {
       if (sidebarWidthWriteTimerRef.current) {
@@ -390,13 +429,16 @@ export default function App() {
       if (agentSidebarWidthWriteTimerRef.current) {
         window.clearTimeout(agentSidebarWidthWriteTimerRef.current);
       }
+      if (terminalDrawerHeightWriteTimerRef.current) {
+        window.clearTimeout(terminalDrawerHeightWriteTimerRef.current);
+      }
     };
   }, []);
 
   const toggleExplorerFocus = useCallback(() => {
     const explorer = explorerRef.current;
     const panel = sidebarRef.current;
-    const collapsed = panel ? panel.getSize().asPercentage <= 0 : false;
+    const collapsed = panel?.isCollapsed() ?? false;
     if (sidebarView !== "explorer" || collapsed) {
       if (panel && collapsed) panel.resize(`${sidebarWidthRef.current}px`);
       if (sidebarView !== "explorer") persistSidebarView("explorer");
@@ -940,20 +982,22 @@ export default function App() {
   }, [tabs, activeId]);
 
   const togglePanelAndFocus = useCallback(() => {
-    if (miniOpen) {
+    // Read directly from the store so rapid shortcut presses cannot observe a
+    // stale render-time value of `miniOpen`.
+    if (useChatStore.getState().mini.open) {
       closeMini();
     } else {
       openMini();
       focusInput(null);
     }
-  }, [miniOpen, openMini, closeMini, focusInput]);
+  }, [openMini, closeMini, focusInput]);
 
   const attachSelection = useChatStore((s) => s.attachSelection);
 
   useEffect(() => {
     const panel = agentSidebarRef.current;
     if (!panel) return;
-    const collapsed = panel.getSize().asPercentage <= 0;
+    const collapsed = panel.isCollapsed();
     if (miniOpen && collapsed) {
       const target = clampAgentSidebarWidth(agentSidebarWidthRef.current);
       agentSidebarWidthRef.current = target;
@@ -967,7 +1011,7 @@ export default function App() {
   useEffect(() => {
     const panel = terminalDrawerRef.current;
     if (!panel) return;
-    const collapsed = panel.getSize().asPercentage <= 0;
+    const collapsed = panel.isCollapsed();
     if (terminalDrawerOpen && collapsed) {
       const target = clampTerminalDrawerHeight(terminalDrawerHeightRef.current);
       terminalDrawerHeightRef.current = target;
@@ -990,9 +1034,9 @@ export default function App() {
       hadTerminalRef.current = true;
     } else if (hadTerminalRef.current) {
       hadTerminalRef.current = false;
-      setTerminalDrawerOpen(false);
+      setTerminalDrawerVisibility(false);
     }
-  }, [tabs]);
+  }, [tabs, setTerminalDrawerVisibility]);
 
   const askFromSelection = useCallback(() => {
     if (!hasComposer) {
@@ -1061,13 +1105,13 @@ export default function App() {
 
   const openNewTab = useCallback(() => {
     newTab(inheritedCwdForNewTab());
-    setTerminalDrawerOpen(true);
-  }, [newTab, inheritedCwdForNewTab]);
+    setTerminalDrawerVisibility(true);
+  }, [newTab, inheritedCwdForNewTab, setTerminalDrawerVisibility]);
 
   const openNewPrivateTab = useCallback(() => {
     newPrivateTab(inheritedCwdForNewTab());
-    setTerminalDrawerOpen(true);
-  }, [newPrivateTab, inheritedCwdForNewTab]);
+    setTerminalDrawerVisibility(true);
+  }, [newPrivateTab, inheritedCwdForNewTab, setTerminalDrawerVisibility]);
 
   const sendCd = useCallback(
     (path: string) => {
@@ -1086,7 +1130,7 @@ export default function App() {
   const cdInNewTab = useCallback(
     (path: string) => {
       const tabId = newTab(path);
-      setTerminalDrawerOpen(true);
+      setTerminalDrawerVisibility(true);
       setTimeout(() => {
         const tab = tabsRef.current.find((x) => x.id === tabId);
         if (!tab || tab.kind !== "terminal") return;
@@ -1099,7 +1143,7 @@ export default function App() {
         t.focus();
       }, 80);
     },
-    [newTab],
+    [newTab, setTerminalDrawerVisibility],
   );
 
   const handleOpenFile = useCallback(
@@ -1564,14 +1608,14 @@ export default function App() {
     return registerRunInTerminal(
       (command: string, options?: RunInTerminalOptions) => {
         const { leafId } = newTerminalTabWithLeaf(options?.cwd);
-        setTerminalDrawerOpen(true);
+        setTerminalDrawerVisibility(true);
         pendingTerminalWritesRef.current.set(leafId, {
           command,
           immediate: options?.immediate === true,
         });
       },
     );
-  }, [newTerminalTabWithLeaf]);
+  }, [newTerminalTabWithLeaf, setTerminalDrawerVisibility]);
 
   const registerEditorHandle = useCallback(
     (id: number, h: EditorPaneHandle | null) => {
@@ -1896,7 +1940,7 @@ export default function App() {
         onSelect={setActiveTerminalId}
         onClose={handleClose}
         onNew={openNewTab}
-        onHide={() => setTerminalDrawerOpen(false)}
+        onHide={() => setTerminalDrawerVisibility(false)}
       />
       <div className="relative min-h-0 flex-1 px-2 py-1.5">
         <TerminalStack
@@ -1971,6 +2015,7 @@ export default function App() {
                 panelRef={sidebarRef}
                 defaultSize={`${sidebarWidthRef.current}px`}
                 minSize={`${SIDEBAR_MIN_WIDTH}px`}
+                groupResizeBehavior="preserve-pixel-size"
                 collapsible
                 collapsedSize={0}
                 onResize={(size) => {
@@ -2028,7 +2073,11 @@ export default function App() {
                   </div>
                 </div>
               </ResizablePanel>
-              <ResizableHandle withHandle />
+              <ResizableHandle
+                withHandle
+                aria-label="Resize file explorer"
+                title="Resize file explorer (use arrow keys for precise control)"
+              />
               <ResizablePanel id="workspace" defaultSize="78%" minSize="30%">
                 <ResizablePanelGroup
                   orientation="vertical"
@@ -2039,7 +2088,11 @@ export default function App() {
                       {workspaceSurface}
                     </div>
                   </ResizablePanel>
-                  <ResizableHandle withHandle />
+                  <ResizableHandle
+                    withHandle
+                    aria-label="Resize terminal drawer"
+                    title="Resize terminal drawer (use arrow keys for precise control)"
+                  />
                   <ResizablePanel
                     id="terminal-drawer"
                     panelRef={terminalDrawerRef}
@@ -2049,34 +2102,22 @@ export default function App() {
                         : "0px"
                     }
                     minSize={`${TERMINAL_DRAWER_MIN_HEIGHT}px`}
+                    groupResizeBehavior="preserve-pixel-size"
                     collapsible
                     collapsedSize={0}
                     onResize={(size) => {
                       const px = size.inPixels;
-                      if (px > 0 && px < TERMINAL_DRAWER_MIN_HEIGHT) {
-                        terminalDrawerRef.current?.resize(
-                          `${TERMINAL_DRAWER_MIN_HEIGHT}px`,
-                        );
-                        return;
-                      }
                       if (px > 0) {
                         terminalDrawerSeenOpenRef.current = true;
-                        terminalDrawerHeightRef.current =
-                          clampTerminalDrawerHeight(px);
-                        try {
-                          window.localStorage.setItem(
-                            TERMINAL_DRAWER_HEIGHT_STORAGE_KEY,
-                            String(terminalDrawerHeightRef.current),
-                          );
-                        } catch {
-                          // storage may fail in private mode
+                        persistTerminalDrawerHeight(px);
+                        if (!terminalDrawerOpenRef.current) {
+                          setTerminalDrawerVisibility(true);
                         }
-                        if (!terminalDrawerOpen) setTerminalDrawerOpen(true);
                       } else if (
-                        terminalDrawerOpen &&
+                        terminalDrawerOpenRef.current &&
                         terminalDrawerSeenOpenRef.current
                       ) {
-                        setTerminalDrawerOpen(false);
+                        setTerminalDrawerVisibility(false);
                       }
                     }}
                   >
@@ -2084,7 +2125,11 @@ export default function App() {
                   </ResizablePanel>
                 </ResizablePanelGroup>
               </ResizablePanel>
-              <ResizableHandle withHandle />
+              <ResizableHandle
+                withHandle
+                aria-label="Resize AI panel"
+                title="Resize AI panel (use arrow keys for precise control)"
+              />
               <ResizablePanel
                 id="agent-sidebar"
                 panelRef={agentSidebarRef}
@@ -2094,6 +2139,7 @@ export default function App() {
                     : "0px"
                 }
                 minSize={`${AGENT_SIDEBAR_MIN_WIDTH}px`}
+                groupResizeBehavior="preserve-pixel-size"
                 collapsible
                 collapsedSize={0}
                 onResize={(size) => {

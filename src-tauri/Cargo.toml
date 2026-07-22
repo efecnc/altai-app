@@ -50,9 +50,9 @@ tar = "0.4"
 base64 = "0.22"
 pdf-extract = "0.12"
 
-# İsanAgent — embedded as Rust crate (direct API, no sidecar)
-# Stacked harness baseline: exact-run lifecycle, progress-aware budgets, and
-# immutable per-run provider/fallback configuration.
+# İsanAgent — embedded as Rust crate (direct API, no sidecar).
+# Temporary stacked harness baseline for immutable per-run provider/fallback
+# configuration. Return to the rolling main branch after IsanAgent #90 merges.
 isanagent = { git = "https://github.com/altaidevorg/isanagent.git", rev = "169f497e9776f7756fcce1e37d7a1aa7543c482e" }
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"

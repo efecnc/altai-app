@@ -1,36 +1,42 @@
-name: Bump İsanAgent
+name: Sync İsanAgent
 on:
   repository_dispatch:
     types: [isanagent-released]
   schedule:
-    - cron: '0 9 * * MON'
+    - cron: '0 9 * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Get latest isanagent tag
-        id: tag
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve latest İsanAgent main
+        run: cargo update --manifest-path src-tauri/Cargo.toml -p isanagent
+      - name: Check for a dependency update
+        id: changes
         run: |
-          LATEST=$(gh release view --repo altaidevorg/isanagent --json tagName -q .tagName)
-          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Update Cargo.toml
-        run: |
-          sed -i "s|tag = \"v[0-9.]*\"|tag = \"${{ steps.tag.outputs.latest }}\"|" src-tauri/Cargo.toml
-      - name: Test build
-        run: |
-          cd src-tauri && cargo build --release
+          if git diff --quiet -- src-tauri/Cargo.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Open PR
+        if: steps.changes.outputs.changed == 'true'
         run: |
-          BRANCH="chore/bump-isanagent-${{ steps.tag.outputs.latest }}"
+          BRANCH="chore/sync-isanagent-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add src-tauri/Cargo.toml
-          git commit -m "chore: bump isanagent to ${{ steps.tag.outputs.latest }}"
+          git add src-tauri/Cargo.lock
+          git commit -m "chore: sync isanagent main"
           git push origin "$BRANCH"
-          gh pr create --title "chore: bump isanagent to ${{ steps.tag.outputs.latest }}" --label "isanagent-bump"
+          gh pr create --title "chore: sync isanagent main" --label "isanagent-bump" --body "Updates the recorded İsanAgent main revision. ALTAI dev, CI, and release builds also refresh İsanAgent before compiling."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
