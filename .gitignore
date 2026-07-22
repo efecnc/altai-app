@@ -29,3 +29,6 @@ target
 
 # Claude Code local config (per-machine permissions, not portable)
 .claude/settings.local.json
+
+# IsanAgent local runtime state and provider credentials
+.isanagent/
