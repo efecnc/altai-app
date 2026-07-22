@@ -5,7 +5,8 @@
 > Started: 2026-07-20
 >
 > IsanAgent baseline:
-> `c8fed807343f56605a238893610027ac39571919`
+> `da2217e8fd00ecb52cfb883f224413b0df71edfb` (native Gemini PDF parts,
+> IsanAgent #71)
 
 ## Delivery rule
 
