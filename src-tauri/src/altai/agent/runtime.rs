@@ -258,6 +258,7 @@ struct AgentEventEnvelope<'a> {
 pub(crate) enum AgentEventDeliveryError {
     Serialization,
     InvalidEnvelope,
+    Lifecycle(String),
     Persistence(super::event_journal::JournalError),
     Renderer(String),
 }
@@ -267,6 +268,9 @@ impl std::fmt::Display for AgentEventDeliveryError {
         match self {
             Self::Serialization => formatter.write_str("Agent event serialization failed"),
             Self::InvalidEnvelope => formatter.write_str("Agent event envelope is invalid"),
+            Self::Lifecycle(error) => {
+                write!(formatter, "Agent lifecycle transition failed: {error}")
+            }
             Self::Persistence(error) => {
                 write!(formatter, "Agent event persistence failed: {error}")
             }
@@ -543,6 +547,18 @@ impl RunCoordinator {
         run_id: &str,
         owner_id: &str,
     ) -> Result<(String, u64), RunTransitionError> {
+        let terminal = self.terminal_candidate(chat_id, run_id, owner_id)?;
+        self.active.remove(chat_id);
+        self.promote_next(chat_id);
+        Ok(terminal)
+    }
+
+    fn terminal_candidate(
+        &self,
+        chat_id: &str,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<(String, u64), RunTransitionError> {
         let active = self
             .active
             .get(chat_id)
@@ -559,10 +575,7 @@ impl RunCoordinator {
         ) {
             return Err(RunTransitionError::InvalidPhase);
         }
-        let seq = active.next_seq;
-        self.active.remove(chat_id);
-        self.promote_next(chat_id);
-        Ok((run_id.to_string(), seq))
+        Ok((run_id.to_string(), active.next_seq))
     }
 
     fn promote_next(&mut self, chat_id: &str) {
@@ -710,9 +723,41 @@ pub(crate) fn emit_event(
 ) -> Result<(), String> {
     persist_and_deliver_event(journal, chat_id, event, run, |envelope| {
         app.emit("agent://event", envelope)
-            .map_err(|error| error.to_string())
+            .map_err(|error| AgentEventDeliveryError::Renderer(error.to_string()))
     })
     .map_err(|error| error.to_string())
+}
+
+fn persist_terminal_and_deliver(
+    journal: &EventJournal,
+    coordinator: &SharedRunCoordinator,
+    chat_id: &str,
+    run_id: &str,
+    owner_id: &str,
+    event: &Event,
+    deliver: impl FnOnce(&AgentEventEnvelope<'_>) -> Result<(), AgentEventDeliveryError>,
+) -> Result<(), AgentEventDeliveryError> {
+    let (candidate, timestamp_ms) = {
+        // Keep sequence ownership stable until the terminal row and summary
+        // commit atomically. Only then may the lease be released or a queued
+        // replacement be promoted.
+        let mut coordinator = coordinator_guard(coordinator);
+        let candidate = coordinator
+            .terminal_candidate(chat_id, run_id, owner_id)
+            .map_err(|error| AgentEventDeliveryError::Lifecycle(format!("{error:?}")))?;
+        let timestamp_ms = persist_event(journal, chat_id, event, Some(&candidate))?;
+        let committed = coordinator
+            .terminated(chat_id, run_id, owner_id)
+            .map_err(|error| AgentEventDeliveryError::Lifecycle(format!("{error:?}")))?;
+        if committed != candidate {
+            return Err(AgentEventDeliveryError::Lifecycle(
+                "terminal sequence changed after persistence".to_string(),
+            ));
+        }
+        (candidate, timestamp_ms)
+    };
+
+    deliver_event(chat_id, event, Some(&candidate), timestamp_ms, deliver)
 }
 
 fn persist_and_deliver_event(
@@ -720,13 +765,19 @@ fn persist_and_deliver_event(
     chat_id: &str,
     event: &Event,
     run: Option<(String, u64)>,
-    deliver: impl FnOnce(&AgentEventEnvelope<'_>) -> Result<(), String>,
+    deliver: impl FnOnce(&AgentEventEnvelope<'_>) -> Result<(), AgentEventDeliveryError>,
 ) -> Result<(), AgentEventDeliveryError> {
-    let (run_id, seq) = match run.as_ref() {
-        Some((run_id, seq)) => (Some(run_id.as_str()), Some(*seq)),
-        None => (None, None),
-    };
-    let timestamp_ms = if let Some((run_id, seq)) = run.as_ref() {
+    let timestamp_ms = persist_event(journal, chat_id, event, run.as_ref())?;
+    deliver_event(chat_id, event, run.as_ref(), timestamp_ms, deliver)
+}
+
+fn persist_event(
+    journal: &EventJournal,
+    chat_id: &str,
+    event: &Event,
+    run: Option<&(String, u64)>,
+) -> Result<u64, AgentEventDeliveryError> {
+    if let Some((run_id, seq)) = run {
         let payload =
             serde_json::to_value(event).map_err(|_| AgentEventDeliveryError::Serialization)?;
         let kind = payload
@@ -746,20 +797,32 @@ fn persist_and_deliver_event(
             status,
             AppendStatus::Appended | AppendStatus::Duplicate
         ));
-        recorded_at_ms
+        Ok(recorded_at_ms)
     } else {
-        now_epoch_ms()
+        Ok(now_epoch_ms())
+    }
+}
+
+fn deliver_event(
+    chat_id: &str,
+    event: &Event,
+    run: Option<&(String, u64)>,
+    timestamp_ms: u64,
+    deliver: impl FnOnce(&AgentEventEnvelope<'_>) -> Result<(), AgentEventDeliveryError>,
+) -> Result<(), AgentEventDeliveryError> {
+    let (run_id, seq) = match run {
+        Some((run_id, seq)) => (Some(run_id.as_str()), Some(*seq)),
+        None => (None, None),
     };
     deliver(&AgentEventEnvelope {
         version: 1,
-        scope: if run.is_some() { "run" } else { "system" },
+        scope: if run_id.is_some() { "run" } else { "system" },
         run_id,
         seq,
         timestamp_ms,
         chat_id,
         event,
     })
-    .map_err(AgentEventDeliveryError::Renderer)
 }
 
 pub(crate) fn next_run_event(
@@ -3916,25 +3979,24 @@ async fn build_instance(
                         RunLifecycleEvent::Terminated {
                             run_id, chat_id, ..
                         } => {
-                            let transition = coordinator_guard(&coordinator_for_outbound)
-                                .terminated(&chat_id, &run_id, &owner_for_outbound);
-                            match transition {
-                                Ok(run) => {
-                                    if let Err(error) = emit_event(
-                                        &app_for_outbound,
-                                        &journal_for_outbound,
-                                        &chat_id,
-                                        &event,
-                                        Some(run),
-                                    ) {
-                                        log::error!(
-                                            "Could not deliver run_terminated for chat {chat_id}: {error}"
-                                        );
-                                    }
-                                }
-                                Err(error) => log::warn!(
-                                    "Dropped invalid run_terminated transition for chat {chat_id}: {error:?}"
-                                ),
+                            if let Err(error) = persist_terminal_and_deliver(
+                                &journal_for_outbound,
+                                &coordinator_for_outbound,
+                                &chat_id,
+                                &run_id,
+                                &owner_for_outbound,
+                                &event,
+                                |envelope| {
+                                    app_for_outbound.emit("agent://event", envelope).map_err(
+                                        |error| {
+                                            AgentEventDeliveryError::Renderer(error.to_string())
+                                        },
+                                    )
+                                },
+                            ) {
+                                log::error!(
+                                    "Could not commit or deliver run_terminated for chat {chat_id}: {error}"
+                                );
                             }
                         }
                     }
@@ -4260,7 +4322,11 @@ mod run_event_tests {
             "chat-a",
             &event,
             Some(("run-1".to_string(), 1)),
-            |_| Err("renderer unavailable".to_string()),
+            |_| {
+                Err(AgentEventDeliveryError::Renderer(
+                    "renderer unavailable".to_string(),
+                ))
+            },
         );
         assert!(matches!(result, Err(AgentEventDeliveryError::Renderer(_))));
         assert_eq!(
@@ -4295,6 +4361,130 @@ mod run_event_tests {
             .fetch_after("run-1", 0, 10)
             .expect("empty replay")
             .is_empty());
+    }
+
+    #[test]
+    fn terminal_persistence_failure_keeps_the_cancelling_lease() {
+        let journal = EventJournal::open_in_memory().expect("journal");
+        let coordinator = Arc::new(StdMutex::new(RunCoordinator::default()));
+        {
+            let mut coordinator = coordinator_guard(&coordinator);
+            coordinator
+                .admit("chat-a", "run-1", "owner-1")
+                .expect("admit run");
+            coordinator
+                .started("chat-a", "run-1", "owner-1")
+                .expect("start run");
+            coordinator
+                .cancel_requested("chat-a", Some("run-1"))
+                .expect("cancel run");
+        }
+        let event = Event::RunTerminated {
+            run_id: "run-1".to_string(),
+            outcome: serde_json::json!({ "kind": "cancelled" }),
+        };
+        let mut delivered = false;
+
+        // Sequence 1 was intentionally not persisted. append_terminal must
+        // fail before the delivery closure can release coordinator ownership.
+        let result = persist_terminal_and_deliver(
+            &journal,
+            &coordinator,
+            "chat-a",
+            "run-1",
+            "owner-1",
+            &event,
+            |_| {
+                delivered = true;
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(AgentEventDeliveryError::Persistence(_))
+        ));
+        assert!(!delivered);
+        let mut coordinator = coordinator_guard(&coordinator);
+        assert_eq!(coordinator.active_run("chat-a"), Some(("run-1", "owner-1")));
+        assert_eq!(
+            coordinator.admit("chat-a", "run-2", "owner-2"),
+            Err(RunTransitionError::ActiveLease)
+        );
+    }
+
+    #[test]
+    fn durable_terminal_releases_once_even_when_renderer_delivery_fails() {
+        let journal = EventJournal::open_in_memory().expect("journal");
+        let coordinator = Arc::new(StdMutex::new(RunCoordinator::default()));
+        let started = {
+            let mut coordinator = coordinator_guard(&coordinator);
+            coordinator
+                .admit("chat-a", "run-1", "owner-1")
+                .expect("admit run");
+            coordinator
+                .started("chat-a", "run-1", "owner-1")
+                .expect("start run")
+        };
+        let started_event = Event::RunStarted {
+            run_id: "run-1".to_string(),
+        };
+        persist_and_deliver_event(
+            &journal,
+            "chat-a",
+            &started_event,
+            Some(started),
+            |_| Ok(()),
+        )
+        .expect("persist start");
+        let terminal_event = Event::RunTerminated {
+            run_id: "run-1".to_string(),
+            outcome: serde_json::json!({ "kind": "completed" }),
+        };
+
+        let result = persist_terminal_and_deliver(
+            &journal,
+            &coordinator,
+            "chat-a",
+            "run-1",
+            "owner-1",
+            &terminal_event,
+            |_| {
+                Err(AgentEventDeliveryError::Renderer(
+                    "renderer unavailable".to_string(),
+                ))
+            },
+        );
+
+        assert!(matches!(result, Err(AgentEventDeliveryError::Renderer(_))));
+        assert_eq!(
+            journal.fetch_after("run-1", 0, 10).expect("replay").len(),
+            2
+        );
+        assert!(coordinator_guard(&coordinator)
+            .active_run("chat-a")
+            .is_none());
+        assert!(coordinator_guard(&coordinator)
+            .admit("chat-a", "run-2", "owner-2")
+            .is_ok());
+
+        let duplicate = persist_terminal_and_deliver(
+            &journal,
+            &coordinator,
+            "chat-a",
+            "run-1",
+            "owner-1",
+            &terminal_event,
+            |_| Ok(()),
+        );
+        assert!(matches!(
+            duplicate,
+            Err(AgentEventDeliveryError::Lifecycle(_))
+        ));
+        assert_eq!(
+            journal.fetch_after("run-1", 0, 10).expect("replay").len(),
+            2
+        );
     }
 }
 
