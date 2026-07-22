@@ -9,6 +9,7 @@ import { pruneOldToolOutputs } from "./compaction";
 import type { Todo, TodoStatus } from "./todos";
 import { parseMcpToolName, type McpToolInfo } from "@/modules/mcp/toolName";
 import { z } from "zod";
+import { native } from "./native";
 
 /**
  * Trust-boundary schema for the `todo_write` tool input (model-produced, so
@@ -549,15 +550,12 @@ function maybePruneOldToolOutputs(): void {
   }
 }
 
-/**
- * Initialize the agent event bridge.
- *
- * Listens to `agent://event` from the Tauri backend and dispatches
- * events to the appropriate Zustand stores. Call once during app setup.
- */
-export async function initAgentEventBridge(): Promise<UnlistenFn> {
-  return listen<unknown>("agent://event", (event) => {
-    const payload = parseAgentEventPayload(event.payload);
+/** Validate one live or replayed envelope and feed the shared run reducer. */
+export function ingestAgentEventEnvelope(
+  envelope: unknown,
+  source: "live" | "replay" = "live",
+): void {
+    const payload = parseAgentEventPayload(envelope);
     if (!payload) return;
     const store = useChatStore.getState();
     // Feed the per-chat_id run registry FIRST, before the active-session drop
@@ -569,6 +567,11 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
       const accepted = useAgentRunsStore.getState().ingest(payload.chat_id, payload);
       if (!accepted) return;
     }
+    // Rebuild lifecycle state only. Transcript, approval, notebook, and tool
+    // side effects have separate ownership; replaying them could duplicate UI
+    // state or re-dispatch a mutation. Both paths still use this parser and the
+    // exact same run reducer above.
+    if (source === "replay") return;
     // Persist a BACKGROUND run's assistant messages to its own thread so "Open
     // transcript" replays the result, not just the seed. The focused chat
     // persists itself via nativeMessages, so skip it here.
@@ -900,5 +903,66 @@ export async function initAgentEventBridge(): Promise<UnlistenFn> {
         );
         break;
     }
+}
+
+function projectRecoveredRun(chatId: string): void {
+  const chat = useChatStore.getState();
+  if (chat.activeSessionId !== chatId) return;
+  const run = useAgentRunsStore.getState().runs[chatId];
+  if (!run) return;
+  const error =
+    run.outcome?.kind === "failed"
+      ? run.outcome.failure
+      : run.outcome?.kind === "stuck"
+        ? `Agent got stuck: ${run.outcome.reason}`
+        : run.outcome?.kind === "budget_exhausted"
+          ? `Run budget exhausted after ${run.outcome.budget.iterations_used} iterations`
+          : null;
+  chat.patchAgentMeta({
+    status: run.status,
+    step: run.step,
+    error,
+    tokens: {
+      inputTokens: run.tokens.input,
+      outputTokens: run.tokens.output,
+      cachedInputTokens: run.tokens.cached,
+    },
+    activeSubagents: run.subagents,
+  });
+}
+
+export async function replayRestoredAgentRuns(
+  workspacePath: string,
+  chatIds: string[],
+): Promise<void> {
+  await Promise.all(
+    [...new Set(chatIds)].map(async (chatId) => {
+      const cursor = await native.agentLatestRunReplayCursor(chatId, workspacePath);
+      if (!cursor) return;
+      const current = useAgentRunsStore.getState().runs[chatId];
+      let afterSeq = current?.runId === cursor.runId ? current.lastSeq : 0;
+      while (afterSeq < cursor.lastSeq) {
+        const previousSeq = afterSeq;
+        const events = await native.agentReplayEvents(
+          chatId,
+          cursor.runId,
+          afterSeq,
+          workspacePath,
+        );
+        if (events.length === 0) break;
+        for (const event of events) {
+          ingestAgentEventEnvelope(event, "replay");
+          afterSeq = Math.max(afterSeq, event.seq);
+        }
+        if (afterSeq === previousSeq) break;
+      }
+      projectRecoveredRun(chatId);
+    }),
+  );
+}
+
+export async function initAgentEventBridge(): Promise<UnlistenFn> {
+  return listen<unknown>("agent://event", (event) => {
+    ingestAgentEventEnvelope(event.payload, "live");
   });
 }

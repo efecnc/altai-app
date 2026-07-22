@@ -25,6 +25,21 @@ export type BackendSessionInfo = {
   title: string;
 };
 
+export type AgentRunReplayCursor = {
+  runId: string;
+  lastSeq: number;
+  terminalSeq: number | null;
+};
+
+export type BackendAgentEventEnvelope = {
+  version: 1;
+  scope: "run";
+  runId: string;
+  seq: number;
+  chatId: string;
+  event: unknown;
+};
+
 export type DirEntry = {
   name: string;
   kind: "file" | "dir" | "symlink";
@@ -688,6 +703,25 @@ export const native = {
     invoke<BackendChatMessage[]>("agent_get_session_messages", {
       chatId,
       workspacePath: workspacePath ?? null,
+    }),
+  agentLatestRunReplayCursor: (chatId: string, workspacePath: string) =>
+    invoke<AgentRunReplayCursor | null>("agent_latest_run_replay_cursor", {
+      chatId,
+      workspacePath,
+    }),
+  agentReplayEvents: (
+    chatId: string,
+    runId: string,
+    afterSeq: number,
+    workspacePath: string,
+    limit = 500,
+  ) =>
+    invoke<BackendAgentEventEnvelope[]>("agent_replay_events", {
+      chatId,
+      runId,
+      afterSeq,
+      workspacePath,
+      limit,
     }),
   /**
    * Rewind a chat's backend history to the `keepUserMessages`-th user message

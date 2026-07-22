@@ -27,6 +27,9 @@ describe("agentRunsStore lifecycle admission", () => {
     expect(
       ingest("chat-1", event(1, { type: "thinking", content: "old" })),
     ).toBe(false);
+    expect(
+      ingest("chat-1", event(4, { type: "thinking", content: "gap" })),
+    ).toBe(false);
     expect(useAgentRunsStore.getState().runs["chat-1"]).toMatchObject({
       lastSeq: 2,
       step: "one",
