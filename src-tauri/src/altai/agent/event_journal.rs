@@ -407,26 +407,56 @@ impl EventJournal {
                 },
             )
             .optional()?;
-        stored
-            .map(
-                |(run_id, chat_id, last_seq, terminal_seq, terminal_kind, terminal_payload)| {
-                    Ok(RunJournalSummary {
-                        run_id,
-                        chat_id,
-                        last_seq: u64::try_from(last_seq)
-                            .map_err(|_| JournalError::NumericOverflow("last_seq"))?,
-                        terminal_seq: terminal_seq
-                            .map(u64::try_from)
-                            .transpose()
-                            .map_err(|_| JournalError::NumericOverflow("terminal_seq"))?,
-                        terminal_kind,
-                        terminal_payload: terminal_payload
-                            .map(|payload| serde_json::from_str(&payload))
-                            .transpose()?,
-                    })
-                },
+        stored.map(decode_run_summary).transpose()
+    }
+
+    /// Most recently recorded run for one chat. This is the renderer's
+    /// restart-discovery cursor; it exposes no payload beyond the terminal
+    /// lifecycle value already returned by `run_summary`.
+    pub fn latest_run_summary_for_chat(
+        &self,
+        chat_id: &str,
+    ) -> JournalResult<Option<RunJournalSummary>> {
+        if chat_id.trim().is_empty() {
+            return Err(JournalError::InvalidField("chat_id"));
+        }
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::LockPoisoned)?;
+        let stored = connection
+            .query_row(
+                "SELECT runs.run_id, runs.chat_id, runs.last_seq, runs.terminal_seq,
+                        runs.terminal_kind, runs.terminal_payload_json
+                 FROM agent_event_journal_runs AS runs
+                 JOIN agent_event_journal_events AS events
+                   ON events.run_id = runs.run_id AND events.seq = runs.last_seq
+                 WHERE runs.chat_id = ?1
+                 ORDER BY events.recorded_at_ms DESC, runs.run_id DESC
+                 LIMIT 1",
+                params![chat_id],
+                read_stored_run_summary,
             )
-            .transpose()
+            .optional()?;
+        stored.map(decode_run_summary).transpose()
+    }
+
+    /// Snapshot unfinished runs from a previous host process. Callers may
+    /// classify each one only by appending its next terminal sequence.
+    pub fn incomplete_run_summaries(&self) -> JournalResult<Vec<RunJournalSummary>> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::LockPoisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT run_id, chat_id, last_seq, terminal_seq, terminal_kind,
+                    terminal_payload_json
+             FROM agent_event_journal_runs
+             WHERE terminal_seq IS NULL
+             ORDER BY run_id ASC",
+        )?;
+        let rows = statement.query_map([], read_stored_run_summary)?;
+        rows.map(|row| decode_run_summary(row?)).collect()
     }
 
     #[cfg(test)]
@@ -437,6 +467,43 @@ impl EventJournal {
             .map_err(|_| JournalError::LockPoisoned)?;
         current_schema_version(&connection)
     }
+}
+
+type StoredRunSummary = (
+    String,
+    String,
+    i64,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+);
+
+fn read_stored_run_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRunSummary> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn decode_run_summary(stored: StoredRunSummary) -> JournalResult<RunJournalSummary> {
+    let (run_id, chat_id, last_seq, terminal_seq, terminal_kind, terminal_payload) = stored;
+    Ok(RunJournalSummary {
+        run_id,
+        chat_id,
+        last_seq: u64::try_from(last_seq).map_err(|_| JournalError::NumericOverflow("last_seq"))?,
+        terminal_seq: terminal_seq
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| JournalError::NumericOverflow("terminal_seq"))?,
+        terminal_kind,
+        terminal_payload: terminal_payload
+            .map(|payload| serde_json::from_str(&payload))
+            .transpose()?,
+    })
 }
 
 #[derive(Debug, PartialEq)]

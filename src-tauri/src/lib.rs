@@ -401,6 +401,7 @@ pub fn run() {
             agent_commands::agent_list_sessions,
             agent_commands::agent_get_session_messages,
             agent_commands::agent_replay_events,
+            agent_commands::agent_latest_run_replay_cursor,
             agent_commands::agent_truncate_after_user_message,
             agent_commands::agent_list_notifications,
             agent_commands::agent_notification_mark_seen,

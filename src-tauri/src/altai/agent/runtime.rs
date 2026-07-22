@@ -298,6 +298,14 @@ pub struct AgentReplayEventEnvelope {
     pub event: Event,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunReplayCursor {
+    pub run_id: String,
+    pub last_seq: u64,
+    pub terminal_seq: Option<u64>,
+}
+
 pub(crate) type SharedRunCoordinator = Arc<StdMutex<RunCoordinator>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1319,10 +1327,11 @@ async fn ensure_workspace_services(
     let db_path_str = db_path
         .to_str()
         .ok_or("workspace DB path is not valid UTF-8")?;
-    let event_journal = Arc::new(
+    let event_journal =
         EventJournal::open(dir.join(".system_generated").join("agent_event_journal.db"))
-            .map_err(|error| format!("Failed to initialize agent event journal: {error}"))?,
-    );
+            .map_err(|error| format!("Failed to initialize agent event journal: {error}"))?;
+    classify_runs_abandoned_by_restart(&event_journal)?;
+    let event_journal = Arc::new(event_journal);
     let memory_actor = isanagent::memory::SqliteMemoryActor::new(db_path_str)
         .map_err(|e| format!("Failed to initialize SqliteMemoryActor: {}", e))?;
     let node = NodeHandle::<isanagent::memory::MemoryMessage>::new(
@@ -1453,6 +1462,73 @@ pub async fn replay_run_events(
     let workspace_root = format!("{}/.isanagent", workspace_path.trim_end_matches('/'));
     let services = ensure_workspace_services(runtime, &workspace_root).await?;
     replay_events_from_journal(&services.event_journal, chat_id, run_id, after_seq, limit)
+}
+
+/// Discover the newest durable run for a restored chat without replaying or
+/// starting work. On a fresh host process, startup classification first makes
+/// every run inherited from the previous process terminal; a run started by
+/// the current process may still be live during a renderer-only reconnect.
+pub async fn latest_run_replay_cursor(
+    runtime: &AgentRuntime,
+    workspace_path: &str,
+    chat_id: &str,
+) -> Result<Option<AgentRunReplayCursor>, String> {
+    let chat_id = validate_tauri_chat_id(chat_id)?;
+    let workspace_root = format!("{}/.isanagent", workspace_path.trim_end_matches('/'));
+    let services = ensure_workspace_services(runtime, &workspace_root).await?;
+    services
+        .event_journal
+        .latest_run_summary_for_chat(chat_id)
+        .map(|summary| {
+            summary.map(|summary| AgentRunReplayCursor {
+                run_id: summary.run_id,
+                last_seq: summary.last_seq,
+                terminal_seq: summary.terminal_seq,
+            })
+        })
+        .map_err(|error| format!("Failed to inspect agent event journal: {error}"))
+}
+
+fn classify_runs_abandoned_by_restart(journal: &EventJournal) -> Result<(), String> {
+    for summary in journal
+        .incomplete_run_summaries()
+        .map_err(|error| format!("Failed to inspect incomplete agent runs: {error}"))?
+    {
+        let seq = summary
+            .last_seq
+            .checked_add(1)
+            .ok_or_else(|| "Cannot classify an agent run with an exhausted sequence".to_string())?;
+        let event = Event::RunTerminated {
+            run_id: summary.run_id.clone(),
+            outcome: serde_json::json!({
+                "kind": "failed",
+                "failure": "The previous app process ended before this run completed.",
+                "retryable": false
+            }),
+        };
+        let payload = serde_json::to_value(&event)
+            .map_err(|_| "Failed to serialize restart recovery event".to_string())?;
+        let terminal = JournalEvent::now(
+            1,
+            summary.run_id.clone(),
+            seq,
+            summary.chat_id,
+            "run_terminated",
+            payload,
+        );
+        if let Err(error) = journal.append_terminal(&terminal) {
+            // Another host may have won the terminal CAS. Accept only a
+            // verified terminal summary; all other failures abort startup.
+            let committed = journal
+                .run_summary(&summary.run_id)
+                .map_err(|inspect| format!("Failed to verify recovered run: {inspect}"))?
+                .is_some_and(|current| current.terminal_seq.is_some());
+            if !committed {
+                return Err(format!("Failed to classify abandoned agent run: {error}"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn replay_events_from_journal(
@@ -4088,6 +4164,105 @@ mod run_event_tests {
                 .last_seq,
             1
         );
+    }
+
+    #[test]
+    fn restart_classifies_incomplete_runs_once_without_resuming_work() {
+        let (_directory, journal) = journal();
+        for event in [
+            JournalEvent::now(
+                1,
+                "run-before-tool-end",
+                1,
+                "chat-a",
+                "run_started",
+                serde_json::json!({"type":"run_started","run_id":"run-before-tool-end"}),
+            ),
+            JournalEvent::now(
+                1,
+                "run-before-tool-end",
+                2,
+                "chat-a",
+                "tool_call_start",
+                serde_json::json!({"type":"tool_call_start","id":"tool-1","name":"edit_file","input":{}}),
+            ),
+            JournalEvent::now(
+                1,
+                "run-after-tool-end",
+                1,
+                "chat-b",
+                "run_started",
+                serde_json::json!({"type":"run_started","run_id":"run-after-tool-end"}),
+            ),
+            JournalEvent::now(
+                1,
+                "run-after-tool-end",
+                2,
+                "chat-b",
+                "tool_call_end",
+                serde_json::json!({"type":"tool_call_end","id":"tool-2","name":"read_file","output":"ok"}),
+            ),
+        ] {
+            journal.append(&event).expect("seed incomplete run");
+        }
+
+        classify_runs_abandoned_by_restart(&journal).expect("classify abandoned runs");
+        classify_runs_abandoned_by_restart(&journal).expect("repeat is a no-op");
+
+        for (run_id, terminal_seq) in [("run-before-tool-end", 3), ("run-after-tool-end", 3)] {
+            let summary = journal.run_summary(run_id).expect("summary").expect("run");
+            assert_eq!(summary.last_seq, terminal_seq);
+            assert_eq!(summary.terminal_seq, Some(terminal_seq));
+            assert_eq!(
+                summary.terminal_payload.as_ref().unwrap()["outcome"]["retryable"],
+                false
+            );
+            assert_eq!(
+                journal.fetch_after(run_id, 0, 10).expect("replay").len(),
+                terminal_seq as usize
+            );
+        }
+        assert!(journal.incomplete_run_summaries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn latest_chat_cursor_uses_durable_event_order_and_preserves_terminal() {
+        let (_directory, journal) = journal();
+        let mut old = JournalEvent::now(
+            1,
+            "run-old",
+            1,
+            "chat-a",
+            "run_started",
+            serde_json::json!({"type":"run_started","run_id":"run-old"}),
+        );
+        old.recorded_at_ms = 1;
+        journal.append(&old).unwrap();
+        let mut new = JournalEvent::now(
+            1,
+            "run-new",
+            1,
+            "chat-a",
+            "run_terminated",
+            serde_json::json!({
+                "type":"run_terminated",
+                "run_id":"run-new",
+                "outcome":{"kind":"completed"}
+            }),
+        );
+        new.recorded_at_ms = 2;
+        journal.append_terminal(&new).unwrap();
+
+        let latest = journal
+            .latest_run_summary_for_chat("chat-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.run_id, "run-new");
+        assert_eq!(latest.terminal_seq, Some(1));
+        assert!(journal
+            .latest_run_summary_for_chat("chat-b")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

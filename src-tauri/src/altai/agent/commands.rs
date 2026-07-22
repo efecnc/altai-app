@@ -317,6 +317,17 @@ pub async fn agent_replay_events(
     .await
 }
 
+#[tauri::command]
+pub async fn agent_latest_run_replay_cursor(
+    state: State<'_, AgentRuntime>,
+    registry: State<'_, WorkspaceRegistry>,
+    workspace_path: Option<String>,
+    chat_id: String,
+) -> Result<Option<runtime::AgentRunReplayCursor>, String> {
+    let workspace = authorized_inbox_workspace(workspace_path.as_deref(), &registry)?;
+    runtime::latest_run_replay_cursor(&state, &workspace, &chat_id).await
+}
+
 /// Rewind a chat's backend history to the N-th user message.
 ///
 /// Sends `TruncateAfterUserMessage` to the per-workspace memory actor: keep

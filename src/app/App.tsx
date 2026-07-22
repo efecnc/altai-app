@@ -65,7 +65,10 @@ import {
 import { MarkdownStack } from "@/modules/markdown";
 import { NotebookStack } from "@/modules/notebook";
 import { SettingsStack } from "@/settings/SettingsStack";
-import { initAgentEventBridge } from "@/modules/ai/lib/agentEventBridge";
+import {
+  initAgentEventBridge,
+  replayRestoredAgentRuns,
+} from "@/modules/ai/lib/agentEventBridge";
 import {
   PreviewStack,
   WebviewStack,
@@ -779,12 +782,28 @@ export default function App() {
 
   const hydrateSessions = useChatStore((s) => s.hydrateSessions);
   useEffect(() => {
-    void hydrateSessions();
+    let disposed = false;
     void useAgentsStore.getState().hydrate();
     void useSnippetsStore.getState().hydrate();
-    // Initialize IsanAgent event bridge (listens to agent://event from Rust).
+    // Listen before hydration/replay. A live event that overlaps the replay is
+    // deduplicated by the same run-id and sequence guards.
     const unlistenP = initAgentEventBridge();
+    void (async () => {
+      await hydrateSessions();
+      await unlistenP;
+      if (disposed) return;
+      const workspacePath = useWorkspaceFolderStore.getState().folder;
+      if (!workspacePath) return;
+      const sessions = useChatStore.getState().sessions;
+      await replayRestoredAgentRuns(
+        workspacePath,
+        sessions.map((session) => session.id),
+      );
+    })().catch((error) => {
+      console.warn("Could not replay restored agent runs", error);
+    });
     return () => {
+      disposed = true;
       void unlistenP.then((fn) => fn());
     };
   }, [hydrateSessions]);

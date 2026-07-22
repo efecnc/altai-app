@@ -162,7 +162,7 @@ function reduce(cur: RunState, ev: ParsedAgentEvent): RunState {
       !ev.run_id ||
       ev.run_id !== cur.runId ||
       !ev.seq ||
-      ev.seq <= cur.lastSeq
+      ev.seq !== cur.lastSeq + 1
     ) {
       return cur;
     }
