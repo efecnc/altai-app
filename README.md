@@ -219,6 +219,8 @@ The Rust **agent runtime** embedded inside ALTAI. Not a sidecar — a crate that
 
 → **[github.com/altaidevorg/isanagent](https://github.com/altaidevorg/isanagent)**
 
+ALTAI tracks İsanAgent **`main`** (not a fixed commit). `pnpm isanagent:sync`, Tauri `beforeDevCommand` / `beforeBuildCommand`, CI, and release all run `cargo update -p isanagent` before compile. A daily (and on-demand) workflow opens a lockfile sync PR when tip moves.
+
 ### 🖼️ Afterimage
 
 The Python **synthetic dataset library** the Dataset Generator agent leans on.

@@ -52,10 +52,11 @@ base64 = "0.22"
 pdf-extract = "0.12"
 
 # İsanAgent — embedded as Rust crate (direct API, no sidecar).
-# Temporarily points at the intent-aware failure-budget fork until
-# https://github.com/altaidevorg/isanagent/pull/95 lands on main; then
-# retarget `altaidevorg/isanagent` at the merge commit.
-isanagent = { git = "https://github.com/efecnc/isanagent.git", rev = "bb3dbbe1dc5706404e41aa4ce1a26d50d0065329" }
+# Track upstream `main`. Dev (`beforeDevCommand`), CI, and release all run
+# `cargo update -p isanagent` before compile so builds pick up the tip.
+# Cargo.lock still records the last resolved commit for reproducibility;
+# `.github/workflows/isanagent-bump.yml` opens a sync PR when that tip moves.
+isanagent = { git = "https://github.com/altaidevorg/isanagent.git", branch = "main" }
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"
 tauri-plugin-deep-link = "2"
