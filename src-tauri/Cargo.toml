@@ -55,7 +55,7 @@ pdf-extract = "0.12"
 # Temporarily points at the intent-aware failure-budget fork until
 # https://github.com/altaidevorg/isanagent/pull/95 lands on main; then
 # retarget `altaidevorg/isanagent` at the merge commit.
-isanagent = { git = "https://github.com/efecnc/isanagent.git", rev = "24227378c9d45d79130b0f9ec9d69e2b33a2f4c3" }
+isanagent = { git = "https://github.com/efecnc/isanagent.git", rev = "bb3dbbe1dc5706404e41aa4ce1a26d50d0065329" }
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"
 tauri-plugin-deep-link = "2"

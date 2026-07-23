@@ -33,6 +33,7 @@ import {
 import { useAgentRunsStore } from "../store/agentRunsStore";
 import {
   describeRunWarning,
+  dismissRunAttention,
   isRetryableRunOutcome,
 } from "../lib/agentEventBridge";
 import { useAgentsStore } from "../store/agentsStore";
@@ -1036,7 +1037,6 @@ function Body() {
 function RunRecoveryActions() {
   const sessionId = useChatStore((s) => s.activeSessionId);
   const focusInput = useChatStore((s) => s.focusInput);
-  const clearWarning = useAgentRunsStore((s) => s.clearWarning);
   const run = useAgentRunsStore((s) =>
     sessionId ? s.runs[sessionId] : undefined,
   );
@@ -1059,7 +1059,7 @@ function RunRecoveryActions() {
         : "The provider request failed after its retry policy was exhausted.";
 
   const dismissWarning = () => {
-    if (sessionId) clearWarning(sessionId);
+    dismissRunAttention(sessionId);
   };
 
   const continueRun = async () => {

@@ -41,6 +41,7 @@ import {
 import { effectivePermissionMode, setDefaultModel } from "@/modules/settings/store";
 import type { AssignmentRunConfig } from "@/modules/github/lib/assignments";
 import type { RunOutcome } from "../lib/agentEventBridge";
+import { dismissRunAttention } from "../lib/agentEventBridge";
 import { useAgentRunsStore, type RunState } from "./agentRunsStore";
 
 type Live = {
@@ -412,7 +413,7 @@ export const useChatStore = create<StoreState>((set, get) => ({
     if (sessionId) {
       // Approving/denying is an explicit acknowledgment — drop the sticky
       // "needs attention" banner so it doesn't outlive the user's response.
-      useAgentRunsStore.getState().clearWarning(sessionId);
+      dismissRunAttention(sessionId);
     }
     get().addActivity({
       label: approved ? "Approved action" : "Denied action",

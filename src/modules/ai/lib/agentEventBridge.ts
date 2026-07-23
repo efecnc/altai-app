@@ -937,6 +937,20 @@ function projectRecoveredRun(chatId: string): void {
   });
 }
 
+/** Drop the sticky budget-warning banner and matching status-row step text. */
+export function dismissRunAttention(chatId: string | null | undefined): void {
+  if (!chatId) return;
+  useAgentRunsStore.getState().clearWarning(chatId);
+  const chat = useChatStore.getState();
+  if (
+    chat.activeSessionId === chatId &&
+    chat.agentMeta.step &&
+    /repeated|no measurable progress|approaching its/i.test(chat.agentMeta.step)
+  ) {
+    chat.patchAgentMeta({ step: null });
+  }
+}
+
 export async function replayRestoredAgentRuns(
   workspacePath: string,
   chatIds: string[],
