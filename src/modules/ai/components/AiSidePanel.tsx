@@ -1051,7 +1051,7 @@ function RunRecoveryActions() {
   if (!warning && !canContinue && !canRetry) return null;
 
   const detail = warning
-    ? `${describeRunWarning(warning)}. The run is still active.`
+    ? `${describeRunWarning(warning)}. You can steer, stop, or dismiss — the run is still working.`
     : outcome?.kind === "stuck"
       ? `The run stopped because it was ${outcome.reason.replace(/_/g, " ")}.`
       : outcome?.kind === "budget_exhausted"
@@ -1092,7 +1092,11 @@ function RunRecoveryActions() {
       className="mx-3 mb-1 rounded-lg border border-amber-500/35 bg-amber-500/[0.08] px-3 py-2"
     >
       <div className="text-[11px] font-medium text-foreground">
-        {warning ? "Run needs attention" : canRetry ? "Retry available" : "Run stopped"}
+        {warning
+          ? "Possible repeated failure"
+          : canRetry
+            ? "Retry available"
+            : "Run stopped"}
       </div>
       <div className="mt-0.5 text-[10.5px] leading-relaxed text-muted-foreground">
         {detail}

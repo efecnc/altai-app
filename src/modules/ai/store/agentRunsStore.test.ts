@@ -110,6 +110,33 @@ describe("agentRunsStore lifecycle admission", () => {
     });
   });
 
+  it("clears a live warning once a later tool succeeds", () => {
+    const ingest = useAgentRunsStore.getState().ingest;
+    ingest("chat-1", event(1, { type: "run_started" }));
+    ingest(
+      "chat-1",
+      event(2, {
+        type: "run_warning",
+        warning: {
+          reason: { kind: "repeated_root_cause", failures: 2 },
+          budget: { iterations_used: 4, iterations_limit: 50 },
+        },
+      }),
+    );
+    expect(
+      ingest(
+        "chat-1",
+        event(3, {
+          type: "tool_call_end",
+          id: "tool-1",
+          name: "read_file",
+          output: { ok: true },
+        }),
+      ),
+    ).toBe(true);
+    expect(useAgentRunsStore.getState().runs["chat-1"]?.warning).toBeNull();
+  });
+
   it("marks only the exact live run as cancelling and waits for termination", () => {
     const store = useAgentRunsStore.getState();
     store.ingest("chat-1", event(1, { type: "run_started" }));

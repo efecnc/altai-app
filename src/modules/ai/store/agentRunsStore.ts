@@ -195,11 +195,16 @@ function reduce(cur: RunState, ev: ParsedAgentEvent): RunState {
       };
     }
     case "tool_call_end": {
+      // isanagent clears RepeatedRootCause / NoProgress only on NewEvidence
+      // (successful tool). Mirror that here so the sticky banner does not
+      // outlive a recovered run.
+      const clearLiveWarning = !ev.error && cur.warning ? { warning: null } : {};
       const existing = cur.verifications.find((item) => item.id === ev.id);
       if (existing) {
         const result = verificationResult(ev.output, ev.error);
         return {
           ...cur,
+          ...clearLiveWarning,
           step: ev.error ? `${existing.label} failed` : cur.step,
           verifications: cur.verifications.map((item) =>
             item.id === ev.id ? { ...item, ...result } : item,
@@ -209,7 +214,7 @@ function reduce(cur: RunState, ev: ParsedAgentEvent): RunState {
       }
       return ev.error
         ? { ...cur, step: `${ev.id} (error)`, failures: [...cur.failures, ev.error].slice(-10) }
-        : cur;
+        : { ...cur, ...clearLiveWarning };
     }
     case "edit_diff":
       return {

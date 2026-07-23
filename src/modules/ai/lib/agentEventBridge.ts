@@ -612,7 +612,7 @@ export function ingestAgentEventEnvelope(
       case "run_warning": {
         const warning = describeRunWarning(payload.warning);
         store.addActivity({
-          label: "Run needs attention",
+          label: "Possible repeated failure",
           detail: warning,
           kind: "agent",
           tone: "warning",
@@ -681,6 +681,12 @@ export function ingestAgentEventEnvelope(
         activeMcpCalls.delete(payload.id);
         if (payload.error) {
           store.patchAgentMeta({ step: `${payload.name} (error)` });
+        } else if (
+          store.agentMeta.step &&
+          /repeated|no measurable progress|approaching its/i.test(store.agentMeta.step)
+        ) {
+          // Drop the sticky budget-warning status once measurable progress resumes.
+          store.patchAgentMeta({ step: null });
         }
         store.addActivity({
           label: mcp
