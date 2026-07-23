@@ -21,23 +21,16 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowRight01Icon,
   Cancel01Icon,
-  CheckmarkCircle01Icon,
   CodeIcon,
-  CopyIcon,
   File01Icon,
   GlobalSearchIcon,
   HashtagIcon,
-  PencilEdit02Icon,
   Refresh01Icon,
   TerminalIcon,
 } from "@hugeicons/core-free-icons";
 import { SLASH_COMMANDS, ALTAI_CMD_RE } from "../lib/slashCommands";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import {
-  editUserMessage,
-  retryFailedRun,
-  useChatStore,
-} from "../store/chatStore";
+import { retryFailedRun, useChatStore } from "../store/chatStore";
 import { useAgentRunsStore } from "../store/agentRunsStore";
 import {
   isRecoverableAttentionMessage,
@@ -50,7 +43,7 @@ import type {
   UIMessage,
   UIMessagePart,
 } from "ai";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo } from "react";
 import { AiToolApproval } from "./AiToolApproval";
 import { AgentStatusPill } from "./AgentStatusPill";
 import { ChatPathLink } from "./ChatPathLink";
@@ -338,55 +331,13 @@ export function AiChatView({
   );
 }
 
-function messageTextForCopy(m: UIMessage): string {
-  return m.parts
-    .filter((p): p is { type: "text"; text: string } => p.type === "text")
-    .map((p) => p.text)
-    .join("\n")
-    .trim();
-}
-
-function MessageCopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const tRef = useRef<number>(0);
-  useEffect(() => () => window.clearTimeout(tRef.current), []);
-  const onCopy = async () => {
-    if (!navigator?.clipboard?.writeText) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      tRef.current = window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* swallow */
-    }
-  };
-  return (
-    <button
-      type="button"
-      onClick={onCopy}
-      title="Copy message"
-      aria-label="Copy message"
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-    >
-      <HugeiconsIcon
-        icon={copied ? CheckmarkCircle01Icon : CopyIcon}
-        size={11}
-        strokeWidth={1.75}
-      />
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
-
 function HoverActionButton({
   title,
   onClick,
-  tone,
   children,
 }: {
   title: string;
   onClick: () => void;
-  tone?: "primary";
   children: React.ReactNode;
 }) {
   return (
@@ -395,12 +346,7 @@ function HoverActionButton({
       title={title}
       aria-label={title}
       onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] transition-colors hover:bg-foreground/10 hover:text-foreground",
-        tone === "primary"
-          ? "font-medium text-foreground"
-          : "text-muted-foreground",
-      )}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
     >
       {children}
     </button>
@@ -422,8 +368,6 @@ const RenderedMessage = memo(function RenderedMessage({
   onRetry?: () => void;
   onStop?: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
   // Index of the trailing text part — only that one is "live" mid-stream.
   // Earlier text parts (separated by tool calls) are already finalized.
   let lastTextIdx = -1;
@@ -444,52 +388,6 @@ const RenderedMessage = memo(function RenderedMessage({
     const withoutCmd = cmdMatch ? rawText.slice(cmdMatch[0].length) : rawText;
     const stripped = stripUserContextBlocks(withoutCmd);
 
-    const startEdit = () => {
-      setDraft(stripped.text);
-      setEditing(true);
-    };
-    const commitEdit = () => {
-      const t = draft.trim();
-      setEditing(false);
-      if (t) void editUserMessage(message.id, t);
-    };
-    const cancelEdit = () => {
-      setEditing(false);
-      setDraft("");
-    };
-
-    if (editing) {
-      return (
-        <Message from="user">
-          <MessageContent>
-            <textarea
-              autoFocus
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  commitEdit();
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  cancelEdit();
-                }
-              }}
-              className="min-h-[3rem] w-full resize-y rounded-md bg-background/60 px-2 py-1.5 text-[12px] leading-relaxed outline-none ring-1 ring-border/60 focus:ring-foreground/30"
-            />
-            <MessageActions className="justify-end gap-1">
-              <HoverActionButton title="Save" onClick={commitEdit} tone="primary">
-                Save
-              </HoverActionButton>
-              <HoverActionButton title="Cancel" onClick={cancelEdit}>
-                Cancel
-              </HoverActionButton>
-            </MessageActions>
-          </MessageContent>
-        </Message>
-      );
-    }
-
     return (
       <Message from="user">
         <MessageContent>
@@ -498,20 +396,9 @@ const RenderedMessage = memo(function RenderedMessage({
             <ContextChips chips={stripped.chips} />
           ) : null}
           {stripped.text ? (
-            <p className="whitespace-pre-wrap break-words">
-              {stripped.text}
-            </p>
+            <p className="whitespace-pre-wrap break-words">{stripped.text}</p>
           ) : null}
-          {stripped.text ? (
-            <MessageActions className="justify-end opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-            <MessageCopyButton text={stripped.text} />
-            <HoverActionButton title="Edit" onClick={startEdit}>
-              <HugeiconsIcon icon={PencilEdit02Icon} size={11} strokeWidth={1.75} />
-              Edit
-            </HoverActionButton>
-          </MessageActions>
-        ) : null}
-      </MessageContent>
+        </MessageContent>
       </Message>
     );
   }
@@ -519,6 +406,8 @@ const RenderedMessage = memo(function RenderedMessage({
   const groups = useMemo(() => buildPartGroups(message.parts as AnyPart[]), [
     message.parts,
   ]);
+
+  const showRunActions = streaming || Boolean(canRetry);
 
   return (
     <Message from={message.role}>
@@ -569,20 +458,21 @@ const RenderedMessage = memo(function RenderedMessage({
           })}
         </div>
       </MessageContent>
-      <MessageActions className="opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-        <MessageCopyButton text={messageTextForCopy(message)} />
-        {streaming ? (
-          <HoverActionButton title="Stop generating" onClick={() => onStop?.()}>
-            <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={1.75} />
-            Stop
-          </HoverActionButton>
-        ) : canRetry ? (
-          <HoverActionButton title="Retry" onClick={() => onRetry?.()}>
-            <HugeiconsIcon icon={Refresh01Icon} size={11} strokeWidth={1.75} />
-            Retry
-          </HoverActionButton>
-        ) : null}
-      </MessageActions>
+      {showRunActions ? (
+        <MessageActions className="opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          {streaming ? (
+            <HoverActionButton title="Stop generating" onClick={() => onStop?.()}>
+              <HugeiconsIcon icon={Cancel01Icon} size={11} strokeWidth={1.75} />
+              Stop
+            </HoverActionButton>
+          ) : (
+            <HoverActionButton title="Retry" onClick={() => onRetry?.()}>
+              <HugeiconsIcon icon={Refresh01Icon} size={11} strokeWidth={1.75} />
+              Retry
+            </HoverActionButton>
+          )}
+        </MessageActions>
+      ) : null}
     </Message>
   );
 });
