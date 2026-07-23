@@ -27,7 +27,7 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: Open PR
+      - name: Open and merge PR
         if: steps.changes.outputs.changed == 'true'
         env:
           # Org policy blocks GITHUB_TOKEN from creating PRs
@@ -48,9 +48,18 @@ jobs:
           git commit -m "chore: sync isanagent main"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
           gh label create "isanagent-bump" --description "Automated İsanAgent main sync" --color "0E8A16" 2>/dev/null || true
-          gh pr create \
+          PR_URL="$(gh pr create \
             --title "chore: sync isanagent main" \
             --head "$BRANCH" \
             --base main \
             --label "isanagent-bump" \
-            --body "Updates the recorded İsanAgent \`main\` revision in \`Cargo.lock\`. ALTAI already refreshes İsanAgent before compile (\`pnpm isanagent:sync\` / CI / release), so this PR only keeps the lockfile tip current."
+            --body "Updates the recorded İsanAgent \`main\` revision in \`Cargo.lock\`. ALTAI already refreshes İsanAgent before compile (\`pnpm isanagent:sync\` / CI / release), so this PR only keeps the lockfile tip current. Auto-merged by Sync İsanAgent after CI passes.")"
+          echo "Opened $PR_URL"
+          # Queue auto-merge (repo has allow_auto_merge); still wait for checks then merge
+          # so we don't depend on required-status-check branch protection being configured.
+          gh pr merge "$PR_URL" --auto --squash || true
+          gh pr checks "$PR_URL" --watch --fail-fast
+          if [[ "$(gh pr view "$PR_URL" --json state -q .state)" == "OPEN" ]]; then
+            gh pr merge "$PR_URL" --squash --delete-branch
+          fi
+          echo "Merged $PR_URL"
