@@ -219,7 +219,7 @@ The Rust **agent runtime** embedded inside ALTAI. Not a sidecar — a crate that
 
 → **[github.com/altaidevorg/isanagent](https://github.com/altaidevorg/isanagent)**
 
-ALTAI tracks İsanAgent **`main`** (not a fixed commit). `pnpm isanagent:sync`, Tauri `beforeDevCommand` / `beforeBuildCommand`, CI, and release all run `cargo update -p isanagent` before compile. A daily (and on-demand) workflow opens a lockfile sync PR when tip moves and **merges it after CI passes** — that workflow needs repo secret **`ISANAGENT_SYNC_TOKEN`** (fine-grained PAT with Contents + Pull requests write), because org policy blocks `GITHUB_TOKEN` from creating PRs.
+ALTAI tracks İsanAgent **`main`** (not a fixed commit). `pnpm isanagent:sync`, Tauri `beforeDevCommand` / `beforeBuildCommand`, CI, and release all run `cargo update -p isanagent` before compile. A daily (and on-demand) workflow opens a lockfile sync PR when tip moves and **merges it only after every CI check has passed** — that workflow needs repo secret **`ISANAGENT_SYNC_TOKEN`** (fine-grained PAT with Contents + Pull requests write), because org policy blocks `GITHUB_TOKEN` from creating PRs.
 
 ### 🖼️ Afterimage
 

@@ -53,13 +53,69 @@ jobs:
             --head "$BRANCH" \
             --base main \
             --label "isanagent-bump" \
-            --body "Updates the recorded İsanAgent \`main\` revision in \`Cargo.lock\`. ALTAI already refreshes İsanAgent before compile (\`pnpm isanagent:sync\` / CI / release), so this PR only keeps the lockfile tip current. Auto-merged by Sync İsanAgent after CI passes.")"
+            --body "Updates the recorded İsanAgent \`main\` revision in \`Cargo.lock\`. ALTAI already refreshes İsanAgent before compile (\`pnpm isanagent:sync\` / CI / release), so this PR only keeps the lockfile tip current.
+
+          Merged automatically by Sync İsanAgent **only after every CI check has passed**.")"
           echo "Opened $PR_URL"
-          # Queue auto-merge (repo has allow_auto_merge); still wait for checks then merge
-          # so we don't depend on required-status-check branch protection being configured.
-          gh pr merge "$PR_URL" --auto --squash || true
-          gh pr checks "$PR_URL" --watch --fail-fast
-          if [[ "$(gh pr view "$PR_URL" --json state -q .state)" == "OPEN" ]]; then
-            gh pr merge "$PR_URL" --squash --delete-branch
+
+          # Do NOT use `gh pr merge --auto` here: main has no required status checks, so
+          # GitHub auto-merge can land the PR before CI finishes. Wait for all checks,
+          # verify they passed, then squash-merge.
+          if ! gh pr checks "$PR_URL" --watch --fail-fast; then
+            {
+              echo "### Sync İsanAgent — CI failed"
+              echo
+              echo "Leaving this PR open for manual triage. Recent checks:"
+              echo
+              echo '```'
+              gh pr checks "$PR_URL" || true
+              echo '```'
+            } | gh pr comment "$PR_URL" --body-file -
+            echo "::error::CI checks failed for $PR_URL; not merging."
+            exit 1
           fi
-          echo "Merged $PR_URL"
+
+          # Explicit gate: refuse to merge unless every rollup check is completed successfully.
+          # Allow SUCCESS / NEUTRAL / SKIPPED; anything else (or incomplete) blocks merge.
+          BAD="$(gh pr view "$PR_URL" --json statusCheckRollup --jq '
+            [
+              .statusCheckRollup[]?
+              | select(
+                  (.status != "COMPLETED")
+                  or (
+                    (.conclusion // "") != "SUCCESS"
+                    and (.conclusion // "") != "NEUTRAL"
+                    and (.conclusion // "") != "SKIPPED"
+                  )
+                )
+              | "\(.name // .context // "unknown"): status=\(.status // "?") conclusion=\(.conclusion // "?")"
+            ]
+            | join("\n")
+          ')"
+          if [[ -n "$BAD" ]]; then
+            {
+              echo "### Sync İsanAgent — refusing merge (checks not all green)"
+              echo
+              echo '```'
+              echo "$BAD"
+              echo '```'
+            } | gh pr comment "$PR_URL" --body-file -
+            echo "::error::Not all checks passed for $PR_URL:"
+            echo "$BAD"
+            exit 1
+          fi
+
+          STATE="$(gh pr view "$PR_URL" --json state -q .state)"
+          case "$STATE" in
+            OPEN)
+              gh pr merge "$PR_URL" --squash --delete-branch
+              echo "Merged $PR_URL after all checks passed"
+              ;;
+            MERGED)
+              echo "PR already merged: $PR_URL"
+              ;;
+            *)
+              echo "::error::Unexpected PR state for $PR_URL: $STATE"
+              exit 1
+              ;;
+          esac
