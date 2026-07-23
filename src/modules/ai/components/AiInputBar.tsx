@@ -480,16 +480,14 @@ export function AiInputBar() {
           )}
         </Popover>
 
-        {(c.canSend || c.canSteer || c.canQueue) && (
+        {(c.canSteer || c.canQueue) && (
           <div className="flex items-center gap-1.5 border-t border-border/40 px-2.5 py-1.5">
             <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
               {c.isCancelling
                 ? "Cancellation requested — you can queue the next task"
                 : c.canSteer
                   ? "Enter queues next · ⌘/Ctrl+Enter steers this run"
-                  : c.canQueue
-                    ? "Enter queues next · starts after the active run ends"
-                    : "Press Enter to send"}
+                  : "Enter queues next · starts after the active run ends"}
             </span>
             {c.isRunning && (
               <Button
