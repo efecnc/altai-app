@@ -29,18 +29,28 @@ jobs:
           fi
       - name: Open PR
         if: steps.changes.outputs.changed == 'true'
+        env:
+          # Org policy blocks GITHUB_TOKEN from creating PRs
+          # ("GitHub Actions is not permitted to create or approve pull requests").
+          # Use a fine-grained PAT with Contents + Pull requests write on this repo.
+          GH_TOKEN: ${{ secrets.ISANAGENT_SYNC_TOKEN }}
         run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::ISANAGENT_SYNC_TOKEN secret is missing. Add a fine-grained PAT (Contents + Pull requests: write on altai-app) at Settings → Secrets → Actions. Org policy blocks GITHUB_TOKEN from opening PRs."
+            exit 1
+          fi
           BRANCH="chore/sync-isanagent-${GITHUB_RUN_ID}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add src-tauri/Cargo.lock
           git commit -m "chore: sync isanagent main"
-          git push origin "$BRANCH"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
           gh label create "isanagent-bump" --description "Automated İsanAgent main sync" --color "0E8A16" 2>/dev/null || true
           gh pr create \
             --title "chore: sync isanagent main" \
+            --head "$BRANCH" \
+            --base main \
             --label "isanagent-bump" \
             --body "Updates the recorded İsanAgent \`main\` revision in \`Cargo.lock\`. ALTAI already refreshes İsanAgent before compile (\`pnpm isanagent:sync\` / CI / release), so this PR only keeps the lockfile tip current."
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
